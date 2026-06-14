@@ -2,6 +2,8 @@
 
 **Version:** 0.1.0
 
+**Implementation status:** this document specifies the intended circuit family for the protocol. The repository code and current circuit artifacts are soft PoC material only; they must be reviewed, tested against final contract semantics, optimized, and improved before production use.
+
 All circuits are written in Circom 2.0 and compiled to Groth16 over BN254.  
 Proof size: 192 bytes (fixed, all circuits).  
 Verifying key: loaded from Soroban contract storage, upgradeable via governance timelock.

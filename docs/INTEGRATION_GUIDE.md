@@ -3,11 +3,15 @@
 **Version:** 0.1.0  
 **Audience:** Soroban developers building on top of the ZKELLA Protocol
 
+**Implementation status:** current contracts, SDK modules, and examples are soft PoC material. They are useful for understanding the intended integration model, but they are not final production APIs and must be reviewed, completed, and improved before mainnet or real-value integrations.
+
 ---
 
 ## 1. Overview
 
 This guide covers how to integrate ZKELLA's confidential token standard, viewing key system, and shielded swap primitive into your own Soroban application or TypeScript frontend.
+
+Until the implementation leaves the soft PoC stage, use these examples as technical design references and testnet scaffolding only.
 
 ZKELLA exposes:
 - A **CT-20 token contract** on Soroban — interact with it from any Soroban contract or client

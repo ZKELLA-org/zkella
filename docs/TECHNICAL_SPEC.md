@@ -4,6 +4,8 @@
 **Status:** Draft  
 **Network:** Stellar Soroban (Protocol 25+)
 
+**Implementation maturity:** this specification describes the target ZKELLA protocol. The current repository contains only a soft PoC implementation foundation. Existing contracts and SDK code are not final versions and must be reviewed, profiled, hardened, and improved before they are considered production-ready.
+
 ---
 
 ## Table of Contents
@@ -30,6 +32,8 @@
 ### 1.1 Scope
 
 This document specifies the cryptographic protocols, circuit designs, Soroban contract interfaces, state management architecture, and SDK APIs for the ZKELLA Protocol. It is intended for implementors, auditors, and integrators.
+
+The interfaces and code references below should be read as target design plus current implementation anchors. They do not imply that the existing contracts are final. Current code is useful for early validation and review, but the remaining roadmap must complete proof verification, missing flows, resource optimization, and security hardening.
 
 ### 1.2 Design Goals
 
@@ -485,6 +489,8 @@ Each circuit's Phase 2 (`zkey`) will be generated via a multi-party computation 
 ---
 
 ## 6. Smart Contract Interfaces
+
+The contract interfaces in this section define the intended protocol surface. The repository currently includes soft PoC contract code only. Existing Soroban contracts must be reviewed, improved, and completed before they can be treated as final CT-20, viewing-key, swap, or governance implementations.
 
 ### 6.1 CT-20 Token Contract
 
@@ -1194,9 +1200,12 @@ Total estimated per-transfer transaction cost: ~1–3 XLM at current fee levels 
 
 ## 14. Deployment Plan
 
+The deployment plan starts from the current soft PoC baseline. Before any final release, all existing contracts and SDK modules must move through review, implementation completion, resource profiling, and hardening. The current PoC contracts should not be promoted directly to production.
+
 ### 14.1 Testnet Phase (Months 1–4)
 
-- Deploy all contracts to Stellar Testnet
+- Review and improve existing soft PoC contracts before expanding testnet coverage
+- Deploy completed testnet versions of all contracts to Stellar Testnet
 - Run trusted setup ceremony (testnet parameters — NOT for production)
 - Publish circuit artifacts and verifying keys to GitHub
 - Internal end-to-end testing: shield → transfer → unshield full cycle
@@ -1208,6 +1217,8 @@ Total estimated per-transfer transaction cost: ~1–3 XLM at current fee levels 
 - Run independent review of CT-20 contract, viewing key contract, swap contract, and Circom circuits
 - Scope: CT-20 contract, viewing key contract, swap contract, all Circom circuits
 - Address all security findings before mainnet
+- Re-profile Soroban resource usage after every material contract or circuit change
+- Freeze final contract interfaces only after review findings and performance issues are resolved
 
 ### 14.3 Mainnet Phase (Month 7–8)
 

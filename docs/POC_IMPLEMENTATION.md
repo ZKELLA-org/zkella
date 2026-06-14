@@ -2,6 +2,8 @@
 
 This document is the dedicated PoC/current-implementation status note for ZKELLA. It explains the code that exists today, the protocol components already present in the repository, and the areas scheduled for completion during the delivery roadmap.
 
+The existing contracts, SDK modules, tests, and deployment evidence represent only a soft PoC implementation. They are intentionally incomplete and must be reviewed, benchmarked, hardened, and improved before they can become final ZKELLA protocol contracts or production deployment artifacts.
+
 ## Full specification
 
 The full ZKELLA protocol specification is documented separately in:
@@ -14,7 +16,7 @@ This document does not replace the full spec. It only describes current PoC impl
 
 ## Current PoC implementation foundation
 
-The current repository includes an initial shield PoC implementation foundation:
+The current repository includes an initial shield PoC implementation foundation. This foundation is useful for validating repository structure, Soroban integration, note construction, commitment logic, and early testnet behavior, but it is not a final protocol implementation.
 
 - `contracts/ct20` shield contract logic
 - native Poseidon2 and Merkle tree support in Rust
@@ -25,7 +27,7 @@ The current repository includes an initial shield PoC implementation foundation:
 - TypeScript SDK support for note construction and note encryption
 - unit tests covering current computation and contract behavior
 
-The full ZKELLA product is specified in the architecture and technical specification documents. The delivery roadmap completes the remaining proof verification, transfer, unshield, viewing-key, indexer, swap, SDK, and mainnet deployment work.
+The full ZKELLA product is specified in the architecture and technical specification documents. The delivery roadmap completes the remaining proof verification, transfer, unshield, viewing-key, indexer, swap, SDK, security review, optimization, and mainnet deployment work.
 
 ## Testnet deployment evidence
 
@@ -121,6 +123,7 @@ This is an important PoC engineering finding: deployment, initialization, admin 
 
 These capabilities are not yet implemented in the current repository and remain part of the delivery roadmap:
 
+- systematic review and improvement of all existing soft PoC contracts and SDK code before finalization
 - on-chain Groth16 proof verification using BN254 pairing host functions (`bn254_multi_pairing_check`)
 - actual shield `proof` verification in `contracts/ct20/src/lib.rs`
 - BN254 `verifying_key` validation during initialization
@@ -136,10 +139,10 @@ These capabilities are not yet implemented in the current repository and remain 
 This repository is best understood as:
 
 - a full technical specification and architecture for the ZKELLA protocol
-- an initial shield implementation foundation
-- a codebase that schedules later protocol phases for delivery-roadmap completion
+- an initial shield soft PoC implementation foundation
+- a codebase that schedules later protocol phases, security review, performance profiling, and protocol hardening for delivery-roadmap completion
 
-It is not yet a complete implementation of the full ZKELLA specification.
+It is not yet a complete implementation of the full ZKELLA specification. Existing contracts and code should be treated as reviewable PoC material only, not as final or production-ready protocol logic.
 
 ## How to use this document
 
