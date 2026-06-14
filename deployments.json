@@ -1,0 +1,14 @@
+{
+  "testnet": {
+    "ct20":         "CCYH6YZLJBFP6QLEQIWN7NHZCVM462L6ADEENWML6OTD3VOWR4UOEMBP",
+    "viewing_keys": null,
+    "swap":         null,
+    "governance":   null
+  },
+  "mainnet": {
+    "ct20":         null,
+    "viewing_keys": null,
+    "swap":         null,
+    "governance":   null
+  }
+}

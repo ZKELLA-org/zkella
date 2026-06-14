@@ -1,0 +1,60 @@
+{
+  "_comment": "Shield circuit test vectors — generated using SDK field encoding (StrKey binary decode → LE), verified against circomlibjs buildPoseidon()",
+  "poseidon2_zero_zero": "6448b64684ee39a823d5fe5fd52431dc81e4817bf2c3ea3cab9e239efbf59820",
+  "_encoding": {
+    "value": "little-endian 32-byte bigint",
+    "asset": "StrKey base32-decode → 32-byte payload → little-endian bigint",
+    "rho_rcm": "raw 32-byte little-endian field element",
+    "commitment": "Poseidon2(Poseidon2(value_field, asset_field), Poseidon2(rho, rcm)), 32-byte LE"
+  },
+  "vectors": [
+    {
+      "id": "v1_shield_1xlm",
+      "description": "Shield 1 XLM (1000000 stroops), USDC-testnet asset, rho=0x01, rcm=0x02",
+      "inputs": {
+        "value": "1000000",
+        "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+        "rho": "0100000000000000000000000000000000000000000000000000000000000000",
+        "rcm": "0200000000000000000000000000000000000000000000000000000000000000"
+      },
+      "intermediates": {
+        "asset_field_decimal": "535763812437486772727725529500426524444234794041121953518266418406882100560"
+      },
+      "expected": {
+        "commitment": "bd52681cb0d1e30dabfec7b060d1898fdd7e5f1bf55fd492984a3e454ec76a0f"
+      }
+    },
+    {
+      "id": "v2_shield_500stroops",
+      "description": "Shield 500 stroops, second asset, rho=0x03, rcm=0x04",
+      "inputs": {
+        "value": "500",
+        "asset": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "rho": "0300000000000000000000000000000000000000000000000000000000000000",
+        "rcm": "0400000000000000000000000000000000000000000000000000000000000000"
+      },
+      "intermediates": {
+        "asset_field_decimal": "44239764132731213050593584193610954592770732183378613204087781673509415785175"
+      },
+      "expected": {
+        "commitment": "34e0b1164d8115f16361db88db58197334127310d50ed897e3ca979f403b302c"
+      }
+    },
+    {
+      "id": "v3_shield_allbytes",
+      "description": "Shield 999999999, rho=0xFF..., rcm=0xAA... (stress test non-trivial field values)",
+      "inputs": {
+        "value": "999999999",
+        "asset": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+        "rho": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "rcm": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "intermediates": {
+        "asset_field_decimal": "535763812437486772727725529500426524444234794041121953518266418406882100560"
+      },
+      "expected": {
+        "commitment": "a99e09ffe89bb1474c8adc2ded53dde53910ba44f468a0c8dc223a3000bc0a27"
+      }
+    }
+  ]
+}

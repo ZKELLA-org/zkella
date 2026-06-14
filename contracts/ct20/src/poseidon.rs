@@ -1,0 +1,732 @@
+// Poseidon hash over the BN254 scalar field (Fr).
+//
+// Implements the OPTIMIZED Poseidon algorithm matching circomlibjs poseidon_opt.js:
+//   t=3, nRoundsF=8, nRoundsP=57
+// Constants from circomlibjs/src/poseidon_constants_opt.json (index 1 = t=3).
+// poseidon2(a, b) output exactly matches the TypeScript SDK (circomlibjs).
+//
+// Soroban note: Replace with native env.crypto().poseidon_bn254() when available (Protocol 25+).
+
+// BN254 scalar field prime (little-endian u64 limbs)
+const R: [u64; 4] = [
+    0x43e1f593f0000001,
+    0x2833e84879b97091,
+    0xb85045b68181585d,
+    0x30644e72e131a029,
+];
+
+// 2^256 mod r (Montgomery constant for iterative reduction)
+const TWO256_MOD_R: [u64; 4] = [
+    0xac96341c4ffffffb,
+    0x36fc76959f60cd29,
+    0x666ea36f7879462e,
+    0x0e0a77c19a07df2f,
+];
+
+// ── Field element Fr ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Fr(pub [u64; 4]);
+
+impl Fr {
+    pub const ZERO: Fr = Fr([0, 0, 0, 0]);
+    pub const ONE:  Fr = Fr([1, 0, 0, 0]);
+
+    pub fn from_bytes(bytes: &[u8; 32]) -> Fr {
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&bytes[i * 8..(i + 1) * 8]);
+            limbs[i] = u64::from_le_bytes(b);
+        }
+        // External input may be anywhere in [0, 2^256); reduce fully.
+        let mut f = Fr(limbs);
+        while f.geq_r() { f = f.sub_r(); }
+        f
+    }
+
+    pub fn to_bytes(self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for i in 0..4 {
+            out[i * 8..(i + 1) * 8].copy_from_slice(&self.0[i].to_le_bytes());
+        }
+        out
+    }
+
+    fn geq_r(self) -> bool {
+        for i in (0..4).rev() {
+            if self.0[i] > R[i] { return true; }
+            if self.0[i] < R[i] { return false; }
+        }
+        true
+    }
+
+    fn sub_r(self) -> Fr {
+        let mut borrow: i128 = 0;
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            let diff = self.0[i] as i128 - R[i] as i128 - borrow;
+            if diff < 0 { limbs[i] = (diff + (1i128 << 64)) as u64; borrow = 1; }
+            else { limbs[i] = diff as u64; borrow = 0; }
+        }
+        Fr(limbs)
+    }
+
+    pub fn add(self, rhs: Fr) -> Fr {
+        let mut carry = 0u64;
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            let s = self.0[i] as u128 + rhs.0[i] as u128 + carry as u128;
+            limbs[i] = s as u64;
+            carry = (s >> 64) as u64;
+        }
+        let r = Fr(limbs);
+        if r.geq_r() { r.sub_r() } else { r }
+    }
+
+    pub fn mul(self, rhs: Fr) -> Fr {
+        reduce_512(mul_512(&self.0, &rhs.0))
+    }
+
+    pub fn pow5(self) -> Fr {
+        let x2 = self.mul(self);
+        let x4 = x2.mul(x2);
+        x4.mul(self)
+    }
+}
+
+// Carry-propagating 4×4 schoolbook multiply → 8-limb result (no overflow).
+fn mul_512(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
+    let mut r = [0u64; 8];
+    for i in 0..4 {
+        let mut carry: u64 = 0;
+        for j in 0..4 {
+            let prod = a[i] as u128 * b[j] as u128
+                     + r[i + j] as u128
+                     + carry as u128;
+            r[i + j] = prod as u64;
+            carry = (prod >> 64) as u64;
+        }
+        r[i + 4] = carry;
+    }
+    r
+}
+
+// Reduce 512-bit product (little-endian [u64;8]) mod r.
+// Uses n = lo + hi·C where C = 2^256 mod r, iterating until hi = 0.
+fn reduce_512(mut n: [u64; 8]) -> Fr {
+    loop {
+        let hi = [n[4], n[5], n[6], n[7]];
+        if hi == [0, 0, 0, 0] { break; }
+        // t = hi * TWO256_MOD_R (carry-safe, 8-limb result)
+        let t = mul_512(&hi, &TWO256_MOD_R);
+        // Replace n with lo(n) + t, clearing the old hi limbs
+        let lo = [n[0], n[1], n[2], n[3]];
+        let mut carry: u64 = 0;
+        for i in 0..4 {
+            let s = lo[i] as u128 + t[i] as u128 + carry as u128;
+            n[i] = s as u64;
+            carry = (s >> 64) as u64;
+        }
+        for i in 4..8 {
+            let s = t[i] as u128 + carry as u128;
+            n[i] = s as u64;
+            carry = (s >> 64) as u64;
+        }
+    }
+    // After hi=0, n[0..4] may still be up to ~5r (since 2^256/r ≈ 5).
+    // Subtract r until the result is canonical.
+    let mut fr = Fr([n[0], n[1], n[2], n[3]]);
+    while fr.geq_r() { fr = fr.sub_r(); }
+    fr
+}
+
+// ── MDS matrix multiply ───────────────────────────────────────────────────────
+
+fn mds_mul(state: &mut [Fr; 3], m: &[[Fr; 3]; 3]) {
+    let mut ns = [Fr::ZERO; 3];
+    for i in 0..3 { for j in 0..3 { ns[i] = ns[i].add(m[j][i].mul(state[j])); } }
+    *state = ns;
+}
+
+const POSEIDON_C: [Fr; 81] = [
+    Fr([0x8d21d47304cd8e6e, 0x14c4993c11bb2993, 0xd05986d656f40c21, 0x0ee9a592ba9a9518]),
+    Fr([0x5696fff40956e864, 0x887b08d4d00868df, 0x5986587169fc1bcd, 0x00f1445235f2148c]),
+    Fr([0xe879f3890ecf73f5, 0x30c728730b7ab36c, 0x1f29a058d0fa80b9, 0x08dff3487e8ac99e]),
+    Fr([0xa8ef88ceea2b0197, 0xa59565eedae2d00c, 0xe1f9075cb7c490ef, 0x084d520e4e5bb469]),
+    Fr([0xeb3e767ae0fd811e, 0x4b3e667a2f9f15d8, 0x33da56722416fd73, 0x2d15d982d99577fa]),
+    Fr([0x0efbe65632c41b6d, 0x91601f6536a5996d, 0xcf1578a43cf0364e, 0x0ed2538844aba161]),
+    Fr([0xcc3e3af02955e60a, 0x804c877d829b735d, 0x86e739e6363c71cf, 0x2600c27d879fbca1]),
+    Fr([0x70058558282bf2c5, 0xcb99a5517440dfd9, 0x475bd15396430e7c, 0x28f8bd44a583cbaa]),
+    Fr([0x2d030c55df153221, 0x1ed314d7f697a557, 0x8781aad012e7eaef, 0x09cd7d4c380dc548]),
+    Fr([0x51e2bee7d0f855f5, 0x4b6713febe822349, 0x06120ecaace460d2, 0x11bb6ee1291aabb2]),
+    Fr([0x349cadeecfceb230, 0x6f171580f5b8fd05, 0x3310f3c0e3fae1d0, 0x2d74e8fa0637d985]),
+    Fr([0xe4b4d316ed889033, 0xb1a09559a511a18b, 0xac9bef31bacba338, 0x2735e4ec9d39bdff]),
+    Fr([0xf617e24213132dfd, 0x1106c33f826e08dc, 0xa5da6312faa78e97, 0x0f03c1e9e0895db1]),
+    Fr([0x848a7e9ead6778c4, 0x8741090b8f777811, 0xaf92920205b719c1, 0x17094cd297bf827c]),
+    Fr([0x1ba7d4b4d559e2b8, 0x48df90d4178042c8, 0x1fc2b32194657983, 0x0db8f419c21f9246]),
+    Fr([0x4a22709ceceeece2, 0x66809db60b9ca172, 0x17427ed5933fcfbc, 0x243443613f64ffa4]),
+    Fr([0x04bb191fada75411, 0xecbbae6deecd03aa, 0xcd256c25c07d3dd8, 0x22af49fbfd5d7e9f]),
+    Fr([0xf7f7c097c19420e0, 0x4677f797b4327323, 0x0c78a20d93c7230c, 0x14fbd37fa8ad6e4e]),
+    Fr([0x22faa7e18b5ae625, 0x89420c4eb3f3e1ea, 0xd4b2c9fbc6e4ef41, 0x15a9298bbb882534]),
+    Fr([0x4c2f1d90562232bc, 0x83eef92e854e7543, 0x221323ebceb2f2ac, 0x2f7de75f23ddaaa5]),
+    Fr([0x23584f7479cd5c27, 0xca216f2ff9e9b2e6, 0x78a315e84c4ae5ae, 0x036a4432a868283b]),
+    Fr([0xae1c5682c797de5c, 0xe39f3c962f11e860, 0xe277218ab14a11e5, 0x2180d7786a8cf810]),
+    Fr([0x53572377eefff8e4, 0x3778990484cc03ce, 0xd0cb55be640d73ee, 0x0a268ef870736eeb]),
+    Fr([0x9df9bae16809a5b2, 0x29e982e8c90e0906, 0x4f2999031f159948, 0x1eefefe11c0be466]),
+    Fr([0x6571a3c3cf244c52, 0x4b8fb93d9a112994, 0x9ca596e8cb77fe3a, 0x27e87f033bd1e0a8]),
+    Fr([0xd21451809178ee39, 0x9979c4f9d2a3e184, 0x3321f57d6c543588, 0x01498a3e6599fe24]),
+    Fr([0x8dea1bbebde507aa, 0x4d5d6bcc235bef10, 0xe9dd4d7ce33707f7, 0x27c0a41f4cb9fe67]),
+    Fr([0x6a7c91fe1dae280f, 0xf4f4ae825d5004c1, 0x6637238b120fc770, 0x1f75230908b141b4]),
+    Fr([0xb1f0a085bee21656, 0x7b97b3a089808d4e, 0x7bba831b15fffd2d, 0x25f99a9198e92316]),
+    Fr([0x622974228ba900c6, 0x3d3d56ec8ed14c67, 0xd0f6acdc2bb52659, 0x101bc318e9ea5920]),
+    Fr([0xc1ccc43207a83c76, 0xebc0c852a3cf091e, 0x97c1334ecb019754, 0x1a175607067d5173]),
+    Fr([0xc4d89770155df37b, 0x6b2eb380ba4af5c1, 0xdeb245f3e8c381ee, 0x0f02f0e6d25f9ea3]),
+    Fr([0xf358b3163b393bc9, 0x92565de456ae789f, 0x08d8a6677203ec96, 0x151d757acc8237af]),
+    Fr([0xa79d13a3a624fad4, 0x084980ee5b757890, 0x49e0a1fe0068dd20, 0x256cd9577cea1430]),
+    Fr([0x97b8ae86e1937c61, 0x476682c3fbdd1954, 0x8833b13da50e0884, 0x0513abaff6195ea4]),
+    Fr([0x86d19dbac4e4a655, 0x39246e84e4ac4483, 0x6f610251ee6e2e80, 0x1d9570dc70a205f3]),
+    Fr([0x044eec50b29fc9d4, 0xeffb012dd784cf5e, 0xd5d7f1bf8aaa6f56, 0x18f1a5194755b8c5]),
+    Fr([0xd88163238eebbca8, 0xfa4bb0af966ef420, 0x866512c091e4a4f2, 0x266b53b615ef73ac]),
+    Fr([0x3f4fd6e8344ae0f7, 0x68304dfeb8c89a1a, 0xa42b8de27644c022, 0x2d63234c9207438a]),
+    Fr([0x0021daee6f55c693, 0xfbb976205ef8df7e, 0x7b3adde219a6f0b5, 0x2ab30fbe51ee49bc]),
+    Fr([0x068d9207fa6a45c9, 0x1dc42abcd528b270, 0xdcb9cce48969d4df, 0x1aee6d4b3ebe9366]),
+    Fr([0xa211d123f6095219, 0x11f57646c60bb34a, 0x5a79452e5864ae1d, 0x1891aeab71e34b89]),
+    Fr([0xa7caab01c818aa4b, 0x18e16b2657771bd3, 0x6437e94b4101c691, 0x24492b5f95c0b087]),
+    Fr([0xb2fddf71bcfde68f, 0x964628213d66c10a, 0x1b3b2c8663a0d642, 0x01752161b3350f7e]),
+    Fr([0x68cfb8f90a00f3a7, 0x2f445b8d148de543, 0x7cfb84938e614c6c, 0x0ab676935722e2f6]),
+    Fr([0xfe0da1f7aa348189, 0x683fc2e6e227e3d4, 0x45bc730117ed9ae5, 0x0b0f72472b9a2f5f]),
+    Fr([0x13a78a513edcd369, 0xcaf2b2152c3ae6df, 0x1c201d1a52fc4f8a, 0x16aa6f9273acd563]),
+    Fr([0xa45c08d52435cd60, 0xbf62d9b155d23281, 0x13c324c1d8716eb0, 0x2f60b987e63614eb]),
+    Fr([0x9db76b7cc1b21212, 0xf1cb89b042f508fd, 0x7606bb7884554e9d, 0x18d24ae01dde92fd]),
+    Fr([0x0715d4724cffa586, 0x18c3185fdf159396, 0x8d776373130df79d, 0x04fc3bf76fe31e2f]),
+    Fr([0xb5d26270468dbf82, 0x6dee9e06b21260c6, 0xcfdd670b41732bdf, 0x0d18f6b53fc69546]),
+    Fr([0x6fa5d7045bd10e24, 0x3f1f70b4cdb04503, 0xcec11fbafa17c522, 0x00ba4231a918f13a]),
+    Fr([0xbedd0dd86120b4c8, 0x33c826da0635ff1e, 0x100985301663e7ec, 0x07b458b2e00cd7c6]),
+    Fr([0xec39e9fd7baa5799, 0x6bba24e2ed40b16c, 0x6058e76f15a0c828, 0x1c35c2d96db90f4f]),
+    Fr([0x5e0dde688e292050, 0x0a4f589abbef9694, 0x766568f03dd1ecdb, 0x1d12bea3d8c32a5d]),
+    Fr([0x13db405a61300286, 0x9c995bb62fdea943, 0x0525f9a73526e988, 0x0d953e2002200327]),
+    Fr([0x760e33506d2671e1, 0xf06ff0b610b4040a, 0x86a40bec4c875047, 0x29f053ec388795d7]),
+    Fr([0x4b9679caaae44fc2, 0xe264d5f446e0c3f6, 0x4a4952a98463bc12, 0x04188e33735f46b1]),
+    Fr([0xbf1735cdbe96f68f, 0xe996a408b7e97eb3, 0xa84f1d0529431bb9, 0x149ec28846d4f438]),
+    Fr([0x148cce1c5fdddee8, 0x7aeafd98e651922d, 0xca24b5f63630bad4, 0x0de20fae0af5188b]),
+    Fr([0xf449fba6984c6709, 0x7d836c234b8660ed, 0x3ea94350e722ad2f, 0x12d650e8f790b125]),
+    Fr([0x8340dfc4babb8f6c, 0xfdadbc1a8abe28d7, 0x0ea96717ba7446aa, 0x22ab53aa39f34ad3]),
+    Fr([0x04a129db9149166c, 0xe0de109871dd7769, 0x450dabea7907bc3d, 0x26503e8d4849bdf5]),
+    Fr([0xc8064035b0d33850, 0xec34b23d897e7fc4, 0x00f5454f5003c5c8, 0x1d5e7a0e2965dffa]),
+    Fr([0x9cb3c7bbd07104cb, 0xbc9a6aefa544615b, 0x12d96b7ec48448c6, 0x0ee3d8daa098bee0]),
+    Fr([0x1dc232b5f98ead00, 0xfa9ef7a7175703d9, 0x55d30754cd4d9056, 0x1bf282082a049799]),
+    Fr([0xa0272173ee9ad461, 0x971645f16b693733, 0xe3e951bc316bee49, 0x07ae1344abfc6c2c]),
+    Fr([0x5c8e89762ee80488, 0xdc98a36b7a47d97a, 0xec21b131d511d7db, 0x217e3a247827c376]),
+    Fr([0x7509b616addc30ee, 0xabe1e50efc289411, 0xa003d438e2fbe28b, 0x215ffe584b0eb067]),
+    Fr([0x12a92d1d3ce3ec20, 0xbec19b84e33da574, 0x92dcedc597c4ca0f, 0x1e770fc8ecbfdc86]),
+    Fr([0xe50e828f69ff6d1f, 0x42914fc19338b3c0, 0x9f1e3a8a6d66a057, 0x2f6243cda919bf4c]),
+    Fr([0xd3c03ff87a11b693, 0x3a195d0e9cc89345, 0x9595d0046f44ab30, 0x246efddc3117ecd3]),
+    Fr([0xe602bc62cec6adf1, 0x0168b1c89a918dfb, 0xd4fe006f139cbc4e, 0x0053e8d9b3ea5b8e]),
+    Fr([0xaec04c1abe59427b, 0xeb4f261beefff135, 0x7d910f6a710d38b7, 0x1b894a2f45cb9664]),
+    Fr([0x42553d54ec242cc0, 0xdc077abf88651f5a, 0x8212652479107d5f, 0x0aeb1554e266693d]),
+    Fr([0x11faf9da8d9ca28e, 0x04ba7d71bd4b7d0e, 0xe6888680d1781c7f, 0x16a735f6f7209d24]),
+    Fr([0x4ff549dcf073d41b, 0x60e4bcbb615b1937, 0xd7c13b4df0543cd2, 0x0487b8b7fab5fc8f]),
+    Fr([0x77fdf51c92388793, 0xcfb5d512068c3ad6, 0x124bea26b0772493, 0x1e75b9d2c2006307]),
+    Fr([0x961dcb02da3b388f, 0xae46fa1e239d1c6c, 0x253b46d5ff77d272, 0x05120e3d0e28003c]),
+    Fr([0xf890f5fd55d78372, 0xc0900a053b171823, 0xb822e8763240119a, 0x0da5feb534576492]),
+    Fr([0x40cc8f78b7bd9abe, 0x8c2666a6379d9d2c, 0x22acc1a1f5f3bb6d, 0x2e211b39a023031a]),
+];
+
+const POSEIDON_M: [[Fr; 3]; 3] = [
+    [Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]), Fr([0xd62940bcde0bd771, 0x2cc8fdd1415c3dde, 0xb9c36c764379dbca, 0x2969f27eed31a480]), Fr([0x326244ee65a1b1a7, 0xe6cd79e28c5b3753, 0x0d5f9e654638065c, 0x143021ec686a3f33])],
+    [Fr([0xd6c64543dc4903e0, 0x9314dc9fdbdeea55, 0x6ae119424fddbcbc, 0x16ed41e13bb9c0c6]), Fr([0x29b2311687b1fe23, 0xb89d743c8c7b9640, 0x4c9871c832963dc1, 0x2e2419f9ec02ec39]), Fr([0xb16cdfabc8ee2911, 0xd057e12e58e7d7b6, 0x82a70eff08a6fd99, 0x176cc029695ad025])],
+    [Fr([0x791a93b74e36736d, 0xf706ab640ceb247b, 0xf617e7dcbfe82e0d, 0x2b90bba00fca0589]), Fr([0xc8aacc55a0f89bfa, 0x148d4e109f5fb065, 0x97315876690f053d, 0x101071f0032379b6]), Fr([0x73279cd71d25d5e0, 0xa644470307043f77, 0x17ba7fee3802593f, 0x19a3fc0a56702bf4])],
+];
+
+const POSEIDON_P: [[Fr; 3]; 3] = [
+    [Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]), Fr([0x5a8a79a66831f51d, 0x6203f5f24ae72c92, 0x3f83dcedddb9a023, 0x1e6f20a11d1e31e4]), Fr([0x4084e3027e782467, 0x484f426725403ae2, 0xc722a141f8785694, 0x1bd8c528472e57bd])],
+    [Fr([0xd6c64543dc4903e0, 0x9314dc9fdbdeea55, 0x6ae119424fddbcbc, 0x16ed41e13bb9c0c6]), Fr([0x90527a1a5f05079a, 0x7143625b0a9e9c31, 0x6bacf1ad5e56655b, 0x2d51ba82c8073c6d]), Fr([0xb5f927fe8d6a77c9, 0xce0611f940ff0731, 0xe0ab10fc2e51ea83, 0x1b07d6d51e6f7e97])],
+    [Fr([0x791a93b74e36736d, 0xf706ab640ceb247b, 0xf617e7dcbfe82e0d, 0x2b90bba00fca0589]), Fr([0x5a3e53f0bc5765a0, 0x093cdef1ccf34d98, 0xe8376f62d19edf43, 0x11e12a40d262ae88]), Fr([0x8a3ef37cce8463bd, 0x1574f980d8903830, 0x9c6f3e47b5ff5578, 0x221c170e4d02a247])],
+];
+
+const POSEIDON_S: [Fr; 285] = [
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x3ab718e707576b31, 0x1a89752f427f4f06, 0x6ee25a9b8768b323, 0x03f0815ab463f1b7]),
+    Fr([0xe008859f1dbfb317, 0x57012a3d3b1d34c8, 0x54c7e33029b36173, 0x15648bf46f60d829]),
+    Fr([0xa0cfefbf7fbfba85, 0xd05ea850cf61f1da, 0x18ca7f2eafdd7564, 0x127e00c2253de078]),
+    Fr([0xf7d48051630747bd, 0xd3ce470a8cbbb878, 0x9382fc0b1d265cb4, 0x066365afd18a41ef]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xb099715c4404aae7, 0xf4fa24c84e57dcf2, 0xdc69a96f7fe7e086, 0x219d14f823513140]),
+    Fr([0xaefa9ac2302132d5, 0xf14f4d33696d37eb, 0x4a6a63a8050d91f9, 0x03a30bfbbf2cb86d]),
+    Fr([0x85104b0b41935bcc, 0xdad5a84d74b06e33, 0xb0270fb7d5c9f94e, 0x2121bbcdeaa33a35]),
+    Fr([0xd053ef8b3d10e70e, 0xcd5580c2e338a389, 0xcfbb82c289e579b7, 0x196b544fbeb0a792]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x7d907ea0202f560f, 0x6973ec73edb4bd4e, 0x89c1db270ef479c2, 0x2809c3a1547c0cee]),
+    Fr([0xd40d4e96dfc5c8f1, 0x2a4c67175b31f4b5, 0xca157585a02b8b34, 0x11c34446b083ef92]),
+    Fr([0x6d9d8026e2e39925, 0xf6242ad7709d90b8, 0x367c030e3289cbe0, 0x253ea0b33a8bf3b2]),
+    Fr([0x38c16df85637bd5f, 0x4f5a19c006d10304, 0x90c89d4007ad29fc, 0x30467dc1930f6afe]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x13c8ebfbbba54f44, 0xaa6a536458b38bbe, 0x7e20e6f5a3a88af7, 0x2f9d4b55495f7e37]),
+    Fr([0x4cfd03ff0feac4b8, 0xd8ee2353be18aad5, 0xf11d36d499e7e093, 0x1d9e9d5c736e3151]),
+    Fr([0x5f343de301e54841, 0xd1bfedb87e097c31, 0xebf622f7823a3de7, 0x124b617b43e598f9]),
+    Fr([0x89cc5748ffe199b2, 0xa5f9c5b19cae08d7, 0x4055cf073bedc945, 0x198e7cfc66ae4577]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x5bb6c27ed977fe24, 0xeb945ba57443099c, 0xfd124ab3aad57789, 0x2eac25b3498dfadf]),
+    Fr([0x0b3c6ab5f4f90126, 0x4e8af1d4454ed355, 0x1b378305c1bb9c90, 0x1ee02c175cdfe187]),
+    Fr([0x9fa98301d0f679d5, 0xf6fbb1d9745c4860, 0xb29ea8f9d2dfa47f, 0x0616f8c34c607266]),
+    Fr([0xa43a42832803370b, 0x853e51ed385e4883, 0x58b9f19cbbdb972a, 0x181d68b0a1885049]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x059e9327f5ba7004, 0x81d1ce2f24cbabf6, 0x5d6b7f5b015d5791, 0x2d5397ce863464a2]),
+    Fr([0x1724d8dbd4bc2618, 0x7713e7d32da2b659, 0xe8912940cc0b8027, 0x15bf817491b94d71]),
+    Fr([0x94a3827d29c08714, 0xc8cc687740bc9109, 0xb76feab28b69485a, 0x2a7cbd11460b177a]),
+    Fr([0x4c237b290de9d502, 0x63cb462da80a8561, 0xab56e447fae5cc17, 0x0f7cd5ffa4661730]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x644ce04531008100, 0xf768137d86d305be, 0xeb13273508eb6575, 0x0e0766004b4c4176]),
+    Fr([0x4e1f763000b9924c, 0xb54ee3c1afac0010, 0xf6d148be6b9c8bb7, 0x0625fa7145813481]),
+    Fr([0xb65136318ce2c6a5, 0xb19cd9c7b184f515, 0x16ee0f5461aad2e0, 0x007c5472508b4599]),
+    Fr([0x4685879cb7a89fcb, 0x31d53073951d43c5, 0x93ac77ab3fb75572, 0x0567375470d189b6]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x601174ba5c7b8bcc, 0x8ad21f51ea4bfc71, 0x5165f56c063e4210, 0x1d0406bcbec83f8d]),
+    Fr([0x7c73b46c63272cb7, 0x375f06342f8696ee, 0x280a8aa1f86405f3, 0x0c02b18eef22332d]),
+    Fr([0xad053a55ad6da4cf, 0x823509ad4fd1b15a, 0xeaa7add2f801a664, 0x17c1fc174cd9a6eb]),
+    Fr([0x8a08638e9584b32d, 0xaaa6caf433f7ed25, 0xab7ebbc86709a021, 0x05f843c23024eb1d]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x589f792f0ad8cb37, 0x27b45ccd90a55c87, 0x5cc51c53165e0027, 0x22df2420697ca28b]),
+    Fr([0x417588efc4d7302a, 0x9fd3af804b76be86, 0x73400aaedf0f4800, 0x2f1438303a7b49d4]),
+    Fr([0x6155c5463093b23b, 0xbaa7f4dccd35d5ca, 0xc6b2b7b4fbf9a24b, 0x2323d5fcf2da8965]),
+    Fr([0x4e37700073d4d26e, 0xf40f7b961e9c54f9, 0xe83b753a5e7336b9, 0x026c85b9dfbbe48f]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x28e41d65384c318f, 0x70b271df4c209795, 0xfeb38b5ab4e335f0, 0x031511000251ec86]),
+    Fr([0x0ff5df9a26c03af1, 0xe27cd16b941e34a6, 0xb42fa69e5d90a0c0, 0x18e588324a9bbaac]),
+    Fr([0xd99f03c10ea1f95f, 0x98357d6ad9bef2e7, 0x070635775c8d3c94, 0x2642b5d8e16b953b]),
+    Fr([0x21f909aef836c133, 0x31189b0b48335c42, 0xe84ff60db906a0f0, 0x21fc313ba11c60e8]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xf2f4d93d06dae151, 0x311298bcbac6e4e9, 0x890b698cc6ab89f7, 0x2d3562e3d4b42bc6]),
+    Fr([0x189d886dfd2e0808, 0x7934a5f67616f01c, 0x2e3e0b6ff7e5c7c7, 0x0a74ef541d360e84]),
+    Fr([0x67c2c9b1b02caf8a, 0x43f434087d9e7549, 0xc3983d6e3b433afa, 0x140564b53e0a812a]),
+    Fr([0x3adb6f2db6bba9d0, 0x59c436c8e83fa699, 0x18b400181e71ab97, 0x14709e32d98ae4cd]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x4a619a4b52bdc010, 0x2372db4f2dba651f, 0x423f179e1266dd39, 0x0734b2366c59e394]),
+    Fr([0xd02d7e71088fd2d4, 0xe963ed92913642c7, 0x5ad3e3c5fb6629ab, 0x11fb2d705c94b08d]),
+    Fr([0x34e4cc3618059484, 0xef6eb7f78fd84be8, 0x5d715eba19371050, 0x27d03abf5c1f290e]),
+    Fr([0xbb9b441ac1395861, 0xbe817f212a39c6a8, 0x7fb3353cfc2cd63e, 0x13ed9e9e6b452df2]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x7c5b79ab99cbd23c, 0x795de4452604263a, 0x246cdaaa04a12e88, 0x1319c51cf37aaa10]),
+    Fr([0x715b6cea019ac3f2, 0x26a4cf444eebbd0e, 0x7f9dad839f2c8cb5, 0x000bca25588d187b]),
+    Fr([0xc01be23cf51d593f, 0x1a069b493f02f7a3, 0x181226874b923cd0, 0x1d837ea0341c5964]),
+    Fr([0x012090db7de4e7f9, 0x4149e2a6dbd25f24, 0x42c427ce4c5c8377, 0x1b41ce9ed3634cbd]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x7b56bd6673f1ce1f, 0xbca74b98b78a127c, 0xddc790ecc4e946f4, 0x0671f0e3b674ae7c]),
+    Fr([0x071d0449a5426e4e, 0xefeb682c1ac14143, 0x72e40cd30615f55f, 0x019fc073797a39b2]),
+    Fr([0x11c5096619e9fd13, 0xfa4209480bf5d973, 0xfd1f7c5c6d5a7c70, 0x017bee47d262a497]),
+    Fr([0x00cc8527274471e3, 0x4c7944721cc937ba, 0x80763539cff2978a, 0x2073cff92d3141b4]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xc7aa46b1fa663baa, 0xf9c58d152e730fe2, 0x7f43182a55a91d48, 0x03bd7b3e2c188587]),
+    Fr([0xfed9ffbbbad9b6b7, 0x0ceb100719a14c8d, 0xff128edfb9bbf5fa, 0x226ebc9a538b5bba]),
+    Fr([0xc6e394e8a5d3b21a, 0x34a49572af1d830d, 0x0373a06e1552c0e6, 0x0d395f0b08b9fede]),
+    Fr([0x41f77d5331f99ffa, 0x5284bd3bcf1e0f2f, 0x30d49b68e19e31ba, 0x28242439b524540a]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x754b48c6154d4df6, 0x0b457e129e91f929, 0x2d2de034801ab85e, 0x0370d6fa19eaac14]),
+    Fr([0x0a2b2e0bcbde1659, 0xa37939bc0c753feb, 0x90762abf269579ea, 0x09a16f573b3280f3]),
+    Fr([0x8d99981368231d97, 0x3c0021a690b71b26, 0x496ac443f98127ee, 0x2228e360fb5b162b]),
+    Fr([0xb97675f3c567f944, 0x9431e34d8032b6a1, 0x9fabf83991476d20, 0x07e42c2ca633d2c4]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xa50fe96097724a9f, 0xed35fda1d8e9d753, 0xc3cab85a6215a32e, 0x2ce12d7269663770]),
+    Fr([0xba0b2231815b15de, 0x084bc4daf70973a7, 0x09eeb9b1b45a0125, 0x03d7427704c61e20]),
+    Fr([0x2d86921e553e69c6, 0xa096fb4ddc462673, 0x1c1267fcf4b4b33c, 0x10f8abf076418586]),
+    Fr([0x5c95644c7c5914cc, 0x51a1a620aaf6568a, 0x025d7cb456e3aeb2, 0x17ccaf6f26f7267a]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x59de6df28cea4d51, 0xd0e3651a6e55754d, 0x1385c3ce00ca820a, 0x063bb306b9631005]),
+    Fr([0x920cf993a4169974, 0x03242e0b65e608bc, 0xf2c304a18095ab74, 0x1f761ee5553c5e86]),
+    Fr([0xcd6bdfc09de4e8f2, 0x64bcde8761b45717, 0xa23c0e666859ba65, 0x0dc5f00bbfd7c1d9]),
+    Fr([0x91089760bfc40ef2, 0xb44cf790a230abc3, 0xdf07c3536381c13e, 0x06de511520e277b7]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xf24a8c06e10cca03, 0x1fd4481b50a1fe21, 0xf9ef54863e70528a, 0x2a134348c8660efc]),
+    Fr([0xa1b33520bcfce37b, 0xd5f6f1ffb63a7dbb, 0x4bd80089e99edf8e, 0x0aeb5023bbb9a64c]),
+    Fr([0x36fc51fb7cb933d1, 0x406c5960ab261558, 0x25ecb5f0bfdc9995, 0x141a6d0810366ae2]),
+    Fr([0xbfe87497f1e2c5b7, 0xcc0b2539990bc0b8, 0xbe776f404dca6626, 0x09d2ea05ef54dadb]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xff1a16e91719cdde, 0x22d4a5432441bfe8, 0xd104d5f8ef70891d, 0x1e56d244a8e41be5]),
+    Fr([0x8ba4d5c5f50c7b49, 0x5e09447fa85c2fd6, 0xec908b2f99b5c4fd, 0x1d4f020c57c4f14a]),
+    Fr([0xee1e833764c18fd3, 0x8d82a1e09db80fb0, 0xe09f4e14cd03398d, 0x0763911a3a92a4f0]),
+    Fr([0x684366e54b302946, 0x1fc5d9a2c5e47e55, 0xba2ec68f9061643f, 0x12857275be2fe6b9]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xd0ebf50d1bbf87c0, 0xdc0a60353c5d83d4, 0x655ffe9a96c4b81a, 0x2ed11ccd2e2e2376]),
+    Fr([0xd288a21543c6d594, 0x726d5b1c2cfbb4ac, 0x5b320d5e3e966ef4, 0x03e31de8958e8264]),
+    Fr([0x6ec2ca4a36e71963, 0xda28a608d7e90536, 0x58ae890046533d58, 0x11e880dfefdbd088]),
+    Fr([0x90dc25e969a507b2, 0x44a34662978d53c1, 0x0704a9c3cc21ab7a, 0x1835b275deaed2d0]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x419f372ff8d3c3f5, 0xe5d44f76f1324240, 0xce5a4a9480e1d82c, 0x068b75315e25ed4a]),
+    Fr([0x98ad3b22823274d1, 0x268fccd795c839d6, 0x2b052d2ad12b92a4, 0x1b7ef7d04aec73d6]),
+    Fr([0xc240d30bbaa9f03f, 0x16b670727f4b8efc, 0x6f6193ff5501b572, 0x28c0c848022a9060]),
+    Fr([0xd6e5d82d4f068e1b, 0x54370985a16660ef, 0x686a7bfb1c39f3f2, 0x13bda49296cbcc51]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xfd38490d3a594141, 0xa945729f86c3e0e2, 0x11eb10b34265e378, 0x2e7987ea8204389d]),
+    Fr([0xe5415fffd03935c8, 0xef702aeffda3226c, 0x4b2b45c10a190fed, 0x0826d4a2324ad3aa]),
+    Fr([0x685f93b434036ded, 0xbb964a85435c3b59, 0xfa3675ef541c9df7, 0x002dbeee85eaeaa9]),
+    Fr([0x966a4be599cb86c7, 0xe6fa44f5f5c5abfb, 0x919418ecb3279b11, 0x227ee7a945edaee6]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x8d541471c7244220, 0xffadc23986de8c69, 0x05ac90d696faf2a5, 0x1d0a6d1a95198778]),
+    Fr([0x9f4de02b25f6e9d4, 0xd10eea1db284ec3e, 0xda4f333b7854fbbc, 0x2208aaba508ae816]),
+    Fr([0x175720971ccf04ec, 0xc9e59268e2f8e01a, 0xe36a7d29b587a215, 0x28a58901035b2c99]),
+    Fr([0x226f38a8adfd6238, 0xf317a2a14ffc0191, 0x123a07865ca1376d, 0x0112f6d8d42b0a0d]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xaf906b6d3c6e2308, 0xc727f97fb4d01f1d, 0x3174dda182d266d5, 0x08c6eb19c016d183]),
+    Fr([0xcfea9103f73f1879, 0x75b1be9a48c8698e, 0xd0b38b95f9c642df, 0x1359d2d6c8b5a116]),
+    Fr([0xed42b699c4af3ca7, 0xaa07aacf7725f8a5, 0xa467c1cc1878d91a, 0x10c5052ec67ab9b6]),
+    Fr([0x0193823684c96c75, 0xafdb188d5d4e9f06, 0xdb708803e6338fc6, 0x0583c4d292d54f3c]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xee2c18bfc06f57b4, 0xbcd1fe2b3e076e16, 0x1a4054c5b96322e7, 0x2d94a1c55be38215]),
+    Fr([0x0dbc64dd2211c3ec, 0x3ef77c671927ead8, 0xb997369579c1b170, 0x15e3402fdde8770f]),
+    Fr([0x302677e20a727be3, 0xb5000bef8bb902eb, 0xf7b21e6b867d5a71, 0x185be98784817f22]),
+    Fr([0x5ca14cd94de467b6, 0x8aad1b00c054547b, 0x66ed8927c89890aa, 0x18db4321c721c036]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x4eb2134a039b5126, 0x528849bcd2cd0aff, 0x0c390b3f3d799188, 0x2a852b6247f5d61f]),
+    Fr([0x165930204da58f22, 0xa5276f6de1cd771b, 0xe65fb9a18ee0124a, 0x2510aeed51b7f506]),
+    Fr([0x77d6486513bab5f2, 0x47b7fb54dcad1d79, 0xb5bd3a236f03a47b, 0x0f2074a32eb8260f]),
+    Fr([0x4971404bfa044090, 0xc3531c9e12c4c2c8, 0xa8270e19941926ce, 0x2f4c69297866bd45]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x9b792c562a37473f, 0xe92df5fd5f3fd75e, 0x05d083a65093c0d0, 0x154668727d2dbadf]),
+    Fr([0xa91e5b0f7b13cadf, 0x8d3e2e375bcd1194, 0x4fd77fc5ab5c8c4e, 0x1e6ffc5d6a1ff5dc]),
+    Fr([0xfafa389da29990c6, 0x98c8b2d428538571, 0x9d75acbc9395cb83, 0x2cf1a1d7c4430910]),
+    Fr([0x6ecf64cf793c9880, 0xaa5d8a023e24cf01, 0x87cf76cd5ce8da47, 0x140fb39a89f26f6d]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x8298a93a8589f9e8, 0xce2c16dac159990b, 0xf0712b201fb3cddf, 0x1289d13d58a17b5b]),
+    Fr([0x610920fe98b2db2e, 0x370cf56bc5218749, 0x5781e8d3d207adc8, 0x0f45cf974d2c9edb]),
+    Fr([0x8687a1c9eceb44d4, 0x585a81d1b333568b, 0x6b79edfd24f5abcc, 0x11909c81a1651804]),
+    Fr([0xfd7bbd6792330d16, 0x6917672f2d5a1041, 0x09f3b891a0e3da4d, 0x2990b23c81882f77]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x2ecf461e4aef7277, 0xe0a083ea9a16dc10, 0xcd5560e0821e7285, 0x0609551b14716ca3]),
+    Fr([0xc0880eaa08d03f77, 0x6175de1755f4f93d, 0xfd93dced2467354b, 0x0c8c1abdfab99d03]),
+    Fr([0x8a7a55d08f2e0b10, 0x0db3fed298ec09f7, 0xbd02f33f8bec6c73, 0x138bd098c4923b9f]),
+    Fr([0xf21bb5a3190f14c0, 0xdcd0b45ce07d9ae3, 0x4673f0f77161ae55, 0x2e61e4bc02163011]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x5ddb408260d8e910, 0x626abd1c22401c90, 0x65a9c4060ce3297c, 0x0124860913e3df8f]),
+    Fr([0x6c6ac8b7ed052ec8, 0x125f24c5701d9828, 0x3ec104804d955cbe, 0x013807f89c394a13]),
+    Fr([0xe85578abb0fc2fe5, 0x59aa444050c8f4c4, 0x132aa9eeaec08d2f, 0x2e88d1a6938f0788]),
+    Fr([0xe8fcc1f26abf3104, 0x2257be3c3ba607c2, 0x0a0cbf64e1f1787e, 0x01f3d24f17cfc605]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xd9b62f82f0f8d0bf, 0x3fe6c76a82a916bf, 0x3b9d4f133d41fb5b, 0x1fe1cb0e2ae169f8]),
+    Fr([0x5e3377f9177071f3, 0x19946f3d8d1c48bf, 0x353329221229827e, 0x0ef79351229409cd]),
+    Fr([0x89088608373beda9, 0x507551883127860e, 0x1c4893ef77a9d111, 0x18fb2e46fc1b90fe]),
+    Fr([0x1916bd57120d1868, 0xc0ad6263a68c5cb6, 0x4c32ef0761e23a3c, 0x077afe2579f42ec1]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x48b186f1490b7b99, 0x4e2ac9836fdd65d2, 0x2642c04ccf8a6ea5, 0x079769092daa5a75]),
+    Fr([0x663c76cf76bab4a5, 0x67eb9734606b676b, 0x254eb6e09c5c8bfd, 0x1d8bf229c19968f0]),
+    Fr([0x428f29f6ec1bddad, 0x7664f14236f17256, 0xf93556e49e4b3773, 0x2a33b7d855e7fe55]),
+    Fr([0x340dc3187ccca8b2, 0xb2056077e7aa7536, 0x4ec161c86e84ba6a, 0x25b0331d7e2b15af]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xf4f13f22342474e2, 0xffcf8ccbb92c16e2, 0xccbf45e4810211b0, 0x0762098f5fe26598]),
+    Fr([0x6dece2b6172c2514, 0x2362e144185c7071, 0x6d0da4c007b1bda4, 0x0e234d720d70b288]),
+    Fr([0x135c811152aa4b60, 0xea72182f11c0c60d, 0x6e3742e720b7fec2, 0x1d82bedccd2bc8a0]),
+    Fr([0x14bd1c690a17c979, 0xc3397fd6b94d4813, 0xa5e9a3e7d05930b7, 0x0480064d4b3eb0ad]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x1867f7464fb0c11a, 0xc8e4580568560cf4, 0xf7593fbb1140edc8, 0x10a892763b3cca9e]),
+    Fr([0x4dde4cd7f4de8b91, 0x5978b315667ae471, 0xc921f9b255368078, 0x0b5ec64548ea841a]),
+    Fr([0xce3c65c9db931d46, 0xd78010edd030e1a9, 0x49761bd7131dfaeb, 0x10554aca4e348e59]),
+    Fr([0xac648fab3db0cff6, 0xb9be9de306e150d4, 0x8b93655462b1f475, 0x15be66f38d86b099]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xaaf308e427d3dbe8, 0xf6c26e9d4ab0c23c, 0x82d182957ffad01b, 0x176ad3600fd34911]),
+    Fr([0xce82b5cf0af2e6f2, 0xe3beb20f4fc11bd3, 0x9335001d705ac125, 0x2b6f355b3dbf65f0]),
+    Fr([0xb6de9ff788c77451, 0xa8448c51288fa296, 0x81d7c89edefb32d1, 0x01c85c06a6d5d40d]),
+    Fr([0x51a70aaac2460d79, 0x2361c389e43f7d1f, 0xbd9a51d76b2e25f8, 0x20e1e876c4746a0c]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x2d987dda9217fa08, 0xee3b08ce73770139, 0x2a024b637bc35a29, 0x20e46219f684186d]),
+    Fr([0x28be0f2ed6091367, 0x480766367a8bd90e, 0x654e987907277c24, 0x2ea7279db9f2aa0f]),
+    Fr([0x641be95091780f74, 0x0969dc077c9171b1, 0x362096d472bc75ca, 0x136be2a7f18924c9]),
+    Fr([0xc924baf0df5a0e9e, 0x19ed5736fbc8f1f6, 0x3067c4300fb0f511, 0x1ca2033501baa3f7]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xda810832b48a50c7, 0x25824f7a4a9d9fa1, 0xecaa75e495f34e35, 0x0a82f199c2505277]),
+    Fr([0x7925a2dea580b7d5, 0x9f37a2722e7ed9eb, 0xe92fefb0d7f7782a, 0x0ecf10485307b4ba]),
+    Fr([0x6aebbbb339a3936b, 0x68615c8478f13af1, 0xd12aa22f08a8296d, 0x07b642138dfd6a6d]),
+    Fr([0xcbc3b6dd0f1a2150, 0xd70e760ba76d61e9, 0xd2256d34921fb86e, 0x1d9dda43a25593ff]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x958ce2fd3d7d2fce, 0xd5367eb08213d392, 0x1dc91136c91c6bcc, 0x2f1af228520c8b75]),
+    Fr([0x18551a45a6cde123, 0xe61ada625a1a2b6b, 0x5c6d6c1ab3de4aba, 0x1fecfe833ad54045]),
+    Fr([0xbdd3ad28e4a23c88, 0x5657ff8a77abe637, 0x3b0d758346022757, 0x18fc8e608c735b2b]),
+    Fr([0x86388a7547faa815, 0xa43ce0b618783a55, 0x6ebf03cb3f53aba8, 0x28f740bc1182e970]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x2bed35b7146966a4, 0xe960a4851cfd1382, 0x94ad301e4b998d29, 0x047998cc0af5a26b]),
+    Fr([0x30a14a692b777b70, 0x9725c7b52e880ee1, 0xdda43e415e1b9a3a, 0x1b5f1525b31db911]),
+    Fr([0x945fa57ed5c8de6e, 0xf770ae9bd1d7b1af, 0x5f65e965a90eac9b, 0x275a83fa5d19b453]),
+    Fr([0xce3e40a6f6a27aa8, 0x2a563359808c9897, 0xcb430568e49bc9dc, 0x2e8789257ed2cbcc]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xe2925a39c8e2c7c1, 0xf60c34500dcd6e41, 0xeb2721a4c09e9d17, 0x0927f46cfe80feef]),
+    Fr([0x0e484bbfe7698101, 0xfd8fb2cfbc1ecf9e, 0xc37619bfe6ab6a97, 0x1f868ae04832a5db]),
+    Fr([0x9ce6d56c9b45eff4, 0x65d94ba80f308fb1, 0x09b73f745b2defed, 0x09d7a11e27d2f531]),
+    Fr([0xb0c351aa2b879dff, 0x9a7b25924fda5995, 0x104e1c2823fb7c5b, 0x282d857cfe8da3b5]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x987fb0f6ff49c217, 0x27576e135c0744f6, 0x3f349ff830ae663b, 0x20ba8a9fcec815b1]),
+    Fr([0x66a8ae4dcbfb136e, 0x6d57b471ddd2ab1b, 0x4589fba12e657d22, 0x11b6afc91e32f1ca]),
+    Fr([0x908141736cebc3be, 0x4788eec2c72ddf3f, 0x316e335c7d93db34, 0x2e666402ac9cc588]),
+    Fr([0x74920f2794f18595, 0x7057aec5c9ed9a1a, 0xa202a110e283faad, 0x17522e0e9e64f795]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x878cb9878edbd3b9, 0x9e6adb40e2ff24b7, 0xe20b470cad4cc731, 0x2d2ed17f7a1f3ee9]),
+    Fr([0x3c937da16c7bf9f4, 0x8f75e54a8136f4d7, 0xa96fa276e89e85d0, 0x1a81efb19d7e1eda]),
+    Fr([0x15a16bb3bd33e237, 0xf299c5f451c7a0d5, 0x210a7b44e52e5630, 0x27ff57c1ca847e57]),
+    Fr([0x11be26a7f5fb1a94, 0x840d117b3c6a5a0a, 0x3c5be96031bfa167, 0x1c1a8e22230abcd1]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x9d5836f9c19a5657, 0x0d81e7774d2c32b5, 0x43627a9cd533e425, 0x02a1c3f15d4927c8]),
+    Fr([0x85acb219899357e4, 0xaf0373a10ac112e1, 0x1c52499b37cb4be1, 0x2ddbb7239eb904d8]),
+    Fr([0x8a86fad6da0afb60, 0x8edf8bc25edadab4, 0x4e0d6faec54be81d, 0x0dff198393085a75]),
+    Fr([0xb6d5f504bd1645ca, 0xec8db28728789f28, 0x76275fcc589d038d, 0x10d50c2473146bbc]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x536b08b4476c1538, 0x231ba45948506282, 0x2a53dfd40e1022e6, 0x061e8328fb5593f9]),
+    Fr([0xcfa5a0dd9f6d9784, 0x067debf3f07d3c51, 0xd90b644bee31ac58, 0x1b589243847198de]),
+    Fr([0xe6f67a420a3bd1f7, 0x190f0bdcced99d5c, 0x9863b053bd4c6087, 0x04b00c0da1f851e5]),
+    Fr([0x3bec8cdcb5ddfd67, 0x27f8a8d42e35018b, 0x126a70163009a7ac, 0x239941a46c2b93d9]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xe87ef6814acf2ea2, 0xbfc9bc3ec0bfecb4, 0xc2c35377cb0a3712, 0x204f26ca7993b03a]),
+    Fr([0x48ef117e926d721c, 0x5747cf7308d515e3, 0x39d832d8be165a1e, 0x085aff9c7fdadba0]),
+    Fr([0xefd375df00ea2068, 0xf10e57d05e093158, 0xc4ae9db044c0b0b3, 0x249042a8dc111f27]),
+    Fr([0x3e0825977413e96b, 0xf84550665203327b, 0x542854f3029803e2, 0x06e799bcdf2b4a74]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xc612496183b87996, 0xfffed333cae12085, 0xa9f4d2c002921bc3, 0x1cb3caed4bffb6ac]),
+    Fr([0xdcd99e84d310d51c, 0xdd6ea03cab566889, 0x28a128bfd4faa6a3, 0x0b47e9755fae4801]),
+    Fr([0x3f0bb730da886a4f, 0x506293bc024fd1ca, 0x920a0c9fd2c360a6, 0x0c7e4cea365c2061]),
+    Fr([0x8dcd7ba4187215df, 0x3dbe1b20d9d6988c, 0xbbaa30d964d6f6f6, 0x21da1f701bac77bc]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xdd1a9486e3c6cc55, 0xb86b47bd19965b6e, 0x70905fb67899d10d, 0x09ae612e8ba1ca13]),
+    Fr([0xfe1f7a0e3b95cf3d, 0xaab75445b0c99373, 0xc150f284491190e6, 0x262e1e0b56cac47f]),
+    Fr([0xaa5d3f67491d34bd, 0x2a7bfa5f29fd4dde, 0x2c87c293e3bb7c9e, 0x234bf4a7dce7587c]),
+    Fr([0xeee67f6cb69f70c2, 0x58d2690e213d7432, 0x2d0a527cac744fb6, 0x2f6cbac694c886b0]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x9a3300876dec3ad9, 0xd52aa1842fff818d, 0x7bb8c9fdf78b7ade, 0x22accb18b7c49b4b]),
+    Fr([0xbf623a1df7f8f2fc, 0x2eabd9182a0b3d3c, 0xd659f22d2c77be30, 0x081e2f0652f898c6]),
+    Fr([0x16b3186ad675b935, 0x534b962890f3ffc0, 0xcea3ada75d669b8c, 0x12c0a25e70d006ec]),
+    Fr([0x9f8d4f2381df3259, 0xb56efd349edd56f4, 0x2fd6fc869df24d7a, 0x10ef9c23848128cc]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x0bda347962b240f0, 0xc2c1d41b9491e062, 0xd4a81262b71df1bc, 0x2161cd280772819d]),
+    Fr([0xb7f4fdd12cb8d38a, 0x92533364f799bc41, 0xb406590041b52482, 0x2cebb0ae5108318e]),
+    Fr([0xb759e08709a0a62f, 0xf2852283a656880f, 0xfe4f7c22d9561f3b, 0x2b2092f86b5979a7]),
+    Fr([0x82b2d8507a065fed, 0x50cfc900cf643e73, 0x08146188425a4424, 0x1566b3402d774b8c]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x1a163e601d1a0173, 0x627c3635fccf8d3d, 0x8fb4c56d6c57ba01, 0x11a316aa31607f26]),
+    Fr([0x52e353d9c2874e44, 0x08a5e84346446091, 0xb782648b560e5954, 0x0de7ee069c934256]),
+    Fr([0x67128b8949eab1af, 0x5845c36ae706c72e, 0xcc84df0297708c5e, 0x02d36f4029245704]),
+    Fr([0x284d7951d546f858, 0x99bde46cd82dabdc, 0xf53198c217fb34e8, 0x01b8cc326b5ee160]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x96ece85407550ebb, 0x4cbf9203fd4ddf8a, 0x10689fb2187b7169, 0x27625da0f73ea071]),
+    Fr([0x99ba025b94e4790d, 0xdea349c3edda06cb, 0xcdc0da581a6950f6, 0x1cd8338a3e5b1ad7]),
+    Fr([0x7a10a84072741a56, 0x78a8aed8d3e67e87, 0xa763856c94b6438c, 0x05ea02d65b209f6d]),
+    Fr([0x817743ce03330a55, 0x8b6250ced627e810, 0x5366cfcf284a895d, 0x09f7cb68d4e388f8]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0xdfeb969e9d5c1212, 0xec13995a202e4ebc, 0x27b043f5e58dbd1a, 0x18c6230ddc0f8968]),
+    Fr([0x0578232096db6dcd, 0x452e4f07bfd2e1a1, 0x1a91c0a0fdccdaa8, 0x073a6114b997285e]),
+    Fr([0xa3e7742b2f37be7f, 0xfe013f39b1660ce7, 0x22c6a1fc0838adf5, 0x2e78746340b2a6d2]),
+    Fr([0x8e675259d3e5c851, 0x49b7ea846553def2, 0x06303ad8e5e4bf42, 0x07aa27e7150baddd]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x0cbc98345715ead8, 0xa90273ccb4643f68, 0xbf623d2712cf4d9f, 0x0b66fdec210ea4ea]),
+    Fr([0x41acea41c49aa5e3, 0x9c0601ce0b140be6, 0x9b633b8a4d6be51c, 0x2fb6a29d9f394a58]),
+    Fr([0x75a69dc889b2ce2a, 0x8569fb243d049bd6, 0xfc845e9c1c2cd128, 0x29025cc66fd041c4]),
+    Fr([0xb85d534b17be3f48, 0xf7ed731cfa695168, 0x4126214ab9c627a6, 0x150963f0aca9bcbe]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x98a08a32a61a8a65, 0xb5bca2e47bec0d57, 0x3f72c1bfc6656eb7, 0x0ed5978030225766]),
+    Fr([0xc8d30c06143cc084, 0x1c11888a3000debf, 0x3d30ae188c767f39, 0x07e19cb8a893369b]),
+    Fr([0xcd860afb4a3aa272, 0x2b6ecfe528d2c052, 0xe5f1eeeafb5eb8ec, 0x0600c7d2b6946345]),
+    Fr([0xa0125119f0385705, 0x773f2cd0a480e19e, 0x3022a1f33d6523b4, 0x0596083b6c972bc1]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x6db21043631e24c4, 0x2e64513099a8e1ef, 0x7f98b9d8663d85db, 0x210b5c36f27a07d9]),
+    Fr([0x26a8f4930b7883f9, 0x01c2489874e91593, 0xc7bb9f3d563c5cc2, 0x13bb2764bf1475cf]),
+    Fr([0x219e4b7576e24d30, 0x287872b181e89997, 0x80eb082862a76757, 0x202cf557d625c260]),
+    Fr([0x28ea1f95fd8824b2, 0x01fbc5a03d905a47, 0x76d49e97142d2206, 0x0e561c3f8bd4f76e]),
+    Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
+    Fr([0x7c33ae9ed7890597, 0xd57dd859bbe82730, 0x471785de07bd9809, 0x0de20097480e7555]),
+    Fr([0x0cde8edd76d2e97d, 0xfd2825613cb72bb8, 0xb810df8c5788eebc, 0x072f2a6287fb984b]),
+    Fr([0xd62940bcde0bd771, 0x2cc8fdd1415c3dde, 0xb9c36c764379dbca, 0x2969f27eed31a480]),
+    Fr([0x326244ee65a1b1a7, 0xe6cd79e28c5b3753, 0x0d5f9e654638065c, 0x143021ec686a3f33]),
+];
+
+// ── Poseidon permutation (optimized, matches circomlibjs) ─────────────────────
+//
+// Algorithm (see poseidon_opt.js):
+//   t=3, nRoundsF=8, nRoundsP=57
+//
+//   C layout (81 constants):
+//     C[0..2]   : initial constants (added to state before first sbox)
+//     C[3..11]  : first 3 full rounds (3 constants each)
+//     C[12..14] : transition round constants (applied with P matrix)
+//     C[15..71] : 57 partial round constants (1 per round)
+//     C[72..80] : last 3 full rounds (3 constants each)
+//
+//   Final full round uses M but no constants.
+
+fn poseidon_permutation(state: &mut [Fr; 3]) {
+    const NRF2: usize = 4;   // nRoundsF / 2
+    const NRP: usize  = 57;  // nRoundsP
+    const T: usize    = 3;
+
+    // ── Initial constant addition ─────────────────────────────────────────────
+    for i in 0..T { state[i] = state[i].add(POSEIDON_C[i]); }
+
+    // ── First nRF/2 - 1 full rounds ──────────────────────────────────────────
+    for r in 0..(NRF2 - 1) {
+        for i in 0..T { state[i] = state[i].pow5(); }
+        for i in 0..T { state[i] = state[i].add(POSEIDON_C[(r + 1) * T + i]); }
+        mds_mul(state, &POSEIDON_M);
+    }
+
+    // ── Transition round (uses P matrix) ─────────────────────────────────────
+    for i in 0..T { state[i] = state[i].pow5(); }
+    for i in 0..T { state[i] = state[i].add(POSEIDON_C[NRF2 * T + i]); }
+    mds_mul(state, &POSEIDON_P);
+
+    // ── Partial rounds ────────────────────────────────────────────────────────
+    for r in 0..NRP {
+        state[0] = state[0].pow5();
+        state[0] = state[0].add(POSEIDON_C[(NRF2 + 1) * T + r]);
+
+        // Sparse MDS: S[(2t-1)*r .. (2t-1)*r + 2t-2]
+        let base = (T * 2 - 1) * r;
+        let s0 = state[0].mul(POSEIDON_S[base])
+            .add(state[1].mul(POSEIDON_S[base + 1]))
+            .add(state[2].mul(POSEIDON_S[base + 2]));
+        state[1] = state[1].add(state[0].mul(POSEIDON_S[base + 3]));
+        state[2] = state[2].add(state[0].mul(POSEIDON_S[base + 4]));
+        state[0] = s0;
+    }
+
+    // ── Last nRF/2 - 1 full rounds ────────────────────────────────────────────
+    for r in 0..(NRF2 - 1) {
+        for i in 0..T { state[i] = state[i].pow5(); }
+        for i in 0..T {
+            state[i] = state[i].add(POSEIDON_C[(NRF2 + 1) * T + NRP + r * T + i]);
+        }
+        mds_mul(state, &POSEIDON_M);
+    }
+
+    // ── Final full round (no constants) ──────────────────────────────────────
+    for i in 0..T { state[i] = state[i].pow5(); }
+    mds_mul(state, &POSEIDON_M);
+}
+
+/// Poseidon2(a, b) — hash two field elements, returns one.
+/// initState (capacity) = 0. Matches circomlibjs Poseidon([a, b]).
+pub fn poseidon2(a: Fr, b: Fr) -> Fr {
+    let mut state = [Fr::ZERO, a, b];
+    poseidon_permutation(&mut state);
+    state[0]
+}
+
+/// Convenience: hash two 32-byte values, return 32 bytes.
+pub fn poseidon2_bytes(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    poseidon2(Fr::from_bytes(a), Fr::from_bytes(b)).to_bytes()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fr_add_wraps_at_r() {
+        let r_minus_1 = Fr([R[0].wrapping_sub(1), R[1], R[2], R[3]]);
+        assert_eq!(r_minus_1.add(Fr::ONE), Fr::ZERO);
+    }
+
+    #[test]
+    fn fr_mul_one_is_identity() {
+        let a = Fr([0xdeadbeefcafe1234, 0x1111222233334444, 0, 0]);
+        let reduced = if a.geq_r() { a.sub_r() } else { a };
+        assert_eq!(reduced.mul(Fr::ONE), reduced);
+    }
+
+    #[test]
+    fn fr_pow5_one() {
+        assert_eq!(Fr::ONE.pow5(), Fr::ONE);
+    }
+
+    #[test]
+    fn poseidon2_zero_zero_is_deterministic() {
+        let h1 = poseidon2(Fr::ZERO, Fr::ZERO);
+        let h2 = poseidon2(Fr::ZERO, Fr::ZERO);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn poseidon2_not_commutative() {
+        let h_ab = poseidon2(Fr::ONE, Fr([2, 0, 0, 0]));
+        let h_ba = poseidon2(Fr([2, 0, 0, 0]), Fr::ONE);
+        assert_ne!(h_ab, h_ba);
+    }
+
+    #[test]
+    fn poseidon2_output_in_field() {
+        let h = poseidon2(Fr::ONE, Fr::ONE);
+        assert!(!h.geq_r(), "output should be a valid field element < r");
+    }
+
+    #[test]
+    fn poseidon2_trace_zero_zero() {
+        // Compare intermediate states against circomlibjs JS reference values.
+        // JS reference computed in node -e "..." trace script.
+        const NRF2: usize = 4;
+        const T: usize = 3;
+
+        let mut state = [Fr::ZERO; 3];
+        for i in 0..T { state[i] = state[i].add(POSEIDON_C[i]); }
+
+        // Verify mul(C[0], C[0]) = C[0]^2 mod r (from circomlibjs)
+        let c0 = Fr([0x8d21d47304cd8e6e, 0x14c4993c11bb2993, 0xd05986d656f40c21, 0x0ee9a592ba9a9518]);
+        let c0sq = c0.mul(c0);
+        assert_eq!(c0sq, Fr([0x088838a9808614cc, 0x89b7928401776131, 0x3c366f52605fbc93, 0x1ff9b814f7a2fcef]), "C[0]^2");
+
+        // Check raw 512-bit product of c0sq * c0sq (computed with BigInt in Node.js)
+        // c0sq_big = 0x1ff9b814f7a2fcef3c366f52605fbc9389b7928401776131088838a9808614cc
+        // Expected 8 LE limbs: [0x7367105dc7408290,0x0d9b9b80956a1650,0x2d10835b757dba93,0xdec067c4e66fa825,0x1cdfc7f3151a8264,0xc19839f9f547990b,0xe693a8a4e8ff9723,0x03fe6e2cb1215a03]
+        let raw = mul_512(&c0sq.0, &c0sq.0);
+        assert_eq!(raw[0], 0x7367105dc7408290u64, "raw[0]");
+        assert_eq!(raw[1], 0x0d9b9b80956a1650u64, "raw[1]");
+        assert_eq!(raw[2], 0x2d10835b757dba93u64, "raw[2]");
+        assert_eq!(raw[3], 0xdec067c4e66fa825u64, "raw[3]");
+        assert_eq!(raw[4], 0x1cdfc7f3151a8264u64, "raw[4]");
+        assert_eq!(raw[5], 0xc19839f9f547990bu64, "raw[5]");
+        assert_eq!(raw[6], 0xe693a8a4e8ff9723u64, "raw[6]");
+        assert_eq!(raw[7], 0x03fe6e2cb1215a03u64, "raw[7]");
+        let c0p4 = reduce_512(raw);
+        assert_eq!(c0p4, Fr([0xc096d33dddcea673, 0x54246f42b587f339, 0xd3534aa8e5ad17f9, 0x25dfbe8893fbe414]), "C[0]^4");
+
+        // After initial add: state = C[0], C[1], C[2]
+        assert_eq!(state[0], Fr([0x8d21d47304cd8e6e, 0x14c4993c11bb2993, 0xd05986d656f40c21, 0x0ee9a592ba9a9518]), "initial state[0]");
+        assert_eq!(state[1], Fr([0x5696fff40956e864, 0x887b08d4d00868df, 0x5986587169fc1bcd, 0x00f1445235f2148c]), "initial state[1]");
+        assert_eq!(state[2], Fr([0xe879f3890ecf73f5, 0x30c728730b7ab36c, 0x1f29a058d0fa80b9, 0x08dff3487e8ac99e]), "initial state[2]");
+
+        for r in 0..(NRF2 - 1) {
+            for i in 0..T { state[i] = state[i].pow5(); }
+            for i in 0..T { state[i] = state[i].add(POSEIDON_C[(r + 1) * T + i]); }
+            mds_mul(&mut state, &POSEIDON_M);
+        }
+
+        // After first 3 full rounds (JS reference)
+        assert_eq!(state[0], Fr([0xe953b615ef5e3f6b, 0x004a1dbdb33abcce, 0x464f7b223bfe4daf, 0x0d107b17af429748]), "full rounds state[0]");
+        assert_eq!(state[1], Fr([0x34f3e5c3b8dc8476, 0x7190e5f55ed3bb3a, 0x4585423b08c50d7a, 0x213aee3777a73c8d]), "full rounds state[1]");
+        assert_eq!(state[2], Fr([0x0e54744adecf2597, 0x11c36e8a55522c44, 0x92f3aee3d9f37e34, 0x017d6238e53d38fe]), "full rounds state[2]");
+
+        for i in 0..T { state[i] = state[i].pow5(); }
+        for i in 0..T { state[i] = state[i].add(POSEIDON_C[NRF2 * T + i]); }
+        mds_mul(&mut state, &POSEIDON_P);
+
+        // After transition round with P (JS reference)
+        assert_eq!(state[0], Fr([0x9c19ddec7e5a771e, 0x01b5d3ee6b03fc7e, 0xf0ca68ef4a2048cd, 0x1560db4dd84b05b4]), "P-round state[0]");
+        assert_eq!(state[1], Fr([0x23d8afb6ab599759, 0x5704f3d524917231, 0xf287c4e395e8a03b, 0x109857fe7f7738e0]), "P-round state[1]");
+        assert_eq!(state[2], Fr([0x5856fc9486506a13, 0x19cd9e48a3dee0d8, 0x4035c0ca4474e7a3, 0x0e1d1d2bd5d245aa]), "P-round state[2]");
+    }
+
+    // Reference vector from circomlibjs: buildPoseidon()([0n, 0n])
+    // Must match exactly for SDK-to-contract commitment cross-validation.
+    #[test]
+    fn poseidon2_zero_zero_matches_circomlibjs() {
+        let h = poseidon2(Fr::ZERO, Fr::ZERO);
+        // circomlibjs output (little-endian bytes):
+        // hex: 6448b64684ee39a823d5fe5fd52431dc81e4817bf2c3ea3cab9e239efbf59820
+        // LE u64 limbs from hex bytes 6448b64684ee39a823d5fe5fd52431dc81e4817bf2c3ea3cab9e239efbf59820:
+        // bytes[0..8]   = 64 48 b6 46 84 ee 39 a8 → u64 LE = a839ee8446b64864
+        // bytes[8..16]  = 23 d5 fe 5f d5 24 31 dc → u64 LE = dc3124d55ffed523
+        // bytes[16..24] = 81 e4 81 7b f2 c3 ea 3c → u64 LE = 3ceac3f27b81e481
+        // bytes[24..32] = ab 9e 23 9e fb f5 98 20 → u64 LE = 2098f5fb9e239eab
+        let expected = Fr([
+            0xa839ee8446b64864,
+            0xdc3124d55ffed523,
+            0x3ceac3f27b81e481,
+            0x2098f5fb9e239eab,
+        ]);
+        assert_eq!(h, expected, "poseidon2(0,0) must match circomlibjs reference");
+    }
+}

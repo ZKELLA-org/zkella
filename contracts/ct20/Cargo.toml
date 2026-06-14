@@ -1,0 +1,24 @@
+[package]
+name    = "zkella-ct20"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[profile.release]
+opt-level     = "z"
+overflow-checks = true
+debug           = false
+strip           = "symbols"
+lto             = true
+codegen-units   = 1

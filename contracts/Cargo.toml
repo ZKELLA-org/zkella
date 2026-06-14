@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "ct20",
+    "viewing_keys",
+    "swap",
+    "governance",
+]
+resolver = "2"
+
+[workspace.dependencies]
+soroban-sdk = { version = "21.0.0" }
