@@ -240,6 +240,8 @@ struct TransferPublicInputs {
 
 ### 3.6 Ledger Storage Layout (Soroban)
 
+Illustrative/simplified — the real per-contract `StorageKey` enums differ in naming and are split across `contracts/token`, `contracts/verifier`, and `contracts/swap` rather than living in one combined key space (e.g. verifying keys live in `contracts/verifier`'s own storage, keyed by `CircuitType`, not inline in the token contract):
+
 ```
 StorageKey::MerkleRoot           → BytesN<32>
 StorageKey::MerkleLeaf(index)    → BytesN<32>
@@ -371,9 +373,9 @@ fee                   : field
 asset_id              : field  // all notes must share same asset
 ```
 
-**Constraints (approximate):**
+**Constraints (per-group breakdown below is an unverified design-time guess; the real, measured total from `snarkjs r1cs info` against the compiled circuit is 42,853 constraints — see `docs/CIRCUIT_SPEC.md` §8 — not the ~15,450 this breakdown sums to):**
 
-| Constraint group | Gates |
+| Constraint group | Gates (design-time estimate, unverified) |
 |---|---|
 | Input note commitment check (×2) | ~800 |
 | Merkle path verification (×2 × 32 levels) | ~4,200 |
@@ -383,9 +385,10 @@ asset_id              : field  // all notes must share same asset
 | Balance check: Σin = Σout + fee | ~50 |
 | Range proofs: values ∈ [0, 2^64) (×4) | ~8,000 |
 | Asset consistency | ~100 |
-| **Total** | **~15,450** |
+| **Total (estimate)** | **~15,450** |
+| **Total (real, measured)** | **42,853** |
 
-Proving time estimate: ~1.5–2.5 seconds on a modern browser (snarkjs WASM, Groth16).
+Proving time estimate: ~1.5–2.5 seconds on a modern browser (snarkjs WASM, Groth16) — unmeasured.
 
 **Circuit logic (pseudocode):**
 ```
@@ -430,8 +433,8 @@ for each value in [in_value[0..2], out_value[0..2]]:
 
 Extends 2-in/2-out with 4 input and 4 output notes. Supports dust consolidation and multi-recipient payments.
 
-Approximate gate count: ~28,000.  
-Proving time estimate: ~4–6 seconds on a modern browser.
+Real, measured constraint count: 40,268 (`snarkjs r1cs info` against the compiled circuit — an earlier design-time estimate of ~28,000 undercounted this; see `docs/CIRCUIT_SPEC.md` §5 for the note on why it isn't roughly double 2-in/2-out's count despite twice the inputs/outputs).
+Proving time estimate: ~4–6 seconds on a modern browser — unmeasured.
 
 Public inputs include `nullifiers[4]` and `out_commitments[4]`.
 
@@ -444,7 +447,7 @@ Simpler circuit: no Merkle proof (note is not yet in the tree).
 Private inputs: `value, asset_id, rho, rcm, rcv`
 Public inputs: `commitment, value_commit, pub_value, pub_asset_id` — see `docs/CIRCUIT_SPEC.md` §2 for the exact template; `pub_value`/`pub_asset_id` are the revealed amount/asset the circuit constrains to equal the private `value`/`asset_id`, not additional independent signals.
 
-Constraints: ~2,000 gates. Proving time: ~200ms.
+Constraints: 2,133 (real, measured). Proving time: ~200ms (unmeasured estimate).
 
 ### 5.4 Unshield Circuit (shielded → public)
 
@@ -453,7 +456,7 @@ Constraints: ~2,000 gates. Proving time: ~200ms.
 Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]`
 Public inputs: `anchor, nullifier, pub_value, pub_asset_id, recipient_hash` (amount and asset are revealed via `pub_value`/`pub_asset_id`; `recipient_hash = Poseidon2(address_field(to), 0)` binds the withdrawal destination — see `docs/CIRCUIT_SPEC.md` §3)
 
-Constraints: ~6,200 gates. Proving time: ~600ms.
+Constraints: 18,773 (real, measured — the 32-level Merkle proof dominates; an earlier estimate of ~6,200 undercounted this substantially). Proving time: ~600ms (unmeasured estimate).
 
 ### 5.5 Swap Fairness Circuit
 
@@ -476,7 +479,7 @@ amount_out >= min_amount_out
 
 `asset_in`/`asset_out` are public in this circuit (unlike `intent_nonce`/`amount_in`/`max_slippage_bps`, which stay private) because `contracts/swap::reveal_and_claim` needs to bind the proof to the specific assets already recorded in on-chain swap state before it will accept it. An earlier draft of this spec used a different `execution_price_bps` public signal that was never implemented; `min_amount_out`, derived in-circuit from the private `amount_in`/`max_slippage_bps`, is what the real circuit and contract use.
 
-Constraints: ~3,500 gates. Proving time: ~400ms.
+Constraints: 927 (real, measured — no Merkle proof in this circuit, unlike shield/unshield/transfer, so it's much smaller than an earlier estimate of ~3,500 assumed). Proving time: ~400ms (unmeasured estimate).
 
 ### 5.6 Sanctions Non-Membership Circuit
 
@@ -489,7 +492,7 @@ Public inputs: `sanctions_root, tk_commitment`
 
 Uses sorted Merkle tree non-membership proof: proves that the address falls between two consecutive leaves in the sorted tree (both provided as witnesses).
 
-Constraints: ~9,000 gates.
+Constraints: ~9,000 (design-time estimate — this circuit has never been built/measured in this environment, unlike the other five).
 
 ### 5.7 Trusted Setup
 
@@ -634,7 +637,7 @@ The design here reuses `ShieldedToken`'s own already-real shield/unshield paths 
 
 ```rust
 pub trait ShieldedSwap {
-    fn initialize(env: Env, admin: Address, verifier: Address, ShieldedToken: Address);
+    fn initialize(env: Env, admin: Address, verifier: Address, token: Address);
 
     /// Escrows `amount_in` of `asset_in` right now via a real `ShieldedToken::unshield`
     /// cross-call — `ownership_proof` is a genuine `unshield.circom` proof,
@@ -979,6 +982,8 @@ This full lifecycle has been run end-to-end on live Stellar Testnet with real Gr
 
 ## 10. Viewing Key and Compliance Layer
 
+**This section is target design, not yet implemented at the SDK level.** The underlying contracts are real (`contracts/viewing_keys` for commitment registration, `contracts/compliance` for verified sanctions non-membership proofs — see §6.3–6.4), but none of the SDK-side pseudocode below (`generateComplianceProof`, `deriveAddress`, `proveNonMembership`, the `SanctionsList` interface) exists in `sdk/src/` today; the closest real code is the `ZKELLACompliance`/`ZKELLAAuditor` wrapper classes described in §11.1, which are themselves still stubs. Treat this section as illustrating the intended shape of that future SDK layer, not a description of working code.
+
 ### 10.1 Auditor Workflow
 
 ```
@@ -1181,7 +1186,7 @@ function selectNotes(
 | Front-running of unshield | Unshield binds to specific recipient address in circuit public inputs |
 | Relayer censorship (swap) | Multiple competing relayers; expiry + cancel path for user recovery |
 | Note theft by compromised vk | Viewing key cannot derive spending key or nullifier key |
-| Grinding attack on Merkle root | Anchor validity: contract accepts proofs against any root in the last 100 insertions |
+| Grinding attack on Merkle root | Not applicable to the current design the way this row originally framed it — the real contract requires `pub_inputs.anchor` to exactly equal the *current* `merkle_root()` (`contracts/token/src/lib.rs`'s `transfer`/`unshield`, strict equality, not a tolerance window), which closes any grinding concern but creates a real, separate reliability gap instead: a proof built against a root that changes before the transaction lands (e.g. a concurrent `shield()` from someone else) fails and must be rebuilt against the fresh anchor. A historical-root tolerance window, as this row originally described, is not implemented. |
 
 ### 12.2 Soundness Dependencies
 
@@ -1214,16 +1219,16 @@ If users do not trust the ceremony, they should wait for a PLONK-based circuit (
 
 ### 13.1 Client-Side Proving Times (snarkjs WASM, Node/browser)
 
-| Circuit | Gates | Proving Time | Proof Size |
+| Circuit | Constraints | Proving Time | Proof Size |
 |---|---|---|---|
-| Shield | ~2,000 | ~200ms | 256 bytes |
-| Unshield | ~6,000 | ~600ms | 256 bytes |
-| Transfer 2-in/2-out | ~15,450 | ~2.0s | 256 bytes |
-| Transfer 4-in/4-out | ~28,000 | ~4.5s | 256 bytes |
-| Swap fairness | ~3,500 | ~400ms | 256 bytes |
-| Sanctions non-membership | ~9,000 | ~1.0s | 256 bytes |
+| Shield | 2,133 (real) | ~200ms | 256 bytes |
+| Unshield | 18,773 (real) | ~600ms | 256 bytes |
+| Transfer 2-in/2-out | 42,853 (real) | ~2.0s | 256 bytes |
+| Transfer 4-in/4-out | 40,268 (real) | ~4.5s | 256 bytes |
+| Swap fairness | 927 (real) | ~400ms | 256 bytes |
+| Sanctions non-membership | ~9,000 (estimate — never built in this environment) | ~1.0s | 256 bytes |
 
-All Groth16 proofs are 256 bytes regardless of circuit size (uncompressed BN254 points — see `docs/CIRCUIT_SPEC.md` §1 for why this isn't the 192-byte compressed size some Groth16 tooling defaults to). Proving-time estimates in this table are unmeasured design-time guesses, not benchmarked numbers.
+Constraint counts are real, measured via `snarkjs r1cs info` against the compiled circuits (see `docs/CIRCUIT_SPEC.md` §8 for the full Wires/Labels breakdown) — an earlier draft of this table used design-time guesses that undercounted several of these substantially (unshield and both transfer circuits in particular). All Groth16 proofs are 256 bytes regardless of circuit size (uncompressed BN254 points — see `docs/CIRCUIT_SPEC.md` §1 for why this isn't the 192-byte compressed size some Groth16 tooling defaults to). Proving-time estimates in this table are still unmeasured design-time guesses, not benchmarked numbers.
 
 ### 13.2 Soroban On-Chain Verification Cost
 

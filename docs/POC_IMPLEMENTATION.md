@@ -16,7 +16,9 @@ This document does not replace the full spec. It only describes current PoC impl
 
 ## Current PoC implementation foundation
 
-The current repository includes an initial shield PoC implementation foundation. This foundation is useful for validating repository structure, Soroban integration, note construction, commitment logic, and early testnet behavior, but it is not a final protocol implementation.
+**This section is the original, earliest status summary in this document — kept for history, but superseded by everything below it.** At the time it was written, only shield's contract logic, commitment/Merkle mechanics, and SDK note construction existed. Since then: real on-chain Groth16 verification landed for shield/transfer/unshield, the shielded swap primitive's full commit-execute-reveal lifecycle (including commit-time ownership proof and real value movement) went in and was audited, the persistent indexer became a real running service, and all of it was exercised on live Stellar Testnet — see "Update: senior audit, contract-stack redeployment, and a real live-Testnet swap lifecycle" and "Persistent indexer" further below for the current state, and "Implementation boundaries" at the end of this document for the accurate, current summary.
+
+Original scope, for reference:
 
 - `contracts/token` shield contract logic
 - native Poseidon2 and Merkle tree support in Rust
@@ -26,8 +28,6 @@ The current repository includes an initial shield PoC implementation foundation.
 - encrypted note bundle handling
 - TypeScript SDK support for note construction and note encryption
 - unit tests covering current computation and contract behavior
-
-The full ZKELLA product is specified in the architecture and technical specification documents. On-chain Groth16 proof verification, private `transfer()`/`unshield()`, and a verified compliance-proof path now exist and are covered by passing tests, and the core shield flow has been validated with real transactions on live Stellar Testnet (see "Update: live Testnet run completed" below); the delivery roadmap still has to complete the persistent note indexer, the rest of the shielded swap primitive (its fairness-proof check is now real; commit-time ownership proof and actual value movement are not), external security review, and mainnet deployment work.
 
 ## Testnet deployment evidence
 
@@ -174,15 +174,15 @@ The next phase of the repository work is explicitly organized around the main re
    - real shield transactions on Stellar Testnet reaching on-chain Groth16 verification and completing within Soroban budget — see "Update: live Testnet run completed" above,
    - transaction hashes, contract addresses, and resulting on-chain state published above.
 
-2. Indexer resilience milestone
-   - document why a custom indexer is required for encrypted-note recovery and Merkle-path serving,
-   - define a deployment model with replay from ledger cursors, health checks, and support for multiple independent operators.
+2. Indexer resilience milestone — **the recovery mechanism itself is complete and live-Testnet-validated** (see "Persistent indexer" below); production hardening (horizontal scaling, multiple operators) remains open
+   - document why a custom indexer is required for encrypted-note recovery and Merkle-path serving — done, see `docs/ARCHITECTURE.md` §1.7.4,
+   - define a deployment model with replay from ledger cursors, health checks, and support for multiple independent operators — the real reference implementation replays from cursors and is health-checkable today; multi-operator support is still open.
 
-3. Operational readiness milestone
+3. Operational readiness milestone — **not yet done**, no runbook document exists in the repository yet
    - publish an operational runbook covering deployment, monitoring, incident handling, and rollback paths,
    - define incident classes for proof-failure, indexer outage, key exposure, and misconfiguration.
 
-4. Compliance and competitive positioning milestone
+4. Compliance and competitive positioning milestone — **substantially addressed in the existing docs** (README's "Status highlights", this document's "Shielded swap" and "Originality" evidence)
    - position ZKELLA as a compliance-aware confidential finance stack rather than a generic confidential-token implementation,
    - document how viewing keys enable selective disclosure and regulatory-aligned workflows.
 
@@ -316,7 +316,7 @@ This repository is best understood as:
 
 - a full technical specification and architecture for the ZKELLA protocol
 - a soft PoC implementation with a working core: shield/transfer/unshield with real on-chain Groth16 verification and real Soroban RPC submission, a shielded swap primitive that genuinely moves value (reusing `ShieldedToken`'s own shield/unshield paths), a real BN254 ECDH/hash-to-curve key and encryption layer including diversified addresses, and a real (if reference-scale) persistent indexer — all validated both locally and with real transactions on live Stellar Testnet
-- a codebase that still schedules a real multi-party trusted-setup ceremony, external security review, a dedicated audit of the swap ownership↔intent binding, and indexer production-scale hardening for delivery-roadmap completion
+- a codebase that still schedules a real multi-party trusted-setup ceremony, an *external* security review, and indexer production-scale hardening for delivery-roadmap completion — the internal audit of the swap primitive's ownership↔intent binding is done (see "Update: senior audit..." above)
 
 It is not yet a complete implementation of the full ZKELLA specification, and none of this has been through a security review or a real (non-dev) trusted-setup ceremony. Existing contracts and code should be treated as reviewable PoC material only, not as final or production-ready protocol logic — the cryptographic core working correctly in tests is necessary, not sufficient, for that.
 

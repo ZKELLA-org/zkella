@@ -175,7 +175,7 @@ The planned integration has six concrete touchpoints:
 | Stellar DEX | Public liquidity and execution venue for shielded swap settlement |
 | Stellar ledger history | Finality anchor, event ordering source, trusted setup beacon source, and recovery checkpoint source |
 
-This integration is still planned architecture. The current repository contains only soft PoC contracts and SDK scaffolding, so every integration point below must be reviewed and implemented before it is treated as final.
+Several of these touchpoints are already real and exercised on live Stellar Testnet — see §1.4 above for exactly which — but none of it has been through an external security review or a production trusted-setup ceremony, so every integration point below should still be reviewed before being treated as final, production-ready infrastructure.
 
 #### 1.7.1 SEP-41 asset custody model
 
@@ -306,6 +306,8 @@ The indexer is intentionally a purpose-built recovery and state-sync service rat
 
 ZKELLA does not plan to replace the Stellar DEX. The shielded swap primitive uses Stellar's public liquidity while hiding the user's private note history and target shielded output.
 
+**This subsection describes a target design that differs from what's actually implemented and already audited/live on Testnet.** The real `contracts/swap` (see §2.6) doesn't call the Stellar DEX at all, and `commit_swap`'s real signature is `commit_swap(nullifier_in, intent_commitment, asset_in, asset_out, amount_in, anchor, refund_to, ownership_proof, expiry_ledger)`, not the simplified `commit_swap(intent_commitment, nullifier, expiry)` shown below. What's real instead: the relayer directly fronts the output asset as SEP-41 liquidity in `execute_swap`, and the contract's own escrow/payout logic (reusing `ShieldedToken`'s shield/unshield paths) does the rest — see `docs/TECHNICAL_SPEC.md` §9 for the exact real flow and why it differs from the DEX-execution model below. Wiring an actual on-chain Stellar DEX call into the flow remains open, roadmap work.
+
 Planned swap architecture:
 
 ```
@@ -434,7 +436,8 @@ Each component is described below.
 +-------------+
 
 Shielded swaps extend the ShieldedToken ledger through a swap controller that locks input
-nullifiers, references public DEX execution, and mints verified shielded outputs.
+nullifiers, escrows real value via ShieldedToken's own unshield/shield paths (not a Stellar
+DEX call — see §1.7.5's caveat), and mints verified shielded outputs.
 ```
 
 ### 2.1 ShieldedToken contract
@@ -525,7 +528,7 @@ It:
 
 Key methods:
 
-- `initialize(admin, verifier, ShieldedToken)`
+- `initialize(admin, verifier, token)`
 - `commit_swap(nullifier_in, intent_commitment, asset_in, asset_out, amount_in, anchor, refund_to, ownership_proof, expiry_ledger) -> swap_id`
 - `execute_swap(swap_id, amount_out, relayer)`
 - `reveal_and_claim(swap_id, out_rho, out_rcm, out_commitment, out_value_commit, encrypted_note, fairness_proof, fairness_pub, shield_proof) -> leaf_index`
@@ -695,11 +698,13 @@ Steps:
 
 ### 4.4 Shielded swap flow
 
+**This subsection is the target design; see §1.7.5's caveat above — the real, implemented, audited flow (`contracts/swap`) doesn't call the Stellar DEX and has a different call sequence. The real steps are listed after this target version; see `docs/TECHNICAL_SPEC.md` §9.3 and `docs/TESTNET_DEPLOYMENT.md` for the exact signatures and live-Testnet transaction hashes.**
+
 ```
 User Wallet -> SDK -> Soroban RPC -> ShieldedToken -> Stellar DEX -> ShieldedToken
 ```
 
-Steps:
+Target-design steps:
 
 1. The wallet submits a private swap intent to ShieldedToken using `commit_swap()`, which locks an input note nullifier and records a swap commitment.
 2. A relayer observes the intent, executes the corresponding public DEX trade on Stellar, and returns execution details.
@@ -708,11 +713,18 @@ Steps:
 5. ShieldedToken verifies the proof, mints the output note commitment, and emits swap event data.
 6. If the swap expires without execution, the wallet can call `cancel_swap()` to recover the input note.
 
-Relayer risk and verification:
+Real, implemented steps (no DEX call anywhere in the contract):
 
-- The relayer is semi-trusted for submitting public DEX execution details but cannot unilaterally finalize the shielded output without a valid user proof.
-- The `reveal_and_claim()` proof must verify the reported DEX result against the original private swap intent.
-- If the relayer reports incorrect or stale execution data, the claim will fail and the user can cancel after expiry.
+1. `commit_swap` escrows `amount_in` of `asset_in` immediately via a real `ShieldedToken::unshield` cross-call — the same real Groth16 ownership proof both proves the committer owns the note and atomically pulls its value into escrow.
+2. A relayer calls `execute_swap`, really transferring `amount_out` of `asset_out` into escrow (a real SEP-41 transfer, not a DEX trade) — how the relayer sources that liquidity, including whether they route through the DEX themselves, is entirely off-chain and outside the contract's concern.
+3. The claimant calls `reveal_and_claim` with a real swap-fairness proof (binding the now-revealed `amount_out`/`min_amount_out` back to the still-private `intent_commitment`) and a second, separate real shield proof for the output note; the contract pays the relayer the escrowed `asset_in` and re-shields `asset_out` as a new note via a real `ShieldedToken::shield` call.
+4. `cancel_swap` (never executed) or `reclaim_expired_swap` (executed but never claimed) really refund both sides if the happy path doesn't complete.
+
+Relayer risk and verification (target-design framing above; the real mechanism is simpler — there's no "reported DEX result" to verify, since the relayer never reports execution data on-chain at all):
+
+- The relayer is semi-trusted for fronting the output asset but cannot unilaterally finalize the shielded output without a valid user fairness proof.
+- The real `reveal_and_claim()` proof verifies the revealed `amount_out`/`min_amount_out` against the original, still-private `intent_commitment` — not against any DEX execution report, since none exists.
+- If the relayer never fronts the output asset, `execute_swap` is simply never called and the user can `cancel_swap` after expiry; if the relayer fronts it but the user never claims, `reclaim_expired_swap` returns both sides' funds after a grace window.
 
 ### 4.5 Compliance disclosure flow
 
@@ -764,30 +776,31 @@ Steps:
 
 ## 6. Implementation lifecycle and remaining roadmap
 
-The target architecture should be delivered through a staged lifecycle. The existing repository sits in the first stage.
+The target architecture is delivered through a staged lifecycle. The repository has moved past the first stage — see §1.4 and §2.9 above for exactly what's real — and sits between the first two:
 
 ```
 +------------------+     +------------------+     +------------------+
 | Soft PoC         | --> | Reviewed testnet  | --> | Production-ready |
-| - initial ShieldedToken  |     | - full proofs     |     | - final contracts|
-| - SDK scaffolds  |     | - transfer flow   |     | - hardened SDK   |
-| - test vectors   |     | - unshield flow   |     | - monitored ops  |
+| (fully passed)   |     | (repo is here)    |     | - final contracts|
 +------------------+     +------------------+     +------------------+
-        |                         |                         |
-        v                         v                         v
-  validate design           improve contracts          deploy after
-  assumptions               and integrations           completed review
+                                   |                         |
+                                   v                         v
+                          real proofs, real value      deploy after
+                          movement, live-Testnet        completed review
+                          evidence — not yet an          + real ceremony
+                          external review
 ```
 
-Remaining roadmap requirements:
+What moved the repository past "Soft PoC": real on-chain Groth16 verification for shield/transfer/unshield (not placeholders), a real, audited, live-Testnet-run shielded swap lifecycle, a real running indexer, and a real SDK cryptographic/proving core — all with live Stellar Testnet transaction evidence (`docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`).
 
-- review and improve every existing soft PoC contract before treating it as final protocol logic,
-- replace placeholder proof paths with real Groth16 verification through BN254 host functions,
-- complete private transfer, unshield, viewing-key registry, shielded swap, and indexer implementations,
-- profile Soroban resource usage for Poseidon/Merkle operations and optimize storage, budget, and event layout,
-- harden SDK cryptography, key agreement, transaction assembly, and error handling,
-- expand unit, property, integration, and testnet regression coverage,
-- finalize operational controls for verifier-key rotation, pause/unpause, relayer authorization, and deployment monitoring.
+What's still needed to reach "Production-ready":
+
+- an *external*, independent security review of every contract and circuit — everything to date, including the audit pass described in §1.4, was done by the team building the protocol, not a third party,
+- a real (non-dev), multi-party trusted-setup ceremony per circuit — every proof and verifying key in this repository so far comes from a local, single-contributor dev ceremony,
+- wiring the SDK's higher-level `ZKELLASwap`/`ZKELLAAuditor`/`ZKELLACompliance` wrapper classes to the real contracts and provers underneath them (still stubs — see §2.7),
+- indexer production hardening: horizontal scaling, multiple independent operators, and an operational runbook (still open — see §2.8),
+- resource profiling at production scale (current measurements are from a single local host environment plus a handful of live-Testnet transactions, not sustained load),
+- finalized operational controls for verifier-key rotation, pause/unpause, relayer authorization, and deployment monitoring beyond what's already implemented.
 
 ## 7. Trust and security model
 
@@ -841,3 +854,4 @@ Trusted setup assumptions:
 - `docs/CIRCUIT_SPEC.md` contains circuit-level design and proof structure.
 - `docs/INTEGRATION_GUIDE.md` describes SDK and integrator workflows.
 - `docs/POC_IMPLEMENTATION.md` describes the dedicated PoC/current implementation status separately from the full architecture.
+- `docs/TESTNET_DEPLOYMENT.md` is the current live-Testnet address and transaction record.

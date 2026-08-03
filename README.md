@@ -84,10 +84,10 @@ A compliance layer designed for institutional and regulated use cases.
 
 ### Component 3: Persistent State Manager
 
-Solves the 7-day Stellar RPC event retention problem that breaks the Nethermind prototype for new users.
+Solves the 7-day Stellar RPC event retention problem, which otherwise blocks new users from reconstructing their shielded note history from the public RPC endpoint alone.
 
 - Lightweight indexer node operators can run to store encrypted note commitments beyond the RPC window
-- Client-side WASM library that reconstructs wallet state from the indexer
+- Client-side SDK code that reconstructs wallet state from the indexer
 - Encrypted note bundle export as user-controlled backup fallback
 - This component becomes shared infrastructure for every privacy project on Stellar
 
@@ -146,7 +146,7 @@ A Stellar-native private swap interface.
 | Layer | Technology |
 |---|---|
 | ZK proof system | Groth16 (via BN254 Soroban host functions) |
-| Circuit language | Circom 2.0 |
+| Circuit language | Circom 2.2 |
 | Hash function | Poseidon2 (native Soroban host function) |
 | Commitment scheme | Pedersen commitments over BN254 |
 | Smart contracts | Rust / Soroban SDK |

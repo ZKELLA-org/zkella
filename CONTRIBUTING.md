@@ -43,7 +43,7 @@ Building circuits requires `circom` 2.x and `snarkjs` (see `circuits/build.sh`).
 
 ## Code style
 
-- Rust: standard `rustfmt` formatting (see `rustfmt.toml`).
+- Rust: standard `rustfmt` formatting (see `contracts/rustfmt.toml`).
 - TypeScript: no comments explaining *what* code does (names should do that); comments are reserved for non-obvious *why* (a subtle invariant, a workaround, a cross-file constraint).
 
 ## License

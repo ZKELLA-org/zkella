@@ -136,7 +136,7 @@ template ValueCommit() {
 }
 ```
 
-> **Note on Pedersen:** The full Pedersen commitment `cv = rcv*G + value*H_v` is a BN254 G1 point. Inside the circuit we verify the commitment binding via a Poseidon-based binding scheme. The actual G1 arithmetic (for the homomorphic balance check) is performed on Soroban using `bn254_g1_add` and `bn254_g1_mul` host functions, not inside the circuit. This avoids emulating elliptic curve arithmetic in R1CS (~10,000+ constraints per scalar mul).
+> **Note on Pedersen:** The full Pedersen commitment `cv = rcv*G + value*H_v` is a BN254 G1 point, and real G1 arithmetic (`bn254_g1_add`/`bn254_g1_mul`) is available as a Soroban host function — the target design is to perform the homomorphic balance check with it on-chain, avoiding ~10,000+ constraints per scalar multiplication that emulating EC arithmetic in R1CS would cost inside the circuit. **This is not implemented yet**: today `value_commit` is the Poseidon-based binding shown above, and no contract performs a G1 homomorphic check on it — verified by grep, `bn254_g1_add`/`bn254_g1_mul` only appear inside `contracts/verifier`'s own Groth16 pairing-check code, not anywhere computing a balance check on value commitments. Balance conservation is still soundly enforced today, just differently: the transfer circuit directly constrains `Σ in_value === Σ out_value + fee` over the private `value` signals inside the R1CS (see `circuits/transfer_2in2out/transfer.circom`), independent of the commitment scheme. What the real Pedersen construction would add on top is an *external*, proof-free homomorphic check — not soundness itself. See `docs/TECHNICAL_SPEC.md` §2.3 for the same point in more detail.
 
 ---
 
@@ -144,8 +144,8 @@ template ValueCommit() {
 
 **File:** `circuits/shield/shield.circom`  
 **Purpose:** Proves a valid note commitment for a publicly known amount being moved into the shielded pool.  
-**Gates:** ~2,000  
-**Proving time:** ~200ms
+**Constraints:** 2,133 (real, measured via `snarkjs r1cs info` against the compiled circuit)  
+**Proving time:** ~200ms (unmeasured estimate — see §13.1 of `docs/TECHNICAL_SPEC.md`)
 
 ```circom
 pragma circom 2.0.0;
@@ -209,8 +209,8 @@ pub_asset_id    : F_p  — asset (revealed)
 
 **File:** `circuits/unshield/unshield.circom`  
 **Purpose:** Proves ownership of a note in the Merkle tree and authorizes withdrawal to a public address.  
-**Gates:** ~6,200  
-**Proving time:** ~600ms
+**Constraints:** 18,773 (real, measured — the 32-level Merkle proof dominates; an earlier design-time estimate of ~6,200 undercounted this substantially)  
+**Proving time:** ~600ms (unmeasured estimate)
 
 ```circom
 pragma circom 2.0.0;
@@ -287,8 +287,8 @@ recipient_hash  : F_p  — Poseidon2(recipient Stellar address bytes)
 
 **File:** `circuits/transfer_2in2out/transfer.circom`  
 **Purpose:** Private transfer between shielded notes.  
-**Gates:** ~15,450  
-**Proving time:** ~2.0s
+**Constraints:** 42,853 (real, measured — two full 32-level Merkle proofs plus commitment/nullifier/value-commit checks; an earlier design-time estimate of ~15,450 undercounted this substantially)  
+**Proving time:** ~2.0s (unmeasured estimate)
 
 ```circom
 pragma circom 2.0.0;
@@ -433,10 +433,10 @@ asset_id            : F_p
 
 **File:** `circuits/transfer_4in4out/transfer.circom`  
 **Purpose:** High-capacity transfer for dust consolidation and multi-recipient payments.  
-**Gates:** ~28,000  
-**Proving time:** ~4.5s
+**Constraints:** 40,268 (real, measured)  
+**Proving time:** ~4.5s (unmeasured estimate)
 
-Structurally identical to Transfer 2x2 with `N_IN = 4`, `N_OUT = 4`.
+Structurally identical to Transfer 2x2 with `N_IN = 4`, `N_OUT = 4`. Its real measured constraint count (40,268) is, perhaps counter-intuitively, not much higher than 2-in/2-out's (42,853) despite twice the inputs/outputs — both numbers come straight from `snarkjs r1cs info` against the real compiled circuits, not a transcription error, but the reason the scaling isn't closer to 2x hasn't been dug into further here.
 
 **Public inputs (19 field elements):**
 ```
@@ -457,8 +457,8 @@ Balance check: `Σ in_value[0..4] === Σ out_value[0..4] + fee`
 
 **File:** `circuits/swap/swap_fairness.circom`  
 **Purpose:** Proves a committed swap intent was executed within the user's slippage tolerance.  
-**Gates:** ~3,500  
-**Proving time:** ~400ms
+**Constraints:** 927 (real, measured — no Merkle proof in this circuit, unlike shield/unshield/transfer, so it's much smaller than an earlier design-time estimate of ~3,500 assumed)  
+**Proving time:** ~400ms (unmeasured estimate)
 
 ```circom
 pragma circom 2.0.0;
@@ -611,14 +611,16 @@ tk_commitment  : F_p  — address binding (without revealing address)
 
 ## 8. Constraint Summary
 
+Real, measured via `snarkjs r1cs info` against the compiled circuits, except Non-Membership (never built in this environment — kept as the original design-time estimate, marked accordingly):
+
 | Circuit | R1CS Constraints | Wires | Labels |
 |---|---|---|---|
-| Shield | ~2,000 | ~2,200 | ~3,100 |
-| Unshield | ~6,200 | ~6,800 | ~9,500 |
-| Transfer 2x2 | ~15,450 | ~16,900 | ~23,800 |
-| Transfer 4x4 | ~28,000 | ~30,600 | ~43,200 |
-| Swap Fairness | ~3,500 | ~3,800 | ~5,300 |
-| Non-Membership | ~9,000 | ~9,800 | ~13,800 |
+| Shield | 2,133 | 2,138 | 3,164 |
+| Unshield | 18,773 | 18,811 | 27,969 |
+| Transfer 2x2 | 42,853 | 42,931 | 63,809 |
+| Transfer 4x4 | 40,268 | 40,420 | 127,635 |
+| Swap Fairness | 927 | 930 | 2,544 |
+| Non-Membership | ~9,000 (estimate, unbuilt) | ~9,800 (estimate) | ~13,800 (estimate) |
 
 ---
 
@@ -633,7 +635,7 @@ tk_commitment  : F_p  — address binding (without revealing address)
 | Minimum contributors | 10 independent parties |
 | Final beacon | Stellar mainnet ledger hash (announced 48h in advance) |
 | Artifacts | `.r1cs`, `.wasm`, `.zkey`, `verification_key.json` |
-| Published at | `https://github.com/Frihat-dev/ZKELLA/releases` |
+| Published at | `https://github.com/ZKELLA-org/zkella/releases` |
 
 All ceremony contributions will be posted publicly. Verification instructions included in release notes.
 

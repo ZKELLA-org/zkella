@@ -244,7 +244,7 @@ impl MyProtocol {
 The real indexer is a **TypeScript/Node service** (`indexer/`) using Node's built-in `node:sqlite` — no external database, no separate build/migration step, no Go or Rust toolchain involved:
 
 ```bash
-git clone https://github.com/Frihat-dev/ZKELLA
+git clone https://github.com/ZKELLA-org/zkella
 cd ZKELLA
 npm install
 

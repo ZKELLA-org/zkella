@@ -12,8 +12,7 @@ This is a **soft PoC implementation**, not an audited, production release. It ha
 
 If you find a security issue — a soundness gap in a circuit, an authorization bypass in a contract, a way to double-spend, forge a proof, or drain escrowed funds, a key-derivation or encryption weakness in the SDK, or anything else that could compromise funds, proofs, or private data — report it privately:
 
-- Open a [GitHub private security advisory](https://github.com/ZKELLA-org/zkella/security/advisories/new) for this repository, **or**
-- Email the maintainer directly with a description of the issue, the affected component (contract/circuit/SDK module), and reproduction steps if available.
+- Open a [GitHub private security advisory](https://github.com/ZKELLA-org/zkella/security/advisories/new) for this repository — this is the preferred channel, since it's private by default and notifies maintainers directly.
 
 Please include:
 - The component affected (e.g. `contracts/swap`, `circuits/unshield`, `sdk/src/prover`)
