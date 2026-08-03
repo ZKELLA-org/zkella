@@ -30,7 +30,7 @@ Validated against live Stellar Testnet: a real `shield()` transaction's
 `("zkella","note")` event was correctly synced, persisted, and served back
 through every HTTP endpoint, including `merkle_root`/`merkle_path` proxying
 to the real deployed `ct20` contract. Not yet covered: horizontal scaling,
-multiple independent operators, and the operational runbook
-`docs/POC_IMPLEMENTATION.md`/`docs/SCF_READINESS.md` describe as still
-open — this is a correct, working reference implementation of the API
-surface, not a production deployment.
+multiple independent operators, and an operational runbook (see
+`docs/POC_IMPLEMENTATION.md` for the full status) — this is a correct,
+working reference implementation of the API surface, not a production
+deployment.

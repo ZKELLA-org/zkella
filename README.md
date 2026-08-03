@@ -44,20 +44,18 @@ Planned implementation scope:
 - review and improvement of all existing PoC contracts, SDK modules, and circuit integrations before any production deployment
 - an external, independent security review — the audit pass documented in `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, not a third party
 
-See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol design. See `docs/POC_IMPLEMENTATION.md` for the dedicated PoC/current implementation status. See `docs/SCF_READINESS.md` for the reviewer-response package and milestone plan. See `docs/SCF_REVIEWER_RESPONSE.md` for the full reviewer-facing response to each feedback point.
+See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol design. See `docs/POC_IMPLEMENTATION.md` for the dedicated PoC/current implementation status, including transaction hashes and contract addresses. See `docs/TESTNET_DEPLOYMENT.md` for the current live deployment record.
 
 ---
 
-## Reviewer-response highlights
+## Status highlights
 
-The repository now explicitly addresses the main SCF reviewer concerns:
-
-- Budget viability gate: closed. Real `shield()` transactions with on-chain Groth16 verification have run on live Stellar Testnet, three times, within Soroban's instruction budget — see `docs/POC_IMPLEMENTATION.md` for transaction hashes and contract addresses.
-- Originality/differentiation: the shielded swap primitive's full commit-reveal lifecycle — not just a shield/transfer/unshield clone of other confidential-token designs — has run end-to-end on live Stellar Testnet with genuine circuit proofs and real value moving at every step; a senior-auditor pass over the contract found and fixed three real issues along the way, one of which only a real Testnet transaction (not the unit test suite) could surface. See `docs/POC_IMPLEMENTATION.md` for the findings, fixes, and transaction hashes.
-- Custom indexer rationale: the architecture explains why a purpose-built indexer is required for note recovery, Merkle-path serving, and wallet state reconstruction beyond the short Stellar RPC retention window — and `indexer/` is now a real, running implementation of it, validated against live Stellar Testnet (see `docs/POC_IMPLEMENTATION.md`).
-- Operational readiness: the repo includes an operational runbook and incident-response framework for contract failures, indexer outages, key exposure, and deployment misconfiguration.
-- Competitive and compliance positioning: the docs now frame ZKELLA as compliance-aware selective disclosure infrastructure rather than a generic confidential-token clone.
-- Ecosystem engagement: the roadmap emphasizes open development, public testnet milestones, and sustained participation in the Stellar ecosystem.
+- **Budget viability**: real `shield()` transactions with on-chain Groth16 verification have run on live Stellar Testnet, multiple times, within Soroban's instruction budget — see `docs/POC_IMPLEMENTATION.md` for transaction hashes and contract addresses.
+- **Originality**: the shielded swap primitive's full commit-reveal lifecycle — not just a shield/transfer/unshield clone of other confidential-token designs — has run end-to-end on live Stellar Testnet with genuine circuit proofs and real value moving at every step; a senior-auditor pass over the contract found and fixed three real issues along the way, one of which only a real Testnet transaction (not the unit test suite) could surface. See `docs/POC_IMPLEMENTATION.md` for the findings, fixes, and transaction hashes.
+- **Custom indexer**: purpose-built for note recovery, Merkle-path serving, and wallet state reconstruction beyond the short Stellar RPC retention window — `indexer/` is a real, running implementation of it, validated against live Stellar Testnet (see `docs/POC_IMPLEMENTATION.md`).
+- **Operational readiness**: still open — an operational runbook and incident-response framework (contract failures, indexer outages, key exposure, deployment misconfiguration) is planned but not yet written; see "Planned implementation scope" above.
+- **Compliance positioning**: the docs frame ZKELLA as compliance-aware selective disclosure infrastructure (viewing keys, verified sanctions non-membership proofs) rather than a generic confidential-token clone.
+- **Ecosystem engagement**: open development, public testnet milestones, and sustained participation in the Stellar ecosystem.
 
 ---
 

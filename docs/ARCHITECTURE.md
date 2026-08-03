@@ -579,7 +579,7 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 - `POST /nullifiers/batch`
 - `GET /health`
 
-Not yet covered: horizontal scaling, multiple independent operators, and the operational runbook described in `docs/SCF_READINESS.md` — see `indexer/README.md` for the current status in detail.
+Not yet covered: horizontal scaling, multiple independent operators, and an operational runbook — see `indexer/README.md` for the current status in detail.
 
 ### 2.9 Soft PoC implementation versus target architecture
 

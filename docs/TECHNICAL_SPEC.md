@@ -1325,7 +1325,7 @@ ZKELLA/
     ├── CIRCUIT_SPEC.md           # detailed constraint listings
     ├── ARCHITECTURE.md           # full system architecture
     ├── POC_IMPLEMENTATION.md     # what's validated where (local vs. live Testnet)
-    ├── SCF_READINESS.md          # reviewer-response and milestone package
+    ├── TESTNET_DEPLOYMENT.md     # current live addresses and on-chain transaction record
     └── INTEGRATION_GUIDE.md      # for third-party builders
 ```
 
