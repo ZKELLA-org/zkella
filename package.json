@@ -2,12 +2,15 @@
   "name": "zkella-protocol",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "sdk"
+  ],
   "scripts": {
     "test":        "jest --testPathPattern='tests/unit' --forceExit",
     "test:e2e":    "jest --testPathPattern='tests/e2e' --testTimeout=90000 --forceExit",
     "test:all":    "jest --forceExit",
-    "build:sdk":   "cd sdk && npm run build",
-    "install:all": "npm install && cd sdk && npm install",
+    "build:sdk":   "npm run build --workspace=sdk",
+    "typecheck":   "tsc --noEmit -p tsconfig.test.json",
     "indexer":     "node --experimental-strip-types indexer/src/main.ts"
   },
   "devDependencies": {

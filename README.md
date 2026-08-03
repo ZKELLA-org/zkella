@@ -1,5 +1,8 @@
 # ZKELLA Protocol
 
+[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 **ZK-native confidential finance infrastructure for the Stellar Soroban ecosystem.**
 
 ZKELLA delivers production-oriented confidential finance infrastructure for Soroban: a CT-20 token standard, auditor viewing keys, Travel Rule-aligned disclosure workflows, persistent note indexing, and a shielded swap primitive.
@@ -160,21 +163,39 @@ A Stellar-native private swap interface.
 ```
 ZKELLA/
 ├── circuits/
-│   ├── transfer_2in2out/     # Circom circuit: 2-input/2-output
-│   ├── transfer_4in4out/     # Circom circuit: 4-input/4-output
-│   └── swap/                 # Shielded swap commit-reveal circuit
+│   ├── common/                # shared Circom templates (Poseidon2, Merkle, range, commitments)
+│   ├── shield/                 # public -> shielded
+│   ├── unshield/                # shielded -> public
+│   ├── transfer_2in2out/       # Circom circuit: 2-input/2-output
+│   ├── transfer_4in4out/       # Circom circuit: 4-input/4-output
+│   ├── swap/                    # shielded swap commit-reveal fairness circuit
+│   └── compliance/               # sanctions non-membership circuit
 ├── contracts/
-│   ├── ct20/                 # Confidential token standard
-│   ├── viewing_keys/         # Auditor viewing key system
-│   └── swap/                 # Shielded swap primitive
-├── indexer/                  # Persistent note state manager (reference implementation)
-├── sdk/                      # TypeScript zkella-sdk
-├── app/                      # Reference wallet application (planned)
-└── docs/                     # Specifications and guides
+│   ├── ct20/                   # confidential token standard
+│   ├── ct20-interface/          # #[contractclient]-only crate for cross-contract calls into ct20
+│   ├── verifier/                # shared Groth16 verifying-key registry
+│   ├── verifier-interface/       # #[contractclient]-only crate for cross-contract calls into verifier
+│   ├── governance/              # timelocked verifying-key rotation
+│   ├── viewing_keys/             # auditor viewing key registry
+│   ├── compliance/               # sanctions non-membership proof storage
+│   └── swap/                     # shielded swap primitive
+├── indexer/                   # persistent note state manager (reference implementation)
+├── sdk/                        # TypeScript zkella-sdk
+├── tests/                      # unit and end-to-end tests
+├── app/                        # reference wallet application (planned)
+└── docs/                       # specifications and guides
 ```
 
 ---
 
+## Contributing
+
+See `CONTRIBUTING.md` for the development setup, repository layout, and PR expectations.
+
+## Security
+
+This is a soft PoC — no external security audit has been performed and every trusted-setup ceremony behind the circuits so far is dev-only. See `SECURITY.md` for the vulnerability disclosure policy before reporting an issue publicly.
+
 ## License
 
-Apache 2.0 — open for the entire Stellar ecosystem to build on.
+Apache 2.0 — open for the entire Stellar ecosystem to build on. See `LICENSE`.
