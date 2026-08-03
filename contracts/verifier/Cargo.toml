@@ -1,0 +1,19 @@
+[package]
+name    = "zkella-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+# Only for the `From<verifier_interface::CircuitType> for CircuitType` test-bridging
+# conversion below — not used by any exported `#[contractimpl]` function signature.
+zkella-verifier-interface = { path = "../verifier-interface" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

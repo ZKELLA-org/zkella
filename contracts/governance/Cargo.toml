@@ -6,5 +6,13 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+testutils = ["soroban-sdk/testutils"]
+
 [dependencies]
 soroban-sdk = { workspace = true }
+zkella-verifier-interface = { path = "../verifier-interface" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+zkella-verifier = { path = "../verifier" }

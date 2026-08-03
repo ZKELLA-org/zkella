@@ -11,7 +11,7 @@ pub enum StorageKey {
     MerkleRoot,
     NextLeafIndex,
     Paused,
-    VerifyingKey,
+    Verifier, // address of the zkella-verifier registry contract
     ShieldedSupply(Address),
     // Persistent storage (long-lived, pays rent; TTL bumped on every write)
     MerkleLeaf(u32),
@@ -108,4 +108,7 @@ pub enum Error {
     NotImplemented       = 12, // stub functions not yet available (M2)
     InvalidNote          = 13, // encrypted_note has wrong length or format
     DuplicateCommitment  = 14, // same commitment submitted twice
+    InvalidInputCount    = 15, // nullifiers/commitments/notes vec length doesn't match the circuit's fixed arity
+    RecipientMismatch    = 16, // unshield's recipient_hash doesn't bind the given `to` address
+    DuplicateInputInCall = 17, // same nullifier or output commitment used twice within one transfer() call
 }

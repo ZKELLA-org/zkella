@@ -1,5 +1,6 @@
 pragma circom 2.0.0;
 
+include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../common/commitment.circom";
 include "../common/nullifier.circom";
 include "../common/merkle.circom";
@@ -96,6 +97,25 @@ template Transfer2x2(D) {
     signal sum_in  <== in_value[0]  + in_value[1];
     signal sum_out <== out_value[0] + out_value[1];
     sum_in === sum_out + fee;
+
+    // Each input slot above is constrained independently (its own Merkle
+    // proof, its own nullifier derivation) with nothing linking the two
+    // slots together — so without this, a prover could supply the SAME real
+    // note as both in_value[0] and in_value[1] (same rho => same nullifier
+    // in both positions), making sum_in double-count one note's value and
+    // letting a holder of value V mint 2V-fee in fresh output notes. This
+    // must hold before sum_in is trusted to represent two distinct notes.
+    component nf_distinct = IsZero();
+    nf_distinct.in <== nullifiers[0] - nullifiers[1];
+    nf_distinct.out === 0;
+
+    // Same reasoning for the two output commitments — not a value-fabrication
+    // vector on its own (nullifier-spent tracking still prevents re-spending
+    // whichever note a duplicated commitment represents), but keeping it out
+    // of the tree entirely is simpler to reason about than relying on that.
+    component cm_distinct = IsZero();
+    cm_distinct.in <== out_commitments[0] - out_commitments[1];
+    cm_distinct.out === 0;
 }
 
 component main {

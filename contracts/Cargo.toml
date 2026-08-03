@@ -1,11 +1,24 @@
 [workspace]
 members = [
     "ct20",
+    "ct20-interface",
     "viewing_keys",
+    "compliance",
     "swap",
     "governance",
+    "verifier",
+    "verifier-interface",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.0.0" }
+soroban-sdk = { version = "27.0.0", features = ["hazmat-crypto"] }
+soroban-poseidon = { version = "27.0.0" }
+
+[profile.release]
+opt-level        = "z"
+overflow-checks  = true
+debug            = false
+strip            = "symbols"
+lto              = true
+codegen-units    = 1

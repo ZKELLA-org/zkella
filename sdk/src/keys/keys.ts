@@ -1,5 +1,6 @@
 import { blake2b }           from '@noble/hashes/blake2b'
 import { poseidon2, bigIntToBuffer, bufferToBigInt } from '../crypto/poseidon'
+import { scalarMultBase, scalarMultPoint, hashToCurveG1 } from '../crypto/bn254'
 import { SpendingKey, ViewingKey, ShieldedAddress, ViewingKeyExport } from '../types'
 
 // BN254 scalar field order
@@ -21,7 +22,7 @@ export class ZKELLAKeys {
    * Generate a new random wallet.
    * Seed is 32 cryptographically random bytes.
    */
-  static generate(): ZKELLAKeys {
+  static async generate(): Promise<ZKELLAKeys> {
     const seed = crypto.getRandomValues(new Uint8Array(32))
     return ZKELLAKeys.fromSeed(seed)
   }
@@ -29,16 +30,27 @@ export class ZKELLAKeys {
   /**
    * Derive a deterministic wallet from a 32-byte seed.
    * Key hierarchy:
-   *   sk  = BLAKE2b-256(seed || "zkella_spend_v1")   mod r
+   *   sk  = BLAKE2b-256(seed || "zkella_spend_v1")     mod r
    *   nk  = BLAKE2b-256(sk   || "zkella_nullifier_v1") mod r
    *   vk  = BLAKE2b-256(sk   || "zkella_viewing_v1")   mod r
-   *   tk  = sk mod r (used as scalar; BN254 G1 mul deferred to M2)
+   *   tk  = vk * G  (real BN254 G1 scalar multiplication)
+   *
+   * `tk` is derived from `vk`, not `sk`: `sdk/src/notes/encrypt.ts`'s
+   * `tryDecryptNote` takes a viewing key (not the full spending key) as its
+   * decryption secret — auditor viewing keys, without spend authority, are
+   * a core ZKELLA feature (see README's compliance positioning) — so the
+   * public transmission key embedded in a shielded address must be reachable
+   * from `vk` alone via the matching ECDH relation
+   * `ephemeralSk * (vk*G) === vk * (ephemeralSk*G)`. Previously `tk` was
+   * literally set to `vk`'s raw bytes rather than `vk*G`, which leaked the
+   * viewing key itself to anyone who saw a shielded address; `vk*G` is a
+   * one-way function of `vk`; unlike the old raw-bytes stub.
    */
   static fromSpendingKey(sk: SpendingKey): ZKELLAKeys {
     return new ZKELLAKeys(sk)
   }
 
-  static fromSeed(seed: Uint8Array): ZKELLAKeys {
+  static async fromSeed(seed: Uint8Array): Promise<ZKELLAKeys> {
     if (seed.length !== 32) throw new Error('seed must be exactly 32 bytes')
 
     const skRaw = blake2b(concat(seed, DOMAIN_SPEND), { dkLen: 32 })
@@ -50,14 +62,7 @@ export class ZKELLAKeys {
     const vkRaw = blake2b(concat(sk, DOMAIN_VIEW), { dkLen: 32 })
     const vk    = reduceModR(vkRaw)
 
-    // Transmission key: sk * G on BN254
-    // TODO(M2): replace with real BN254 scalar multiplication.
-    // SECURITY: transmissionKey = viewingKey collapses spending and viewing roles.
-    // This stub MUST NOT be deployed on mainnet or any network holding real value.
-    if (typeof process !== 'undefined' && process.env?.['ZKELLA_NETWORK'] === 'mainnet') {
-      throw new Error('transmissionKey stub is not safe for mainnet — M2 BN254 scalar mul required')
-    }
-    const tk = vk
+    const tk = await scalarMultBase(vk)
 
     const spendingKey: SpendingKey = {
       raw:             sk,
@@ -75,10 +80,20 @@ export class ZKELLAKeys {
    * Multiple addresses share one spending key; all are unlinkable on-chain.
    *
    * diversifier   = BLAKE2b-32(sk || index)
-   * pk_d          = sk * hash_to_curve(diversifier)  — TODO(M2): real BN254
+   * g_d           = hash_to_curve(diversifier)     (real BN254 G1 point)
+   * pk_d          = vk * g_d                       (real scalar multiplication)
    * address       = Base58Check(1-byte-version || diversifier || pk_d)
+   *
+   * `pk_d` is derived from `vk` (the viewing key), not `sk`, matching
+   * `transmissionKey`'s same reasoning (see `fromSeed`'s doc comment):
+   * decryption only needs the viewing key, not full spend authority. `g_d`
+   * doubles as the Diffie-Hellman base point a sender must use when
+   * encrypting *to this specific diversified address* — see
+   * `sdk/src/notes/encrypt.ts`'s `basePoint` parameter — so that
+   * `ephemeralSk * pk_d === vk * ephemeralPk` still holds without the
+   * recipient needing to know which diversifier a given note used.
    */
-  deriveAddress(diversifierIndex = 0): ShieldedAddress {
+  async deriveAddress(diversifierIndex = 0): Promise<ShieldedAddress> {
     const indexBuf = new Uint8Array(4)
     new DataView(indexBuf.buffer).setUint32(0, diversifierIndex, true)
 
@@ -87,11 +102,8 @@ export class ZKELLAKeys {
       { dkLen: 11 },
     )
 
-    // TODO(M2): real BN254 hash-to-curve + scalar mul
-    const pkD = blake2b(
-      concat(diversifier, this.spendingKey.transmissionKey),
-      { dkLen: 32 },
-    )
+    const gD = await hashToCurveG1(diversifier)
+    const pkD = await scalarMultPoint(this.spendingKey.viewingKey, gD)
 
     const raw  = concat(new Uint8Array([0x01]), diversifier, pkD)  // 1+11+32=44 bytes
     const addr = base58Check(raw)

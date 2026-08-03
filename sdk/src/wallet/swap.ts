@@ -41,7 +41,7 @@ export class ZKELLASwap {
   private async checkSwapStatus(swapId: string): Promise<string> {
     const res = await fetch(`${this.config.relayerUrl}/swap/${swapId}/status`)
     if (!res.ok) return 'unknown'
-    const data = await res.json()
+    const data = (await res.json()) as { status: string }
     return data.status
   }
 }

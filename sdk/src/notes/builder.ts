@@ -48,6 +48,19 @@ export async function computeCommitment(
 }
 
 /**
+ * Compute the value commitment: Poseidon2(value, rcv).
+ * Matches `circuits/shield/shield.circom`'s `ValueCommit` gadget exactly —
+ * a binding (not hiding beyond `rcv`) commitment to the shielded amount,
+ * verified in-circuit and passed on-chain as `ShieldPublicInputs.value_commit`.
+ */
+export async function computeValueCommit(
+  value: bigint,
+  rcv:   Uint8Array,
+): Promise<Uint8Array> {
+  return poseidon2(valueToField(value), rcv)
+}
+
+/**
  * Compute the nullifier for a note given the nullifier key.
  * nf = Poseidon2(nk, rho)
  */

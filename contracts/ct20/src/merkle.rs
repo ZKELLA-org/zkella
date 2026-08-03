@@ -1,5 +1,5 @@
 use soroban_sdk::{BytesN, Env, Vec};
-use crate::poseidon::poseidon2_bytes;
+use crate::poseidon::Poseidon2Hasher;
 use crate::types::StorageKey;
 
 pub const TREE_DEPTH: u32 = 32;
@@ -24,10 +24,14 @@ const EMPTY_LEAF: [u8; 32] = [
 /// Pre-computed empty subtree roots at each level.
 /// empty_roots[0] = EMPTY_LEAF
 /// empty_roots[i] = Poseidon2(empty_roots[i-1], empty_roots[i-1])
-fn empty_subtree_root(level: u32) -> [u8; 32] {
+///
+/// Standalone/one-shot use only (e.g. `root()` before any leaf has ever been
+/// inserted). `insert`/`get_path` below track this incrementally instead of
+/// calling this per level — see the comment on `running_empty` there for why.
+fn empty_subtree_root(hasher: &mut Poseidon2Hasher, level: u32) -> [u8; 32] {
     let mut current = EMPTY_LEAF;
     for _ in 0..level {
-        current = poseidon2_bytes(&current, &current);
+        current = hasher.hash(&current, &current);
     }
     current
 }
@@ -35,7 +39,7 @@ fn empty_subtree_root(level: u32) -> [u8; 32] {
 /// Insert a new leaf into the incremental Merkle tree.
 /// Returns the leaf index assigned.
 /// Caller must have already verified the commitment is not a duplicate.
-pub fn insert(env: &Env, commitment: BytesN<32>) -> u32 {
+pub fn insert(env: &Env, commitment: BytesN<32>, hasher: &mut Poseidon2Hasher) -> u32 {
     let index: u32 = env
         .storage()
         .instance()
@@ -55,6 +59,13 @@ pub fn insert(env: &Env, commitment: BytesN<32>) -> u32 {
     let mut current: [u8; 32] = cm_bytes;
     let mut node_index = index;
 
+    // Tracks empty_subtree_root(level) incrementally instead of recomputing
+    // it from EMPTY_LEAF on every iteration. Recomputing from scratch turns a
+    // fresh-tree insert into O(depth^2) hashes (0+1+2+...+31 = 496 just for
+    // empty-subtree lookups); tracking it here makes it O(depth) — one extra
+    // hash per level, 32 total, regardless of how many siblings are empty.
+    let mut running_empty: [u8; 32] = EMPTY_LEAF; // == empty_subtree_root(0)
+
     for level in 0..TREE_DEPTH {
         let sibling_index = if node_index % 2 == 0 {
             node_index + 1  // left child — sibling is right (may be empty)
@@ -67,12 +78,12 @@ pub fn insert(env: &Env, commitment: BytesN<32>) -> u32 {
             .persistent()
             .get::<_, BytesN<32>>(&StorageKey::MerkleNode(level, sibling_index))
             .map(|b| b.into())
-            .unwrap_or_else(|| empty_subtree_root(level));
+            .unwrap_or(running_empty);
 
         let parent = if node_index % 2 == 0 {
-            poseidon2_bytes(&current, &sibling)
+            hasher.hash(&current, &sibling)
         } else {
-            poseidon2_bytes(&sibling, &current)
+            hasher.hash(&sibling, &current)
         };
 
         let parent_index = node_index / 2;
@@ -84,6 +95,7 @@ pub fn insert(env: &Env, commitment: BytesN<32>) -> u32 {
 
         current    = parent;
         node_index = parent_index;
+        running_empty = hasher.hash(&running_empty, &running_empty); // advance to empty_subtree_root(level+1)
     }
 
     // Update root and leaf counter in instance storage (bumped by caller via shield())
@@ -98,21 +110,24 @@ pub fn insert(env: &Env, commitment: BytesN<32>) -> u32 {
 }
 
 /// Return the current Merkle root.
-pub fn root(env: &Env) -> BytesN<32> {
+pub fn root(env: &Env, hasher: &mut Poseidon2Hasher) -> BytesN<32> {
     env.storage()
         .instance()
         .get(&StorageKey::MerkleRoot)
         .unwrap_or_else(|| {
-            let empty_root = empty_subtree_root(TREE_DEPTH);
+            let empty_root = empty_subtree_root(hasher, TREE_DEPTH);
             BytesN::from_array(env, &empty_root)
         })
 }
 
 /// Return the Merkle authentication path for `leaf_index`.
 /// Returns a Vec of sibling nodes from leaf level to root.
-pub fn get_path(env: &Env, leaf_index: u32) -> Vec<BytesN<32>> {
+pub fn get_path(env: &Env, leaf_index: u32, hasher: &mut Poseidon2Hasher) -> Vec<BytesN<32>> {
     let mut path  = Vec::new(env);
     let mut index = leaf_index;
+
+    // Same incremental tracking as `insert` — see its comment on `running_empty`.
+    let mut running_empty: [u8; 32] = EMPTY_LEAF;
 
     for level in 0..TREE_DEPTH {
         let sibling_index = if index % 2 == 0 { index + 1 } else { index - 1 };
@@ -122,10 +137,11 @@ pub fn get_path(env: &Env, leaf_index: u32) -> Vec<BytesN<32>> {
             .persistent()
             .get::<_, BytesN<32>>(&StorageKey::MerkleNode(level, sibling_index))
             .map(|b| b.into())
-            .unwrap_or_else(|| empty_subtree_root(level));
+            .unwrap_or(running_empty);
 
         path.push_back(BytesN::from_array(env, &sibling));
         index /= 2;
+        running_empty = hasher.hash(&running_empty, &running_empty);
     }
 
     path
@@ -154,9 +170,9 @@ pub fn verify_path(
     let mut idx = index;
     for sibling in path.iter() {
         current = if idx % 2 == 0 {
-            poseidon2_bytes(&current, sibling)
+            crate::poseidon::poseidon2_bytes(&current, sibling)
         } else {
-            poseidon2_bytes(sibling, &current)
+            crate::poseidon::poseidon2_bytes(sibling, &current)
         };
         idx /= 2;
     }

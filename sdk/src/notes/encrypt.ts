@@ -1,6 +1,7 @@
 import { chacha20poly1305 } from '@noble/ciphers/chacha'
 import { blake2b }           from '@noble/hashes/blake2b'
 import { Note }              from '../types'
+import { scalarMultBase, scalarMultPoint, randomScalar } from '../crypto/bn254'
 
 // ── Transmitted note layout (160 bytes) ──────────────────────────────────────
 //
@@ -21,25 +22,34 @@ const ENCRYPTED_NOTE_LENGTH = 32 + CIPHERTEXT_LENGTH     // = 176 bytes
 /**
  * Encrypt a note to a recipient's transmission key.
  *
- * In the full implementation, transmission_key is a BN254 G1 point and
- * ECDH is performed on the curve. For the 20% demo, we use a simplified
- * ECDH approximation: shared_secret = BLAKE2b(ephemeral_sk || transmission_key).
- * This is replaced with real BN254 ECDH in M2.
+ * Real BN254 ECDH: `transmissionKey` is `vk * basePoint` — either the fixed
+ * generator `G` (`ZKELLAKeys.fromSeed`'s top-level `transmissionKey`) or a
+ * per-diversifier point `g_d = hashToCurveG1(diversifier)`
+ * (`ZKELLAKeys.deriveAddress`'s `pk_d`). The shared secret is the point
+ * `ephemeralSk * transmissionKey === vk * ephemeralPk`, computed against
+ * the *same* `basePoint` the recipient's address embeds — pass
+ * `recipientAddress.diversifier`'s derived `g_d` (via `hashToCurveG1`) when
+ * encrypting to a diversified address, or omit `basePoint` to encrypt to a
+ * wallet's non-diversified `transmissionKey` (the default, and what every
+ * existing caller — including the real Testnet shield flow — already
+ * does). `tryDecryptNote` needs no corresponding parameter: `vk * ephemeralPk`
+ * lands on the same shared point regardless of which base point the sender
+ * used, since `ephemeralPk` already encodes it (`ephemeralPk = esk * g_d`).
+ * Hashing the shared *point* (not just concatenating raw coordinates)
+ * before using it as key material is standard ECIES practice.
  */
-export function encryptNote(
+export async function encryptNote(
   note:             Note,
   transmissionKey:  Uint8Array,  // 32-byte compressed BN254 G1 point
-): Uint8Array {
-  // Generate ephemeral key
-  const ephemeralSk = crypto.getRandomValues(new Uint8Array(32))
-  const ephemeralPk = derivePublicKey(ephemeralSk)  // TODO(M2): real BN254 scalar mul
+  basePoint?:       Uint8Array,  // 32-byte compressed G1 point; defaults to the generator G
+): Promise<Uint8Array> {
+  const ephemeralSk = await randomScalar()
+  const ephemeralPk = basePoint
+    ? await scalarMultPoint(ephemeralSk, basePoint)
+    : await scalarMultBase(ephemeralSk)
+  const sharedPoint = await scalarMultPoint(ephemeralSk, transmissionKey)
 
-  // ECDH stub: shared_secret = BLAKE2b-256(transmission_key || ephemeral_pk)
-  // TODO(M2): replace with real BN254 ECDH: shared = ephemeral_sk * transmission_key_point
-  const dhInput = new Uint8Array(64)
-  dhInput.set(transmissionKey, 0)
-  dhInput.set(ephemeralPk, 32)
-  const sharedSecret = blake2b(dhInput, { dkLen: 32 })
+  const sharedSecret = blake2b(sharedPoint, { dkLen: 32 })
 
   // Derive encryption key and nonce from shared secret
   const keyMaterial = blake2b(
@@ -67,20 +77,18 @@ export function encryptNote(
  * Attempt to decrypt an encrypted note bundle using a viewing key.
  * Returns the decrypted Note or null if decryption fails (not addressed to us).
  */
-export function tryDecryptNote(
+export async function tryDecryptNote(
   bundle:     Uint8Array,
-  viewingKey: Uint8Array,  // 32-byte viewing key (nk equivalent for decryption)
-): Omit<Note, 'leafIndex' | 'commitment'> | null {
+  viewingKey: Uint8Array,  // 32-byte viewing key scalar (ZKELLAKeys.spendingKey.viewingKey)
+): Promise<Omit<Note, 'leafIndex' | 'commitment'> | null> {
   if (bundle.length !== ENCRYPTED_NOTE_LENGTH) return null
 
   const ephemeralPk = bundle.slice(0, 32)
   const ciphertext  = bundle.slice(32)
 
-  // Reconstruct shared secret using viewing key
-  const dhInput = new Uint8Array(64)
-  dhInput.set(viewingKey,  0)
-  dhInput.set(ephemeralPk, 32)
-  const sharedSecret = blake2b(dhInput, { dkLen: 32 })
+  // Reconstruct the same shared point as encryptNote: vk * ephemeralPk === ephemeralSk * (vk*G).
+  const sharedPoint = await scalarMultPoint(viewingKey, ephemeralPk)
+  const sharedSecret = blake2b(sharedPoint, { dkLen: 32 })
 
   const keyMaterial = blake2b(
     concat(sharedSecret, ephemeralPk),
@@ -143,12 +151,6 @@ function decodePlaintext(buf: Uint8Array): Omit<Note, 'leafIndex' | 'commitment'
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
-
-function derivePublicKey(sk: Uint8Array): Uint8Array {
-  // TODO(M2): BN254 scalar multiplication: pk = sk * G
-  // For the 20% demo, use BLAKE2b as a placeholder to produce a deterministic pk
-  return blake2b(concat(sk, new TextEncoder().encode('zkella_pk_v1')), { dkLen: 32 })
-}
 
 function concat(...arrays: Uint8Array[]): Uint8Array {
   const total = arrays.reduce((sum, a) => sum + a.length, 0)

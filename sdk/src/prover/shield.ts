@@ -1,46 +1,76 @@
+import * as snarkjs from 'snarkjs'
 import { Note } from '../types'
-import { addressToField, bufferToBigInt } from '../crypto/poseidon'
+import { computeValueCommit } from '../notes/builder'
+import { addressToField, bufferToBigInt, bigIntToBuffer } from '../crypto/poseidon'
+import { encodeProof } from './encoding'
+
+export { encodeProof, encodeVerifyingKey } from './encoding'
 
 /**
  * Public inputs for the shield (deposit) circuit.
  *
- * Circuit: shield.circom
- *   Private: value, assetId, rho, rcm
- *   Public:  commitment, asset, amount
+ * Circuit: shield.circom, `component main {public [commitment, value_commit, pub_value, pub_asset_id]}`
+ *   Private: value, asset_id, rho, rcm, rcv
+ *   Public:  commitment, value_commit, pub_value, pub_asset_id
  *
- * Invariant enforced by circuit:
- *   commitment == Poseidon2(Poseidon2(value, assetId), Poseidon2(rho, rcm))
- *   value      == amount  (prevents value inflation)
+ * Invariants enforced by circuit (see shield.circom):
+ *   commitment   == Poseidon2(Poseidon2(value, asset_id), Poseidon2(rho, rcm))
+ *   value_commit == Poseidon2(value, rcv)
+ *   value        == pub_value   (prevents value inflation)
+ *   asset_id     == pub_asset_id
+ *
+ * `rcv` is *not* part of `Note` — unlike `rho`/`rcm`, it isn't needed again
+ * after this proof is built (it only binds this one shield call's
+ * `value_commit`, not the note's long-term identity/spendability — the
+ * on-chain `commitment` and future nullifier depend only on `rho`/`rcm`),
+ * and folding it into `Note` would also blow past `ct20`'s fixed 176-byte
+ * `ENCRYPTED_NOTE_LEN` if it were ever added to the transmitted note
+ * plaintext. `generateShieldProof` below generates and discards it.
  */
 export interface ShieldPublicInputs {
-  commitment: string  // hex-encoded BN254 Fr field element
-  asset:      string  // SEP-41 contract address
-  amount:     bigint  // u64 in base units
+  commitment: Uint8Array  // 32-byte little-endian BN254 Fr field element
+  asset:      string      // SEP-41 contract address
+  amount:     bigint      // matches note.value; enforced in-circuit
 }
 
 export interface ShieldProofResult {
-  proof:         Uint8Array   // 256-byte Groth16 proof (π_A || π_B || π_C)
-  publicSignals: string[]     // [commitment, asset_field, amount] as decimal strings
+  /** 256-byte Groth16 proof in the contract's wire format: A(64) || B(128) || C(64). */
+  proof: Uint8Array
+  /** Poseidon2(amount, rcv) for the freshly-generated `rcv` — pass this as
+   *  `shield_pub.value_commit` in the `shield()` contract call. */
+  valueCommit: Uint8Array
+  /**
+   * The circuit's public signals, each as a 32-byte little-endian field
+   * element — this is the `BytesN<32>` convention `contracts/verifier`
+   * expects, in circuit order: [commitment, value_commit, pub_value, pub_asset_id].
+   */
+  publicInputsLE: Uint8Array[]
 }
 
 /**
- * Generate a Groth16 proof for the shield circuit.
+ * Generate a real Groth16 proof for the shield circuit via snarkjs, using the
+ * compiled circuit artifacts at `wasmPath`/`zkeyPath` (typically
+ * `circuits/shield/build/shield_js/shield.wasm` and `circuits/shield/build/shield.zkey`
+ * from a real, non-dev trusted-setup ceremony in production — see
+ * `docs/POC_IMPLEMENTATION.md` for the current dev-ceremony caveat).
  *
- * In M1 this is a stub that returns a zero-filled proof byte array.
- * The on-chain verifier is also a stub (accepts any proof whose public inputs
- * match the commitment stored in the Merkle tree).
- *
- * M2 replaces this with:
- *   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
- *     witness, WASM_PATH, ZKEY_PATH
- *   )
- *   return { proof: encodeProof(proof), publicSignals }
+ * This is the same wire format independently validated against
+ * `contracts/verifier` by `circuits/shield/build/convert_to_wire_format.py`
+ * and exercised in three real Stellar Testnet `shield()` transactions (see
+ * `docs/POC_IMPLEMENTATION.md`, "Update: live Testnet run completed") — this
+ * function is the TypeScript equivalent of that Python/CLI path, so
+ * applications don't need a Python side-channel to construct a real shield
+ * call.
  */
 export async function generateShieldProof(
   note:         Note,
   publicInputs: ShieldPublicInputs,
+  wasmPath:     string,
+  zkeyPath:     string,
 ): Promise<ShieldProofResult> {
-  // Validate public input consistency before proof generation
+  // Validate public input consistency before proof generation — the circuit
+  // itself also enforces value === pub_value and asset_id === pub_asset_id,
+  // but failing fast here gives a much clearer error than a proving-time one.
   if (note.value !== publicInputs.amount) {
     throw new Error(
       `shield proof: note.value (${note.value}) !== amount (${publicInputs.amount})`
@@ -52,71 +82,26 @@ export async function generateShieldProof(
     )
   }
 
-  // TODO(M2): load compiled circuit artifacts and call snarkjs
-  // const wasm = await loadWasm(SHIELD_WASM_URL)
-  // const zkey = await loadZkey(SHIELD_ZKEY_URL)
-  // const witness = {
-  //   value:      note.value.toString(),
-  //   assetId:    fieldFromAddress(note.assetId).toString(),
-  //   rho:        bufferToBigInt(note.rho).toString(),
-  //   rcm:        bufferToBigInt(note.rcm).toString(),
-  //   commitment: BigInt('0x' + publicInputs.commitment).toString(),
-  // }
-  // const { proof, publicSignals } = await snarkjs.groth16.fullProve(witness, wasm, zkey)
-  // return { proof: encodeProof(proof), publicSignals }
+  const rcv = crypto.getRandomValues(new Uint8Array(32))
+  const valueCommit = await computeValueCommit(publicInputs.amount, rcv)
 
-  // Stub: 256 zero bytes (π_A: 64B, π_B: 128B, π_C: 64B)
-  const proof = new Uint8Array(256)
-
-  const publicSignals = [
-    publicInputs.commitment,
-    bufferToBigInt(addressToField(publicInputs.asset)).toString(),
-    publicInputs.amount.toString(),
-  ]
-
-  return { proof, publicSignals }
-}
-
-/**
- * Encode a snarkjs proof object into a flat 256-byte array.
- * Layout: π_A (64B, G1 uncompressed) || π_B (128B, G2 uncompressed) || π_C (64B, G1 uncompressed)
- * Used in M2 when snarkjs returns the real proof.
- */
-export function encodeProof(snarkjsProof: {
-  pi_a: string[]
-  pi_b: string[][]
-  pi_c: string[]
-}): Uint8Array {
-  const buf = new Uint8Array(256)
-  let off = 0
-
-  const writeG1 = (pt: string[]) => {
-    writeField(buf, off,      BigInt(pt[0]))
-    writeField(buf, off + 32, BigInt(pt[1]))
-    off += 64
+  const input = {
+    value:         note.value.toString(),
+    asset_id:      bufferToBigInt(addressToField(note.assetId)).toString(),
+    rho:           bufferToBigInt(note.rho).toString(),
+    rcm:           bufferToBigInt(note.rcm).toString(),
+    rcv:           bufferToBigInt(rcv).toString(),
+    commitment:    bufferToBigInt(publicInputs.commitment).toString(),
+    value_commit:  bufferToBigInt(valueCommit).toString(),
+    pub_value:     publicInputs.amount.toString(),
+    pub_asset_id:  bufferToBigInt(addressToField(publicInputs.asset)).toString(),
   }
 
-  const writeG2 = (pt: string[][]) => {
-    // G2 point: (x0, x1, y0, y1) each 32 bytes
-    writeField(buf, off,       BigInt(pt[0][0]))
-    writeField(buf, off + 32,  BigInt(pt[0][1]))
-    writeField(buf, off + 64,  BigInt(pt[1][0]))
-    writeField(buf, off + 96,  BigInt(pt[1][1]))
-    off += 128
-  }
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath)
 
-  writeG1(snarkjsProof.pi_a)
-  writeG2(snarkjsProof.pi_b)
-  writeG1(snarkjsProof.pi_c)
-
-  return buf
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function writeField(buf: Uint8Array, offset: number, value: bigint): void {
-  for (let i = 0; i < 32; i++) {
-    buf[offset + i] = Number(value & 0xffn)
-    value >>= 8n
+  return {
+    proof: encodeProof(proof),
+    valueCommit,
+    publicInputsLE: publicSignals.map((s: string) => bigIntToBuffer(BigInt(s))),
   }
 }

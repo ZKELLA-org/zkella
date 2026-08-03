@@ -1,0 +1,71 @@
+/**
+ * Cross-validates the TypeScript SDK's Groth16 wire-format encoder against a
+ * real proof from the compiled `transfer_4in4out/transfer.circom` circuit —
+ * the same `circuits/transfer_4in4out/build/proof.json` /
+ * `verification_key.json` / `public.json` already validated end-to-end in
+ * `contracts/verifier/src/lib.rs`'s
+ * `verify_accepts_real_transfer_4in4out_circuit_proof` test (real `circom` +
+ * `snarkjs`, a genuine 4-input/4-output witness, independently confirmed by
+ * `snarkjs groth16 verify`).
+ */
+
+import { encodeProof, encodeVerifyingKey } from '../../sdk/src/prover/encoding'
+import { bigIntToBuffer } from '../../sdk/src/crypto/poseidon'
+import proofJson from '../../circuits/transfer_4in4out/build/proof.json'
+import vkJson from '../../circuits/transfer_4in4out/build/verification_key.json'
+import publicJson from '../../circuits/transfer_4in4out/build/public.json'
+
+const EXPECTED_VK_HEX =
+  '0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa137999d40c16d37bf27ee0d36e82922f18e46a610d13ca839051b4440086bfd209c4a649c167208b06511e56d2187e8c9b8cfae13a556dac40516d44568dce8904cf3281661110ca8d93210795a100a25611338bec8111a03136d96b208b3d9d1826fc82326da7dd3023c9b662e8989adac75b0509802107f0b04631bb3351c726cd1ceca944058c98d289f619e72ba5d34be160dc5d5026d488f2415cfd3df62e890cc23496756b71c69cea80802757bc8a1893951c3ca858ff68eaa07cb6862870531ad44f46197ed77a641762adf0471c4bbcafbfbbb784911e6be2f7e1520fc61efc9db6f4762f13177e5d463f194d80a85028f7f6e0fd286ad32a5a376b0e65557004d448dea6e2d0ec49660233f5374ddeb88b32398fd980a04f4832521910eedecb7132da7d9bd25b691e5df1db30017e272c9d9e462ffb76707030d9172103beed7dc7f4973dcb91b9e00fbe97555de2fdf45b0d9340c7fb7c482439291ed8f92fb8b8fd27cd06fd6456b2c6bde910cf4f1244cc0576024d5bfe906c073495b5e4cbdfeaa0252e855cfe966b2beaee299d99529beb9a444c914b59ac1081addb836222970db90fa723c1a592e7a681b030586ae7f9e2a1d5f4bde6e01073fcb83dda2bb8c7cf5e823710e6693382881a3b8d109c3f351cd802118c2828fd2bf3342955823f3fe7912ed45d76fb589ae04de0b98367e4c9e582a9435f0570584d613651f08746f543b30a9084d80e1c304659e5008d0c4d6cebeac9802630d5733bc6a7c8710eb0b4d83ca892daed6144166d1ad4e6b7527374151541178b9b091c2dcd8a25dbc1000f375093bc1765dfb99b168facdd0a5ad7be7aba26ef48f9ac7968a57f4a9fdafa64bbb777cbec8d70eae056fbe7a09f0e72f1d01793d64076f5ede38f87d6edaf9239c1fd3f4ffa546ee23ddfde9f836810d28517ab0ae906e8d6a92d4cceea6f5c5dd528d809b5a0d02bfbbc560f1f7a53c4b5099398c7f8ebcfbb06145f1bc074574693e02aa228f2499cecb2194f69477eb92d29da218088dd95d6cb2743fed1d1c2542b90b03eb5edbf9b1e0c830a9cf0ba29cf8aa0fa12dfa791ebd87778c9a06a555575a9f2c7d600467730eefc250ff92c14399ecd67aec0a2d8811f86468fa9efdb0d8ddd88a901688c18f5d1058e0802b8a6b89e186580b06b5515b4deac9aae11012e1b5493b1a84008ccec367c831c55170e4e7ef2bd12c76d2630c4be1c0dfb90d4bdade8017b40dc5ac61f7b580cd3923499482013df6613f1c01e88b67618a0b1175f4e835bbae3eaf12b8ec718f089cdf3fb290903ea7601b7c57ebca87859db5accf3dc830135f9aa719f0606ca7f25ece6b5335dcd8e463310d8b2e27ba3786eb3b9d56dafcda88602b3c31e2f2ec864503e3a1cdc3ebebc554b2bf537f2eeb84efa4952daba522f61e2f826ff6f9e0985d18e2122c56010daf38cac09b1a3aaff888361b7418fcc55f1071976ae99a979f039ef594bf81a409b8aa6a41721d4ea2ef11f9ecdfb348105b02ed8161cc6397d6c157bc4cd9bb684b95648c9dbc260f2837819f5aeaf73464229e7b6f94b414da3291466883261d653947f78a9aaaa5c91a57b6db60ebdb41c20ede9c1034947705b23c6e403d3d8bf4cbc9f61bd1a0fde76dd62e35815dbec2dc28b9c22f4b69d66784fd809068d05db94f5b089e8f96c277646fbc9a13b601864ce1363310be9959bf291adf8e526254308139d2991b524a55ecd612df280191d73187b27350e62a443bcc2a8643609d0faa4628058f54e4a33288924c1221c56a375fda4398ed0201c946204e32bdc24a817e5ce152988a6f21bbcb5947117539478c00d722c61f8fc6e3a99efbda73041162101928664cbf84308f0de08076e2cce3ee1c81bd9daa32a47d74f0014a760a0bb94c270fe3308e2b235adf22dbe779b2644371de358e4745dc233ab6b1a21949050a727e6a93a1032b051bc'
+
+const EXPECTED_PROOF_HEX =
+  '28d25daf2b5672a2534a76687af1328a9363af1ddbae196b488d63673d37da0d14d7c933ab99e73b4083ad5e407677523093d4697fc42f1c6bcd701970ea443d0529a96382d9932382723886a4c0575a8784eb1c09ba8ff963fce46132e3d70211df582df9f62324d3b6b8b2629ddbd71918d15effb32f9598d69febd4ef391224c05cd7739924a37908ac609b8f6aa9d7795f126f3e2684e0443a50bf1a09e30cd1d2b6e70985af2fe20998cb30b8a8c3a73bcd83eac0d3ffaa15daab809d142efb876d56bbebe25986d468496c1a7fec71b2109ce2889ac91f77fde98c9e010c0b7f6c1b1aa1442d7920694e751c8556e5ff344293fb360e61b6dd7db605c9'
+
+// [anchor, nullifiers[0..4], out_commitments[0..4], in_value_commits[0..4],
+//  out_value_commits[0..4], fee, asset_id] as 32-byte LE hex — 19 entries.
+const EXPECTED_PUBLIC_INPUTS_LE_HEX = [
+  'c789c180a20104a61db818b1e52fbe8eb70cd26c09c56aa754d87f8e546cfa2a',
+  '4d8868c8b074d176055d827cfd335b5e2f811a060938c6ed26ed191ccb80e207',
+  '3836e7d2d0c9902fe1a488b0b4cfe190b08f347144d1df7ec978ac8259b38f06',
+  '6bb2bcb4fde4ab5052e1b0ef4e1e35132fd29f01252b5d475c579d1d53c1642e',
+  '448ccf7ea6b39e6749a56b7426e306fcd781174bff9bb91388d8d6847d30c216',
+  '254f6b7c63513ab10c6d86e721f17551a3c4a02fd1de04caf28d72f1ae333e16',
+  'af96bde9ca2e081277467225c6d5481aa0b2f0408f41e425efb602444aa06115',
+  'aff082f9c974da7f3eb18365bdc48556ddddde53c67d97b207864f7d4d5ccc29',
+  '21deb6e52c070711d8507b8203c377abce72be3dce3a3ff245ac9df1c8268223',
+  '7d44a357ea0366e2404d07ab846882869d94640645b32c89fda24f9785a61624',
+  '26f76c57c525c191a8c937bc85f5de084ade8248554a6ff53bf1c6a5e83edc21',
+  'b002b6c5ccb8007b79b51d5bf7c2884a7d1b9dc2f639097f7cec02823c55f104',
+  'e5e69bbdaf3cd95902a01016fbdcfec44d2d67bd209eee8053892c3039cadb1a',
+  '44f345daccb43789709bc3111781d71bd0e4650d4e6fef220f197212c9f8d82f',
+  'a7e59d2a27c022e8f11fdf897ec241477624f803755370f2462c4a61ae8bd50c',
+  'c914a6a02c0c012500cc180c368d54cbf84fc3eea20f804e0635a92d37b8d314',
+  'f5832b40e1c88a8b1b7bbd63e7474e0411431987422ffa24eda60d9d2d110924',
+  'e803000000000000000000000000000000000000000000000000000000000000',
+  '3930000000000000000000000000000000000000000000000000000000000000',
+]
+
+function bytesToHex(buf: Uint8Array): string {
+  return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+describe('Transfer (4-in-4-out) proof wire-format encoding (SDK vs. real circuit proof)', () => {
+  test('encodeProof matches a real transfer_4in4out.circom proof', () => {
+    const encoded = encodeProof(proofJson as any)
+    expect(encoded.length).toBe(256)
+    expect(bytesToHex(encoded)).toBe(EXPECTED_PROOF_HEX)
+  })
+
+  test('encodeVerifyingKey matches the real transfer_4in4out.circom VK', () => {
+    const encoded = encodeVerifyingKey(vkJson as any)
+    expect(encoded.length).toBe(1728)
+    expect(bytesToHex(encoded)).toBe(EXPECTED_VK_HEX)
+  })
+
+  test('public signals, LE-encoded, match the 19-entry circuit order', () => {
+    const signals = publicJson as unknown as string[]
+    expect(signals).toHaveLength(19)
+    const leHex = signals.map(s => bytesToHex(bigIntToBuffer(BigInt(s))))
+    expect(leHex).toEqual(EXPECTED_PUBLIC_INPUTS_LE_HEX)
+  })
+})

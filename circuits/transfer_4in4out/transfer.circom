@@ -1,5 +1,6 @@
 pragma circom 2.0.0;
 
+include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../common/commitment.circom";
 include "../common/nullifier.circom";
 include "../common/merkle.circom";
@@ -96,6 +97,30 @@ template Transfer4x4(D) {
     signal sum_in  <== in_value[0]  + in_value[1]  + in_value[2]  + in_value[3];
     signal sum_out <== out_value[0] + out_value[1] + out_value[2] + out_value[3];
     sum_in === sum_out + fee;
+
+    // Each input/output slot above is constrained independently, with
+    // nothing linking slots together — so without this, a prover could
+    // repeat the same real note across multiple in_value[] slots (same rho
+    // => same nullifier each time), making sum_in double- (or triple-,
+    // quadruple-) count one note's value and minting fabricated output
+    // value. Same reasoning as transfer_2in2out/transfer.circom; here there
+    // are C(4,2)=6 pairs to check for both nullifiers and output commitments.
+    component nf_distinct[6];
+    component cm_distinct[6];
+    var pair = 0;
+    for (var i = 0; i < N_IN; i++) {
+        for (var j = i + 1; j < N_IN; j++) {
+            nf_distinct[pair] = IsZero();
+            nf_distinct[pair].in <== nullifiers[i] - nullifiers[j];
+            nf_distinct[pair].out === 0;
+
+            cm_distinct[pair] = IsZero();
+            cm_distinct[pair].in <== out_commitments[i] - out_commitments[j];
+            cm_distinct[pair].out === 0;
+
+            pair++;
+        }
+    }
 }
 
 component main {

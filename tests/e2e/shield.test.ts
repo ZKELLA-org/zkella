@@ -10,7 +10,7 @@
  * Run: npx jest tests/e2e/shield.test.ts --testTimeout=60000
  */
 
-import { Contract, Keypair, Networks, SorobanRpc, TransactionBuilder, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
+import { Account, Contract, Keypair, Networks, SorobanRpc, TransactionBuilder, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { ZKELLAKeys }     from '../../sdk/src/keys/keys'
 import { buildNote }       from '../../sdk/src/notes/builder'
 import { encryptNote }     from '../../sdk/src/notes/encrypt'
@@ -33,7 +33,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     const account = await server.getAccount(keypair.publicKey())
 
     // 1. Generate a ZKELLA key pair
-    const keys = ZKELLAKeys.generate()
+    const keys = await ZKELLAKeys.generate()
     expect(keys.spendingKey.raw).toHaveLength(32)
 
     // 2. Build a note for 10 USDC (7 decimals = 100_000_000 stroops)
@@ -42,7 +42,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     expect(note.commitment).toHaveLength(32)
 
     // 3. Encrypt the note to the recipient (self in this test)
-    const encryptedNote = encryptNote(note, keys.spendingKey.transmissionKey)
+    const encryptedNote = await encryptNote(note, keys.spendingKey.transmissionKey)
     expect(encryptedNote).toHaveLength(176)
 
     // 4. Read root before shield
@@ -93,6 +93,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     }
     expect(result).not.toBeNull()
     expect(result!.status).toBe('SUCCESS')
+    if (result!.status !== 'SUCCESS') throw new Error('unreachable: checked above')
 
     // 8. Extract returned leaf index
     const leafIndex = scValToNative(result!.returnValue!)
@@ -107,7 +108,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     // 10. Verify shielded supply increased
     const supply = await callView(server, account, keypair, ct20, 'shielded_supply', [
       nativeToScVal(USDC_ID, { type: 'address' }),
-    ])
+    ]) as string | number | bigint
     expect(BigInt(supply)).toBeGreaterThanOrEqual(AMOUNT)
     console.log(`✓ Shielded supply: ${supply}`)
 
@@ -124,7 +125,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
 
 async function callView(
   server:  SorobanRpc.Server,
-  account: SorobanRpc.Api.AccountResponse,
+  account: Account,
   keypair: Keypair,
   contract: Contract,
   method:  string,

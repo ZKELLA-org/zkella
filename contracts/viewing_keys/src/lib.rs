@@ -1,28 +1,23 @@
 #![no_std]
 
+//! Viewing-key commitment registry.
+//!
+//! Scoped to viewing-key commitments only. Compliance/sanctions
+//! non-membership proofs used to be stored here too, under an unrelated
+//! `ComplianceRecord` key with no verification (`// Full Groth16
+//! verification in M2`) — that's now `contracts/compliance`, which actually
+//! verifies proofs against `contracts/verifier` before storing them. Two
+//! concerns with different lifecycles and access-control needs belong in two
+//! contracts.
+
 use soroban_sdk::{
     contract, contractimpl, contracttype,
-    symbol_short, Address, Bytes, BytesN, Env,
+    symbol_short, Address, BytesN, Env,
 };
 
 #[contracttype]
 pub enum StorageKey {
     ViewingKeyCommitment(Address),
-    ComplianceRecord(Address),
-}
-
-#[contracttype]
-pub struct ComplianceRecord {
-    pub sanctions_root:  BytesN<32>,
-    pub proof:           Bytes,
-    pub published_ledger: u32,
-    pub version:         soroban_sdk::String,
-}
-
-#[contracttype]
-pub struct CompliancePublicInputs {
-    pub sanctions_root: BytesN<32>,
-    pub tk_commitment:  BytesN<32>,
 }
 
 #[contract]
@@ -45,27 +40,37 @@ impl ViewingKeyRegistry {
         );
     }
 
-    pub fn publish_compliance_proof(
-        env:             Env,
-        owner:           Address,
-        sanctions_root:  BytesN<32>,
-        proof:           Bytes,
-        _pub_inputs:     CompliancePublicInputs,
-    ) {
-        owner.require_auth();
+    pub fn get_viewing_key_commitment(env: Env, owner: Address) -> Option<BytesN<32>> {
+        env.storage().instance().get(&StorageKey::ViewingKeyCommitment(owner))
+    }
+}
 
-        // Verify non-membership proof
-        // Full Groth16 verification in M2
-        let record = ComplianceRecord {
-            sanctions_root,
-            proof,
-            published_ledger: env.ledger().sequence(),
-            version: soroban_sdk::String::from_str(&env, "1.0"),
-        };
-        env.storage().instance().set(&StorageKey::ComplianceRecord(owner), &record);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn register_then_get_roundtrips() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let contract = env.register(ViewingKeyRegistry, ());
+        let client = ViewingKeyRegistryClient::new(&env, &contract);
+
+        let vk_commitment = BytesN::from_array(&env, &[7u8; 32]);
+        client.register(&owner, &vk_commitment, &100);
+
+        assert_eq!(client.get_viewing_key_commitment(&owner), Some(vk_commitment));
     }
 
-    pub fn get_compliance_proof(env: Env, owner: Address) -> Option<ComplianceRecord> {
-        env.storage().instance().get(&StorageKey::ComplianceRecord(owner))
+    #[test]
+    fn get_returns_none_for_unregistered_owner() {
+        let env = Env::default();
+        let owner = Address::generate(&env);
+        let contract = env.register(ViewingKeyRegistry, ());
+        let client = ViewingKeyRegistryClient::new(&env, &contract);
+
+        assert_eq!(client.get_viewing_key_commitment(&owner), None);
     }
 }

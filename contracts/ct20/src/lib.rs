@@ -4,16 +4,25 @@ mod merkle;
 mod poseidon;
 mod types;
 
+#[cfg(test)]
+mod test_groth16;
+
 use soroban_sdk::{
     contract, contractimpl, symbol_short,
     token, Address, Bytes, BytesN, Env, Vec,
     xdr::ToXdr,
 };
+use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 use types::{
-    Error, NoteCommitmentEvent, ShieldEvent, ShieldPublicInputs,
-    StorageKey, TransferPublicInputs, UnshieldPublicInputs,
+    NoteCommitmentEvent, NullifierEvent, ShieldEvent,
+    StorageKey, TransferPublicInputs, UnshieldEvent,
 };
+// Re-exported for downstream crates that deploy a real `CT20Contract` in
+// their own tests (e.g. `contracts/swap`'s test suite, which shields a real
+// note via a direct `CT20ContractClient` call before exercising
+// `swap::commit_swap`'s cross-call into `ct20::unshield`).
+pub use types::{Error, ShieldPublicInputs, UnshieldPublicInputs};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +55,7 @@ fn compute_commitment(
     asset:  &Address,
     rho:    &BytesN<32>,
     rcm:    &BytesN<32>,
+    hasher: &mut poseidon::Poseidon2Hasher,
 ) -> [u8; 32] {
     let mut value_bytes = [0u8; 32];
     value_bytes[..16].copy_from_slice(&(value as u128).to_le_bytes());
@@ -55,16 +65,23 @@ fn compute_commitment(
     let rho_bytes: [u8; 32] = rho.clone().into();
     let rcm_bytes: [u8; 32] = rcm.clone().into();
 
-    let h1 = poseidon::poseidon2_bytes(&value_bytes, &asset_bytes);
-    let h2 = poseidon::poseidon2_bytes(&rho_bytes, &rcm_bytes);
-    poseidon::poseidon2_bytes(&h1, &h2)
+    let h1 = hasher.hash(&value_bytes, &asset_bytes);
+    let h2 = hasher.hash(&rho_bytes, &rcm_bytes);
+    hasher.hash(&h1, &h2)
 }
 
 /// Extract the raw 32-byte contract ID from a Soroban Address via XDR.
 ///
-/// XDR layout of ScAddress::Contract:
-///   discriminant (4 bytes, big-endian) = 0x00000001
-///   contract hash (32 bytes)
+/// `addr.to_xdr(env)` serializes the full `ScVal::Address(ScAddress::Contract(Hash))`,
+/// not a bare `ScAddress` — so there are *two* 4-byte discriminants ahead of the
+/// hash (the `ScVal` tag, then the `ScAddress` tag), not one. An earlier version
+/// of this function assumed only the latter and read from a fixed offset of 4,
+/// which actually landed on the `ScAddress` discriminant itself and truncated the
+/// last 4 bytes of the real hash — caught by cross-checking a real testnet
+/// contract address's derived value against an independent StrKey decode (see
+/// `diagnostic_print_commitment_for_real_testnet_shield` below). Reading the
+/// *last* 32 bytes instead of a fixed forward offset is robust to that kind of
+/// wrapping regardless of how many discriminants precede the hash.
 ///
 /// This produces the same bytes as the TypeScript SDK's addressToField():
 ///   StrKey base32-decode → skip 1-byte version + 2-byte checksum → 32-byte payload
@@ -72,9 +89,9 @@ fn compute_commitment(
 fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     let xdr = addr.to_xdr(env);
     let mut out = [0u8; 32];
-    // Contract address: discriminant occupies bytes [0..4], hash at [4..36].
+    let start = xdr.len() - 32;
     for i in 0..32u32 {
-        out[i as usize] = xdr.get(4 + i).unwrap_or(0) as u8;
+        out[i as usize] = xdr.get(start + i).unwrap_or(0) as u8;
     }
     out
 }
@@ -88,23 +105,22 @@ pub struct CT20Contract;
 impl CT20Contract {
 
     /// Initialize the contract. Can only be called once.
-    /// `verifying_key` must be a well-formed Groth16 verifying key (or empty bytes for dev).
+    /// `verifier` is the address of a deployed `zkella-verifier` registry
+    /// contract with a verifying key already registered for
+    /// `CircuitType::Shield` (and, once implemented, Transfer/Unshield).
+    /// The verifying key itself lives in that contract, not here — see
+    /// `contracts/verifier` for why it's kept separate.
     pub fn initialize(
-        env:           Env,
-        admin:         Address,
-        verifying_key: Bytes,
+        env:      Env,
+        admin:    Address,
+        verifier: Address,
     ) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
         }
-        // A real Groth16 verifying key for BN254 is at least 256 bytes.
-        // Empty bytes are permitted only in dev/test builds.
-        // TODO(M2): enforce non-empty + validate structure when proof verification lands.
-        let vk_len = verifying_key.len();
-        assert!(vk_len == 0 || vk_len >= 256, "verifying key too short");
 
         env.storage().instance().set(&StorageKey::Admin, &admin);
-        env.storage().instance().set(&StorageKey::VerifyingKey, &verifying_key);
+        env.storage().instance().set(&StorageKey::Verifier, &verifier);
         env.storage().instance().set(&StorageKey::Paused, &false);
         env.storage().instance().set(&StorageKey::NextLeafIndex, &0u32);
         // Seed TTL for the freshly created instance storage entries.
@@ -122,7 +138,9 @@ impl CT20Contract {
     ///   • commitment == Poseidon2(Poseidon2(value_bytes, asset_bytes), Poseidon2(rho, rcm))
     ///   • commitment has not been seen before (prevents replay / double-spend)
     ///
-    /// TODO(M2): add Groth16 proof verification via bn254_multi_pairing_check.
+    /// `shield_proof` is a Groth16 proof (see `contracts/verifier` for wire
+    /// format) verified on-chain against the `CircuitType::Shield` verifying
+    /// key registered in this contract's configured verifier registry.
     ///
     /// Returns the leaf index assigned in the Merkle tree.
     pub fn shield(
@@ -134,7 +152,7 @@ impl CT20Contract {
         rcm:            BytesN<32>,
         commitment:     BytesN<32>,
         encrypted_note: Bytes,
-        _shield_proof:  Bytes,
+        shield_proof:   Bytes,
         shield_pub:     ShieldPublicInputs,
     ) -> Result<u32, Error> {
         // ── 1. Auth & pause check ───────────────────────────────────────────
@@ -163,7 +181,11 @@ impl CT20Contract {
         }
 
         // ── 5. Verify commitment matches Poseidon2 re-computation ───────────
-        let computed  = compute_commitment(&env, amount, &asset, &rho, &rcm);
+        // One hasher reused across the commitment check and the Merkle insert
+        // below (~35 hashes total) — see Poseidon2Hasher's doc comment for why
+        // a fresh sponge per call blew the instruction budget.
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed  = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
         let provided: [u8; 32] = commitment.clone().into();
         if computed != provided {
             return Err(Error::CommitmentMismatch);
@@ -175,8 +197,38 @@ impl CT20Contract {
             return Err(Error::DuplicateCommitment);
         }
 
-        // ── 7. TODO(M2): Groth16 proof verification ─────────────────────────
-        // assert!(Self::verify_groth16(&env, &_shield_proof, &shield_pub));
+        // ── 7. Groth16 proof verification ────────────────────────────────────
+        // Public input order matches circuits/shield/shield.circom's
+        // `component main {public [commitment, value_commit, pub_value, pub_asset_id]}`
+        // and zkella-verifier's real-shield-circuit test.
+        let verifier: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Verifier)
+            .ok_or(Error::NotInitialized)?;
+
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(amount as u128).to_le_bytes());
+        let asset_bytes = address_to_field_bytes(&env, &asset);
+
+        let public_inputs = Vec::from_array(
+            &env,
+            [
+                commitment.clone(),
+                shield_pub.value_commit.clone(),
+                BytesN::from_array(&env, &value_bytes),
+                BytesN::from_array(&env, &asset_bytes),
+            ],
+        );
+
+        let proof_ok = VerifierClient::new(&env, &verifier).verify(
+            &CircuitType::Shield,
+            &public_inputs,
+            &shield_proof,
+        );
+        if !proof_ok {
+            return Err(Error::InvalidProof);
+        }
 
         // ── 8. Effects: record commitment, update supply, insert into tree ──
         // Mark commitment as seen before external token call (reentrancy safety).
@@ -195,7 +247,7 @@ impl CT20Contract {
             .instance()
             .set(&StorageKey::ShieldedSupply(asset.clone()), &new_supply);
 
-        let leaf_index = merkle::insert(&env, commitment.clone());
+        let leaf_index = merkle::insert(&env, commitment.clone(), &mut hasher);
 
         // Bump instance storage TTL on every shield (keeps root + counter alive).
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
@@ -227,38 +279,329 @@ impl CT20Contract {
         Ok(leaf_index)
     }
 
-    // ── Transfer — stub (M2) ──────────────────────────────────────────────────
+    // ── Transfer ──────────────────────────────────────────────────────────────
 
-    /// Private note-to-note transfer. Implemented in M2.
+    /// Private note-to-note transfer: spends `nullifiers` (proven owned via a
+    /// zero-knowledge proof) and creates `commitments` as new notes. Fixed
+    /// 2-in-2-out arity, matching `circuits/transfer_2in2out/transfer.circom`
+    /// — see `transfer4()` for the 4-in-4-out circuit.
+    ///
+    /// No `require_auth()` on any note owner: authorization is the proof
+    /// itself — only someone who knows a note's spending key can derive its
+    /// nullifier and construct a valid proof against it, which is the whole
+    /// point of a note-based (not account-based) shielded pool. Any account
+    /// can submit the underlying transaction (e.g. a relayer).
+    ///
+    /// Public input order matches the circuit's `component main {public
+    /// [anchor, nullifiers, out_commitments, in_value_commits,
+    /// out_value_commits, fee, asset_id]}`.
     pub fn transfer(
-        _env:             Env,
-        _nullifiers:      Vec<BytesN<32>>,
-        _commitments:     Vec<BytesN<32>>,
-        _encrypted_notes: Vec<Bytes>,
-        _proof:           Bytes,
-        _pub_inputs:      TransferPublicInputs,
+        env:             Env,
+        nullifiers:      Vec<BytesN<32>>,
+        commitments:     Vec<BytesN<32>>,
+        encrypted_notes: Vec<Bytes>,
+        proof:           Bytes,
+        pub_inputs:      TransferPublicInputs,
     ) -> Result<Vec<u32>, Error> {
-        Err(Error::NotImplemented)
+        Self::transfer_internal(env, 2, CircuitType::Transfer, nullifiers, commitments, encrypted_notes, proof, pub_inputs)
     }
 
-    // ── Unshield — stub (M2) ──────────────────────────────────────────────────
+    /// Same as `transfer()`, against `circuits/transfer_4in4out/transfer.circom`
+    /// (4-in-4-out) instead of the 2-in-2-out circuit. Shares the same
+    /// `TransferPublicInputs` shape (its `Vec` fields aren't fixed-size) and
+    /// the same security properties — see `transfer()`'s doc comment and
+    /// `transfer_internal`'s implementation.
+    pub fn transfer4(
+        env:             Env,
+        nullifiers:      Vec<BytesN<32>>,
+        commitments:     Vec<BytesN<32>>,
+        encrypted_notes: Vec<Bytes>,
+        proof:           Bytes,
+        pub_inputs:      TransferPublicInputs,
+    ) -> Result<Vec<u32>, Error> {
+        Self::transfer_internal(env, 4, CircuitType::Transfer4x4, nullifiers, commitments, encrypted_notes, proof, pub_inputs)
+    }
 
-    /// Move tokens from the shielded pool back to a public address. Implemented in M2.
+    fn transfer_internal(
+        env:             Env,
+        n:               u32,
+        circuit:         CircuitType,
+        nullifiers:      Vec<BytesN<32>>,
+        commitments:     Vec<BytesN<32>>,
+        encrypted_notes: Vec<Bytes>,
+        proof:           Bytes,
+        pub_inputs:      TransferPublicInputs,
+    ) -> Result<Vec<u32>, Error> {
+        Self::assert_not_paused(&env)?;
+
+        // ── 1. Arity checks ───────────────────────────────────────────────────
+        if nullifiers.len() != n || commitments.len() != n || encrypted_notes.len() != n {
+            return Err(Error::InvalidInputCount);
+        }
+        if pub_inputs.nullifiers.len() != n
+            || pub_inputs.out_commitments.len() != n
+            || pub_inputs.in_value_commits.len() != n
+            || pub_inputs.out_value_commits.len() != n
+        {
+            return Err(Error::InvalidInputCount);
+        }
+
+        // ── 2. Public inputs must match the call's actual parameters ─────────
+        for i in 0..n {
+            if nullifiers.get(i).unwrap() != pub_inputs.nullifiers.get(i).unwrap() {
+                return Err(Error::CommitmentMismatch);
+            }
+            if commitments.get(i).unwrap() != pub_inputs.out_commitments.get(i).unwrap() {
+                return Err(Error::CommitmentMismatch);
+            }
+        }
+
+        // ── 3. Anchor must be the current Merkle root ─────────────────────────
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let current_root = merkle::root(&env, &mut hasher);
+        if pub_inputs.anchor != current_root {
+            return Err(Error::InvalidAnchor);
+        }
+
+        // ── 4. Nullifiers (and output commitments) must be pairwise distinct
+        // within this call. Without this, the same real note could be
+        // supplied as both input slots (same rho => same nullifier in both
+        // positions): the circuit constrains each slot independently with no
+        // cross-slot distinctness check, so sum_in would double-count a
+        // single note's value, letting a holder of value V mint 2V-fee in
+        // fresh output notes from one real note. The loop below closes that
+        // at the contract boundary — the actual enforcement point, since the
+        // "unspent" check after this only looks at already-persisted state
+        // and can't see duplicates within the same call.
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if nullifiers.get(i).unwrap() == nullifiers.get(j).unwrap() {
+                    return Err(Error::DuplicateInputInCall);
+                }
+                if commitments.get(i).unwrap() == commitments.get(j).unwrap() {
+                    return Err(Error::DuplicateInputInCall);
+                }
+            }
+        }
+
+        // ── 5. Nullifiers must be unspent ─────────────────────────────────────
+        for i in 0..n {
+            let nf = nullifiers.get(i).unwrap();
+            if env.storage().persistent().has(&StorageKey::Nullifier(nf)) {
+                return Err(Error::NullifierSpent);
+            }
+        }
+
+        // ── 6. Output commitments must not already exist (replay / pollution) ──
+        for i in 0..n {
+            let cm = commitments.get(i).unwrap();
+            if env.storage().persistent().has(&StorageKey::CommitmentSeen(cm)) {
+                return Err(Error::DuplicateCommitment);
+            }
+        }
+
+        // ── 7. Groth16 proof verification ─────────────────────────────────────
+        let verifier: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Verifier)
+            .ok_or(Error::NotInitialized)?;
+
+        let mut public_inputs = Vec::new(&env);
+        public_inputs.push_back(pub_inputs.anchor.clone());
+        for i in 0..n { public_inputs.push_back(pub_inputs.nullifiers.get(i).unwrap()); }
+        for i in 0..n { public_inputs.push_back(pub_inputs.out_commitments.get(i).unwrap()); }
+        for i in 0..n { public_inputs.push_back(pub_inputs.in_value_commits.get(i).unwrap()); }
+        for i in 0..n { public_inputs.push_back(pub_inputs.out_value_commits.get(i).unwrap()); }
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(pub_inputs.fee as u128).to_le_bytes());
+        public_inputs.push_back(BytesN::from_array(&env, &fee_bytes));
+        public_inputs.push_back(BytesN::from_array(&env, &address_to_field_bytes(&env, &pub_inputs.asset_id)));
+
+        let proof_ok = VerifierClient::new(&env, &verifier).verify(
+            &circuit,
+            &public_inputs,
+            &proof,
+        );
+        if !proof_ok {
+            return Err(Error::InvalidProof);
+        }
+
+        // ── 8. Effects: mark nullifiers spent, insert output commitments ─────
+        for i in 0..n {
+            let nf = nullifiers.get(i).unwrap();
+            let nf_key = StorageKey::Nullifier(nf.clone());
+            env.storage().persistent().set(&nf_key, &true);
+            env.storage().persistent().extend_ttl(&nf_key, 17_280 * 30, 17_280 * 365);
+            env.events().publish(
+                (symbol_short!("zkella"), symbol_short!("nf")),
+                NullifierEvent { nullifier: nf },
+            );
+        }
+
+        let mut leaf_indices = Vec::new(&env);
+        for i in 0..n {
+            let cm = commitments.get(i).unwrap();
+            let seen_key = StorageKey::CommitmentSeen(cm.clone());
+            env.storage().persistent().set(&seen_key, &true);
+            env.storage().persistent().extend_ttl(&seen_key, 17_280 * 30, 17_280 * 365);
+
+            let leaf_index = merkle::insert(&env, cm.clone(), &mut hasher);
+            leaf_indices.push_back(leaf_index);
+
+            env.events().publish(
+                (symbol_short!("zkella"), symbol_short!("note")),
+                NoteCommitmentEvent {
+                    leaf_index,
+                    commitment: cm,
+                    encrypted_note: encrypted_notes.get(i).unwrap(),
+                },
+            );
+        }
+
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+
+        Ok(leaf_indices)
+    }
+
+    // ── Unshield ──────────────────────────────────────────────────────────────
+
+    /// Move a note from the shielded pool back to a public address `to`.
+    ///
+    /// `pub_inputs.recipient_hash` must equal `Poseidon2(address_field(to), 0)`.
+    /// This binding is deliberately NOT enforced by the circuit itself (see
+    /// `circuits/unshield/unshield.circom`'s comment — it's included as a
+    /// public input but unconstrained there), so the contract checks it here.
+    /// This is the authoritative definition of that binding — the wallet/SDK's
+    /// unshield() implementation (not yet written; see `sdk/src/wallet/wallet.ts`)
+    /// must compute `recipient_hash` exactly this way, matching the same
+    /// domain-separation-via-second-slot pattern already used in
+    /// `circuits/compliance/non_membership.circom`.
     pub fn unshield(
-        _env:        Env,
-        _nullifier:  BytesN<32>,
-        _to:         Address,
-        _proof:      Bytes,
-        _pub_inputs: UnshieldPublicInputs,
+        env:        Env,
+        nullifier:  BytesN<32>,
+        to:         Address,
+        proof:      Bytes,
+        pub_inputs: UnshieldPublicInputs,
     ) -> Result<(), Error> {
-        Err(Error::NotImplemented)
+        Self::assert_not_paused(&env)?;
+
+        // ── 1. Public inputs must match the call's actual parameters ─────────
+        if pub_inputs.nullifier != nullifier {
+            return Err(Error::CommitmentMismatch);
+        }
+
+        // ── 2. recipient_hash binds `to` ───────────────────────────────────────
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let to_field = address_to_field_bytes(&env, &to);
+        let expected_recipient_hash = hasher.hash(&to_field, &[0u8; 32]);
+        let provided_recipient_hash: [u8; 32] = pub_inputs.recipient_hash.clone().into();
+        if expected_recipient_hash != provided_recipient_hash {
+            return Err(Error::RecipientMismatch);
+        }
+
+        // ── 3. Anchor must be the current Merkle root ─────────────────────────
+        let current_root = merkle::root(&env, &mut hasher);
+        if pub_inputs.anchor != current_root {
+            return Err(Error::InvalidAnchor);
+        }
+
+        // ── 4. Nullifier must be unspent ──────────────────────────────────────
+        let nf_key = StorageKey::Nullifier(nullifier.clone());
+        if env.storage().persistent().has(&nf_key) {
+            return Err(Error::NullifierSpent);
+        }
+
+        // ── 5. Amount validity ─────────────────────────────────────────────────
+        if pub_inputs.pub_value <= 0 {
+            return Err(Error::AmountMismatch);
+        }
+
+        // ── 6. Groth16 proof verification ─────────────────────────────────────
+        let verifier: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Verifier)
+            .ok_or(Error::NotInitialized)?;
+
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(pub_inputs.pub_value as u128).to_le_bytes());
+        let asset_bytes = address_to_field_bytes(&env, &pub_inputs.pub_asset_id);
+
+        let public_inputs = Vec::from_array(
+            &env,
+            [
+                pub_inputs.anchor.clone(),
+                nullifier.clone(),
+                BytesN::from_array(&env, &value_bytes),
+                BytesN::from_array(&env, &asset_bytes),
+                pub_inputs.recipient_hash.clone(),
+            ],
+        );
+
+        let proof_ok = VerifierClient::new(&env, &verifier).verify(
+            &CircuitType::Unshield,
+            &public_inputs,
+            &proof,
+        );
+        if !proof_ok {
+            return Err(Error::InvalidProof);
+        }
+
+        // ── 7. Effects: mark nullifier spent, update shielded supply ─────────
+        env.storage().persistent().set(&nf_key, &true);
+        env.storage().persistent().extend_ttl(&nf_key, 17_280 * 30, 17_280 * 365);
+
+        // shield() increments ShieldedSupply on deposit; unshield() must
+        // decrement it symmetrically on withdrawal, or shielded_supply()
+        // permanently overstates the contract's real token backing after any
+        // unshield. i128 is signed, so `checked_sub` alone only catches
+        // actual type-level overflow — it happily returns a negative i128,
+        // which is a "valid" value but violates the business invariant that
+        // supply can't go negative. Check that explicitly instead.
+        let prev_supply: i128 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ShieldedSupply(pub_inputs.pub_asset_id.clone()))
+            .unwrap_or(0);
+        if pub_inputs.pub_value > prev_supply {
+            return Err(Error::AmountMismatch);
+        }
+        let new_supply = prev_supply
+            .checked_sub(pub_inputs.pub_value)
+            .ok_or(Error::AmountMismatch)?;
+        env.storage()
+            .instance()
+            .set(&StorageKey::ShieldedSupply(pub_inputs.pub_asset_id.clone()), &new_supply);
+
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+
+        env.events().publish(
+            (symbol_short!("zkella"), symbol_short!("nf")),
+            NullifierEvent { nullifier: nullifier.clone() },
+        );
+        env.events().publish(
+            (symbol_short!("zkella"), symbol_short!("unshield")),
+            UnshieldEvent {
+                to:     to.clone(),
+                amount: pub_inputs.pub_value,
+                asset:  pub_inputs.pub_asset_id.clone(),
+            },
+        );
+
+        // ── 8. Interaction: release public tokens (last, checks-effects-interactions) ──
+        let token_client = token::Client::new(&env, &pub_inputs.pub_asset_id);
+        token_client.transfer(&env.current_contract_address(), &to, &pub_inputs.pub_value);
+
+        Ok(())
     }
 
     // ── Read-only queries ─────────────────────────────────────────────────────
 
     /// Current Merkle root of the note commitment tree.
     pub fn merkle_root(env: Env) -> BytesN<32> {
-        merkle::root(&env)
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        merkle::root(&env, &mut hasher)
     }
 
     /// Returns true if a nullifier has been spent.
@@ -278,7 +621,8 @@ impl CT20Contract {
 
     /// Merkle authentication path for a leaf, used as circuit witness.
     pub fn merkle_path(env: Env, leaf_index: u32) -> Vec<BytesN<32>> {
-        merkle::get_path(&env, leaf_index)
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        merkle::get_path(&env, leaf_index, &mut hasher)
     }
 
     /// Total number of shielded notes ever created.
@@ -359,19 +703,74 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
-    fn setup() -> (Env, Address, Address) {
-        let env   = Env::default();
-        let admin = Address::generate(&env);
-        let ct20  = env.register_contract(None, CT20Contract);
-        (env, admin, ct20)
+    /// Deploys ct20 alongside a real `zkella-verifier` registry, initialized
+    /// with `admin` as its admin (no VK registered yet). Tests that need
+    /// `shield()` to actually succeed must register a VK via
+    /// `prove_and_register_shield` below; tests that only exercise checks
+    /// *before* proof verification (amount, note length, duplicate
+    /// commitment) don't need to.
+    ///
+    /// Explicitly enforces `InvocationResourceLimits::mainnet()` — the SDK's
+    /// own snapshot of the *current* real network limits (400M instructions,
+    /// as of 2026-07-10) — rather than trusting `Env::default()`'s built-in
+    /// budget, which is a much more conservative 100M and does not track the
+    /// network. Budget-viability claims are only meaningful against the real
+    /// figure, and this is that check: does a real shield() call —
+    /// commitment computation, Merkle insert, and a genuine on-chain Groth16
+    /// verification — actually fit inside it.
+    fn setup() -> (Env, Address, Address, Address) {
+        let env      = Env::default();
+        // 400M cpu / ~40MB mem: the SDK's own `InvocationResourceLimits::mainnet()`
+        // values (snapshot 2026-07-10); reproduced here as literals since
+        // that type isn't cleanly importable from this SDK version's public
+        // surface. `Env::default()`'s own built-in limit (100M) is far more
+        // conservative and doesn't track the real network.
+        env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+        env.mock_all_auths();
+        let admin    = Address::generate(&env);
+        let ct20     = env.register(CT20Contract, ());
+        let verifier = env.register(zkella_verifier::VerifierContract, ());
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+        (env, admin, ct20, verifier)
+    }
+
+    /// Builds a genuinely valid (if synthetic — see test_groth16.rs) Groth16
+    /// proof for the given shield public inputs, registers its VK on
+    /// `verifier` for `CircuitType::Shield`, and returns the proof bytes to
+    /// pass to `shield()`.
+    fn prove_and_register_shield(
+        env:          &Env,
+        verifier:     &Address,
+        commitment:   &BytesN<32>,
+        value_commit: &BytesN<32>,
+        amount:       i128,
+        asset:        &Address,
+    ) -> Bytes {
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(amount as u128).to_le_bytes());
+        let asset_bytes = address_to_field_bytes(env, asset);
+
+        let public_inputs_le: [[u8; 32]; 4] = [
+            commitment.clone().into(),
+            value_commit.clone().into(),
+            value_bytes,
+            asset_bytes,
+        ];
+
+        let (vk_bytes, proof_bytes) = test_groth16::build_valid_shield_proof(env, public_inputs_le);
+
+        let verifier_client = zkella_verifier::VerifierContractClient::new(env, verifier);
+        verifier_client.register_verifying_key(&CircuitType::Shield.into(), &vk_bytes);
+
+        proof_bytes
     }
 
     #[test]
     fn initialize_sets_admin_and_root() {
-        let (env, admin, ct20) = setup();
+        let (env, admin, ct20, verifier) = setup();
         let client = CT20ContractClient::new(&env, &ct20);
 
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
 
         let root = client.merkle_root();
         assert_ne!(root, BytesN::from_array(&env, &[0u8; 32]));
@@ -380,18 +779,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "already initialized")]
     fn initialize_cannot_be_called_twice() {
-        let (env, admin, ct20) = setup();
+        let (env, admin, ct20, verifier) = setup();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
+        client.initialize(&admin, &verifier);
     }
 
     #[test]
     fn merkle_root_changes_after_shield() {
-        let (env, admin, ct20) = setup();
+        let (env, admin, ct20, verifier) = setup();
         env.mock_all_auths();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
 
         let root_before = client.merkle_root();
 
@@ -410,15 +809,21 @@ mod tests {
         let rcm = BytesN::from_array(&env, &[2u8; 32]);
 
         // Compute commitment using the same function the contract will call
-        let computed = compute_commitment(&env, 100_000_000, &token_addr, &rho, &rcm);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed = compute_commitment(&env, 100_000_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
 
         let pub_inputs = ShieldPublicInputs {
             commitment:   commitment.clone(),
-            value_commit: BytesN::from_array(&env, &[0u8; 32]),
+            value_commit: value_commit.clone(),
             pub_value:    100_000_000,
             pub_asset_id: token_addr.clone(),
         };
+
+        let proof = prove_and_register_shield(
+            &env, &verifier, &commitment, &value_commit, 100_000_000, &token_addr,
+        );
 
         // Encrypted note stub: must be exactly ENCRYPTED_NOTE_LEN bytes
         let mut enc_bytes = [0u8; 176];
@@ -433,7 +838,7 @@ mod tests {
             &rcm,
             &commitment,
             &encrypted_note,
-            &Bytes::new(&env),
+            &proof,
             &pub_inputs,
         );
 
@@ -449,11 +854,63 @@ mod tests {
     }
 
     #[test]
-    fn shield_rejects_negative_amount() {
-        let (env, admin, ct20) = setup();
+    fn shield_rejects_invalid_proof() {
+        // Same commitment/public inputs as a real shield, but the proof
+        // registered is for a *different* VK — must be rejected by the
+        // verifier, not silently accepted.
+        let (env, admin, ct20, verifier) = setup();
         env.mock_all_auths();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let user        = Address::generate(&env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&user, &1_000_000_000);
+
+        let rho = BytesN::from_array(&env, &[7u8; 32]);
+        let rcm = BytesN::from_array(&env, &[8u8; 32]);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let enc = Bytes::from_array(&env, &[0u8; 176]);
+        let pub_inputs = ShieldPublicInputs {
+            commitment:   commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value:    1_000,
+            pub_asset_id: token_addr.clone(),
+        };
+
+        // Register a real VK for these public inputs, but build a
+        // deliberately non-matching proof to submit instead.
+        let public_inputs_le: [[u8; 32]; 4] = [
+            commitment.clone().into(),
+            value_commit.clone().into(),
+            {
+                let mut v = [0u8; 32];
+                v[..16].copy_from_slice(&1_000u128.to_le_bytes());
+                v
+            },
+            address_to_field_bytes(&env, &token_addr),
+        ];
+        let (vk_bytes, valid_proof) = test_groth16::build_valid_shield_proof(&env, public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Shield.into(), &vk_bytes);
+        let bad_proof = test_groth16::corrupt_proof(&env, &valid_proof);
+
+        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &bad_proof, &pub_inputs);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn shield_rejects_negative_amount() {
+        let (env, admin, ct20, verifier) = setup();
+        env.mock_all_auths();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
         let token_id    = env.register_stellar_asset_contract_v2(token_admin);
@@ -471,16 +928,18 @@ mod tests {
             pub_asset_id: token_addr.clone(),
         };
 
+        // Negative amount is rejected before proof verification is reached,
+        // so an empty/garbage proof is fine here.
         let result = client.try_shield(&user, &token_addr, &-1i128, &rho, &rcm, &cm, &enc, &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
     }
 
     #[test]
     fn shield_rejects_duplicate_commitment() {
-        let (env, admin, ct20) = setup();
+        let (env, admin, ct20, verifier) = setup();
         env.mock_all_auths();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
         let token_id    = env.register_stellar_asset_contract_v2(token_admin);
@@ -495,31 +954,38 @@ mod tests {
 
         let rho = BytesN::from_array(&env, &[3u8; 32]);
         let rcm = BytesN::from_array(&env, &[4u8; 32]);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc        = Bytes::from_array(&env, &[0u8; 176]);
         let pub_inputs = ShieldPublicInputs {
             commitment:   commitment.clone(),
-            value_commit: BytesN::from_array(&env, &[0u8; 32]),
+            value_commit: value_commit.clone(),
             pub_value:    1_000,
             pub_asset_id: token_addr.clone(),
         };
 
-        // First shield succeeds
-        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &Bytes::new(&env), &pub_inputs);
+        let proof = prove_and_register_shield(
+            &env, &verifier, &commitment, &value_commit, 1_000, &token_addr,
+        );
 
-        // Second shield with same commitment must fail
+        // First shield succeeds
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+
+        // Second shield with same commitment must fail at the duplicate
+        // check, before proof verification is reached again.
         stellar_asset.mint(&user, &1_000_000_000);
-        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &Bytes::new(&env), &pub_inputs);
+        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
         assert!(result.is_err());
     }
 
     #[test]
     fn shield_rejects_wrong_encrypted_note_length() {
-        let (env, admin, ct20) = setup();
+        let (env, admin, ct20, verifier) = setup();
         env.mock_all_auths();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
         let token_id    = env.register_stellar_asset_contract_v2(token_admin);
@@ -528,7 +994,8 @@ mod tests {
 
         let rho = BytesN::from_array(&env, &[5u8; 32]);
         let rcm = BytesN::from_array(&env, &[6u8; 32]);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         // Wrong length: 136 instead of 176
         let bad_enc    = Bytes::from_array(&env, &[0u8; 136]);
@@ -539,15 +1006,20 @@ mod tests {
             pub_asset_id: token_addr.clone(),
         };
 
+        // Wrong note length is rejected before proof verification, so an
+        // empty/garbage proof is fine here.
         let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &bad_enc, &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
     }
 
     #[test]
-    fn transfer_and_unshield_return_not_implemented() {
-        let (env, admin, ct20) = setup();
+    fn transfer_and_unshield_reject_malformed_input() {
+        // transfer(): empty vecs fail the 2-in-2-out arity check.
+        // unshield(): recipient_hash=[0;32] won't match Poseidon2(address, 0)
+        // for a real generated address. Neither reaches proof verification.
+        let (env, admin, ct20, verifier) = setup();
         let client = CT20ContractClient::new(&env, &ct20);
-        client.initialize(&admin, &Bytes::new(&env));
+        client.initialize(&admin, &verifier);
 
         let transfer_result = client.try_transfer(
             &Vec::new(&env),
@@ -579,5 +1051,720 @@ mod tests {
             },
         );
         assert!(unshield_result.is_err());
+    }
+
+    #[test]
+    fn transfer_succeeds_with_valid_proof() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        // empty-tree root; transfer() doesn't itself verify input-note
+        // membership — that's the circuit's job, bypassed by this synthetic
+        // proof (see test_groth16.rs doc comment). merkle::root() touches
+        // contract storage, so it must be called through the client, not
+        // directly from test code.
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[11u8; 32]),
+            BytesN::from_array(&env, &[12u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[13u8; 32]),
+            BytesN::from_array(&env, &[14u8; 32]),
+        ]);
+        let in_value_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let out_value_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: in_value_commits.clone(),
+            out_value_commits: out_value_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        // Public input order matches transfer.circom's public signal list;
+        // see transfer()'s own doc comment.
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            in_value_commits.get(0).unwrap().into(),
+            in_value_commits.get(1).unwrap().into(),
+            out_value_commits.get(0).unwrap().into(),
+            out_value_commits.get(1).unwrap().into(),
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert_eq!(leaf_indices.len(), 2);
+        assert!(client.is_spent(&nullifiers.get(0).unwrap()));
+        assert!(client.is_spent(&nullifiers.get(1).unwrap()));
+        assert_eq!(client.leaf_count(), 2u32);
+    }
+
+    #[test]
+    fn transfer4_succeeds_with_valid_proof() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[51u8; 32]),
+            BytesN::from_array(&env, &[52u8; 32]),
+            BytesN::from_array(&env, &[53u8; 32]),
+            BytesN::from_array(&env, &[54u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[55u8; 32]),
+            BytesN::from_array(&env, &[56u8; 32]),
+            BytesN::from_array(&env, &[57u8; 32]),
+            BytesN::from_array(&env, &[58u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        // Public input order matches transfer_4in4out's public signal list:
+        // anchor(1) + nullifiers(4) + out_commitments(4) + in_value_commits(4)
+        // + out_value_commits(4) + fee(1) + asset_id(1) = 19.
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 19] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            nullifiers.get(2).unwrap().into(),
+            nullifiers.get(3).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            out_commitments.get(2).unwrap().into(),
+            out_commitments.get(3).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer4x4.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        let leaf_indices = client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert_eq!(leaf_indices.len(), 4);
+        for i in 0..4 {
+            assert!(client.is_spent(&nullifiers.get(i).unwrap()));
+        }
+        assert_eq!(client.leaf_count(), 4u32);
+    }
+
+    #[test]
+    fn transfer4_rejects_duplicate_nullifier_in_same_call() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let same_nullifier = BytesN::from_array(&env, &[77u8; 32]);
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[61u8; 32]),
+            same_nullifier.clone(),
+            BytesN::from_array(&env, &[62u8; 32]),
+            same_nullifier.clone(),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[63u8; 32]),
+            BytesN::from_array(&env, &[64u8; 32]),
+            BytesN::from_array(&env, &[65u8; 32]),
+            BytesN::from_array(&env, &[66u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 19] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            nullifiers.get(2).unwrap().into(),
+            nullifiers.get(3).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            out_commitments.get(2).unwrap().into(),
+            out_commitments.get(3).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer4x4.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        let result = client.try_transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert!(result.is_err(), "transfer4 with a duplicate nullifier across non-adjacent slots must be rejected");
+        assert!(!client.is_spent(&same_nullifier));
+        assert_eq!(client.leaf_count(), 0u32);
+    }
+
+    /// Regression test for the audit finding: using the same nullifier (i.e.
+    /// the same real note) in both input slots of a single transfer() call
+    /// must be rejected, even when the accompanying proof is cryptographically
+    /// valid for those exact (duplicated) public inputs — the vulnerability
+    /// was that a real note of value V could be double-counted as two inputs,
+    /// making sum_in = 2V and minting fabricated value in the outputs. This
+    /// must be caught before proof verification, not by relying on the proof
+    /// to reject it (the circuit itself didn't constrain this either, prior
+    /// to the accompanying fix in transfer_2in2out/transfer.circom).
+    #[test]
+    fn transfer_rejects_duplicate_nullifier_in_same_call() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let same_nullifier = BytesN::from_array(&env, &[99u8; 32]);
+        let nullifiers = Vec::from_array(&env, [same_nullifier.clone(), same_nullifier.clone()]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[15u8; 32]),
+            BytesN::from_array(&env, &[16u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        // Build a proof that is genuinely valid for these (duplicated)
+        // public inputs — proving the rejection comes from the contract's
+        // own duplicate check, not from proof verification failing.
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            same_nullifier.clone().into(),
+            same_nullifier.clone().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert!(result.is_err(), "transfer with duplicate nullifiers must be rejected");
+        assert!(!client.is_spent(&same_nullifier), "the nullifier must not be marked spent by a rejected call");
+        assert_eq!(client.leaf_count(), 0u32, "no notes should have been inserted");
+    }
+
+    /// Same vulnerability class, output side: duplicate output commitments
+    /// within one call must also be rejected (defense-in-depth — not a
+    /// value-fabrication vector on its own since nullifier-spent tracking
+    /// still prevents re-spending the underlying note, but keeping the tree
+    /// free of duplicate leaves is simpler to reason about).
+    #[test]
+    fn transfer_rejects_duplicate_output_commitment_in_same_call() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[17u8; 32]),
+            BytesN::from_array(&env, &[18u8; 32]),
+        ]);
+        let same_commitment = BytesN::from_array(&env, &[19u8; 32]);
+        let out_commitments = Vec::from_array(&env, [same_commitment.clone(), same_commitment.clone()]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            same_commitment.clone().into(),
+            same_commitment.clone().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert!(result.is_err(), "transfer with duplicate output commitments must be rejected");
+    }
+
+    #[test]
+    fn transfer_rejects_already_spent_nullifier() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[21u8; 32]),
+            BytesN::from_array(&env, &[22u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[23u8; 32]),
+            BytesN::from_array(&env, &[24u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee: 0,
+            asset_id: asset.clone(),
+        };
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32],
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+
+        // Same nullifiers again (different output commitments, still a fresh
+        // valid proof for those inputs) must fail on the spent-nullifier check.
+        let out_commitments_2 = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[25u8; 32]),
+            BytesN::from_array(&env, &[26u8; 32]),
+        ]);
+        let anchor2 = client.merkle_root();
+        let pub_inputs_2 = TransferPublicInputs {
+            anchor: anchor2.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments_2.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee: 0,
+            asset_id: asset.clone(),
+        };
+        let public_inputs_le_2: [[u8; 32]; 11] = [
+            anchor2.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments_2.get(0).unwrap().into(),
+            out_commitments_2.get(1).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32],
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes_2, proof_2) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le_2);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .update_verifying_key(&CircuitType::Transfer.into(), &vk_bytes_2);
+
+        let result = client.try_transfer(&nullifiers, &out_commitments_2, &encrypted_notes, &proof_2, &pub_inputs_2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unshield_succeeds_with_valid_proof_and_releases_tokens() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let recipient   = Address::generate(&env);
+        let shielder    = Address::generate(&env);
+
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&shielder, &1_000_000_000);
+
+        // Go through a real shield() first (rather than minting straight to
+        // the contract) so shielded_supply() accounting is genuinely
+        // exercised, not just token balances — this is the regression test
+        // for unshield() now symmetrically decrementing what shield()
+        // increments (see the audit finding this fixes).
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let shield_rho = BytesN::from_array(&env, &[30u8; 32]);
+        let shield_rcm = BytesN::from_array(&env, &[31u8; 32]);
+        let shield_amount: i128 = 1_000_000;
+        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &mut hasher);
+        let commitment = BytesN::from_array(&env, &commitment_bytes);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let shield_pub_inputs = ShieldPublicInputs {
+            commitment: commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value: shield_amount,
+            pub_asset_id: token_addr.clone(),
+        };
+        let shield_proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, shield_amount, &token_addr);
+        let encrypted_note = Bytes::from_array(&env, &[0u8; 176]);
+        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
+        assert_eq!(client.shielded_supply(&token_addr), shield_amount);
+
+        let anchor = client.merkle_root();
+        let nullifier = BytesN::from_array(&env, &[31u8; 32]);
+        let recipient_field = address_to_field_bytes(&env, &recipient);
+        let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
+        let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
+
+        let pub_value: i128 = 500_000;
+        let pub_inputs = UnshieldPublicInputs {
+            anchor: anchor.clone(),
+            nullifier: nullifier.clone(),
+            pub_value,
+            pub_asset_id: token_addr.clone(),
+            recipient_hash: recipient_hash.clone(),
+        };
+
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 5] = [
+            anchor.clone().into(),
+            nullifier.clone().into(),
+            value_bytes,
+            address_to_field_bytes(&env, &token_addr),
+            recipient_hash_bytes,
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
+
+        client.unshield(&nullifier, &recipient, &proof, &pub_inputs);
+
+        assert!(client.is_spent(&nullifier));
+        assert_eq!(stellar_asset.balance(&recipient), 500_000i128);
+        assert_eq!(stellar_asset.balance(&ct20), shield_amount - 500_000i128);
+        assert_eq!(
+            client.shielded_supply(&token_addr),
+            shield_amount - pub_value,
+            "shielded_supply must decrease symmetrically with shield()'s increase"
+        );
+    }
+
+    #[test]
+    fn unshield_rejects_when_it_would_underflow_shielded_supply() {
+        // No prior shield() for this asset, so shielded_supply() is 0;
+        // unshielding any positive amount must fail cleanly rather than
+        // wrapping supply negative or succeeding despite no real backing
+        // having ever been recorded for this asset.
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let recipient   = Address::generate(&env);
+
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&ct20, &1_000_000_000);
+
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let anchor = client.merkle_root();
+        let nullifier = BytesN::from_array(&env, &[32u8; 32]);
+        let recipient_field = address_to_field_bytes(&env, &recipient);
+        let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
+        let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
+
+        let pub_value: i128 = 500_000;
+        let pub_inputs = UnshieldPublicInputs {
+            anchor: anchor.clone(),
+            nullifier: nullifier.clone(),
+            pub_value,
+            pub_asset_id: token_addr.clone(),
+            recipient_hash,
+        };
+
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 5] = [
+            anchor.clone().into(),
+            nullifier.clone().into(),
+            value_bytes,
+            address_to_field_bytes(&env, &token_addr),
+            recipient_hash_bytes,
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
+
+        let result = client.try_unshield(&nullifier, &recipient, &proof, &pub_inputs);
+        assert!(result.is_err());
+        assert!(!client.is_spent(&nullifier), "a rejected unshield must not mark the nullifier spent");
+    }
+
+    #[test]
+    fn unshield_rejects_wrong_recipient_hash() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let recipient   = Address::generate(&env);
+        let wrong_recipient = Address::generate(&env);
+
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&ct20, &1_000_000_000);
+
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let anchor = client.merkle_root();
+        let nullifier = BytesN::from_array(&env, &[41u8; 32]);
+        // recipient_hash computed for `recipient`, but the call passes `wrong_recipient`.
+        let recipient_field = address_to_field_bytes(&env, &recipient);
+        let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
+        let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
+
+        let pub_value: i128 = 100;
+        let pub_inputs = UnshieldPublicInputs {
+            anchor,
+            nullifier: nullifier.clone(),
+            pub_value,
+            pub_asset_id: token_addr,
+            recipient_hash,
+        };
+
+        let result = client.try_unshield(&nullifier, &wrong_recipient, &Bytes::new(&env), &pub_inputs);
+        assert!(result.is_err());
+    }
+
+    /// Regression test for the reviewers' central "budget viability" concern
+    /// (docs/POC_IMPLEMENTATION.md's documented `HostError: Error(Budget,
+    /// ExceededLimit)` testnet failure): a full shield() call — commitment
+    /// computation, Merkle insert, and a genuine on-chain Groth16
+    /// verification against a real (if synthetic) proof — must fit inside
+    /// `InvocationResourceLimits::mainnet()`, the SDK's snapshot of the
+    /// *actual current* network limit (400M instructions as of
+    /// 2026-07-10), not just `Env::default()`'s more conservative built-in
+    /// 100M, which `setup()` overrides for exactly this reason.
+    ///
+    /// Measured at the time this test was written: ~104M instructions for
+    /// the full call (~30M of which is the verifier's cross-contract Groth16
+    /// check alone) — about 26% of the 400M budget, comfortable headroom.
+    #[test]
+    fn shield_fits_within_mainnet_instruction_budget() {
+        let (env, admin, ct20, verifier) = setup();
+        let client = CT20ContractClient::new(&env, &ct20);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let user        = Address::generate(&env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&user, &1_000_000_000);
+
+        let rho = BytesN::from_array(&env, &[9u8; 32]);
+        let rcm = BytesN::from_array(&env, &[10u8; 32]);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let enc = Bytes::from_array(&env, &[0u8; 176]);
+        let pub_inputs = ShieldPublicInputs {
+            commitment: commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value: 1_000,
+            pub_asset_id: token_addr.clone(),
+        };
+
+        let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, 1_000, &token_addr);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "shield() used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
+    /// Regression test for a real bug caught while deploying to Stellar Testnet:
+    /// `address_to_field_bytes` assumed `addr.to_xdr(env)` was a bare `ScAddress`
+    /// (discriminant + 32-byte hash), but it's actually the full `ScVal` wrapper
+    /// (an extra 4-byte tag ahead of that) — the fixed offset silently included
+    /// the `ScAddress` discriminant and dropped the hash's last 4 bytes. Existing
+    /// tests never caught this because both sides of every test call the same
+    /// function and stayed self-consistent; this test instead cross-checks
+    /// against an independently-computed value (raw StrKey decode of a real
+    /// testnet contract address, done in Python, cross-referenced against this
+    /// crate's own doc comment claiming equivalence to the TS SDK's
+    /// addressToField()) and the exact commitment produced by prover-side
+    /// arkworks/circomlibjs tooling for the same inputs.
+    #[test]
+    fn address_to_field_bytes_and_commitment_match_real_testnet_asset() {
+        let env = Env::default();
+        let asset = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        ));
+
+        let asset_bytes = address_to_field_bytes(&env, &asset);
+        let expected_asset_bytes: [u8; 32] = [
+            0xd7, 0x92, 0x8b, 0x72, 0xc2, 0x70, 0x3c, 0xcf, 0xea, 0xf7, 0xeb, 0x9f, 0xf4, 0xef,
+            0x4d, 0x50, 0x4a, 0x55, 0xa8, 0xb9, 0x79, 0xfc, 0x9b, 0x45, 0x0e, 0xa2, 0xc8, 0x42,
+            0xb4, 0xd1, 0xce, 0x61,
+        ];
+        assert_eq!(asset_bytes, expected_asset_bytes, "address_to_field_bytes mismatch");
+
+        let value: i128 = 10_000_000;
+        let rho_le = {
+            let n: u128 = 823746192837465192837465u128;
+            let mut b = [0u8; 32];
+            b[..16].copy_from_slice(&n.to_le_bytes());
+            b
+        };
+        let rcm_le = {
+            let n: u128 = 918273645192837465918273u128;
+            let mut b = [0u8; 32];
+            b[..16].copy_from_slice(&n.to_le_bytes());
+            b
+        };
+        let rho = BytesN::from_array(&env, &rho_le);
+        let rcm = BytesN::from_array(&env, &rcm_le);
+
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let commitment = compute_commitment(&env, value, &asset, &rho, &rcm, &mut hasher);
+
+        let expected_from_circuit: [u8; 32] = [
+            0xfe, 0x1a, 0x40, 0xc4, 0x22, 0x85, 0x0b, 0x8b, 0x97, 0x02, 0x2d, 0x66, 0xd2, 0x35,
+            0x75, 0xd1, 0x18, 0x2e, 0x3f, 0x53, 0x50, 0xac, 0x90, 0x08, 0x0c, 0x6d, 0x9b, 0x6a,
+            0x24, 0xb7, 0x3b, 0x07,
+        ];
+        assert_eq!(commitment, expected_from_circuit);
     }
 }

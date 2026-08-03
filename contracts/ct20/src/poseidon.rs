@@ -609,6 +609,102 @@ pub fn poseidon2_bytes(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     poseidon2(Fr::from_bytes(a), Fr::from_bytes(b)).to_bytes()
 }
 
+// ── Native (host-backed) Poseidon ────────────────────────────────────────────
+//
+// Soroban protocol 25 exposes a native BN254 Poseidon permutation host
+// function; the official `soroban-poseidon` crate wraps it with a
+// circomlib-compatible sponge construction (confirmed in its own README/docs:
+// "Sponge construction matches circom's implementation... Parameters: BN254
+// matches circomlib"). This should be dramatically cheaper than the pure-Rust
+// field arithmetic above, which is the most likely cause of the documented
+// `HostError: Error(Budget, ExceededLimit)` failure on testnet (a shield()
+// call runs ~35 of these hashes — 3 for the commitment, 32 for the Merkle
+// insert — entirely in WASM-interpreted bignum math).
+//
+// Byte convention: the pure-Rust `Fr`/`poseidon2_bytes` above use
+// LITTLE-endian 32-byte encoding (see `Fr::from_bytes`/`to_bytes`); the host
+// and `soroban-poseidon` use BIG-endian `U256`. This function preserves the
+// existing little-endian call signature so call sites don't need to change,
+// converting internally.
+//
+// `soroban_poseidon::poseidon_hash` deliberately validates that inputs are
+// already canonical field elements and panics ("input exceeds field modulus")
+// otherwise — unlike the raw host permutation, which silently reduces. But
+// ZKELLA relies on non-canonical raw bytes being accepted: `asset_field` is
+// the raw 32-byte contract-ID hash (see `address_to_field_bytes` in lib.rs),
+// which is essentially uniform over 2^256 and so exceeds the ~2^254 BN254
+// scalar-field modulus `r` more often than not. `Fr::from_bytes` above already
+// fully reduces mod r for exactly this reason; canonicalizing through it here
+// preserves that existing behavior instead of introducing a stricter
+// validation the rest of the protocol doesn't expect.
+//
+// `soroban_poseidon::poseidon_hash` (a one-shot free function) constructs a
+// fresh `PoseidonSponge` on every call, which rebuilds the full MDS/round-
+// constant parameter tables as host objects each time — the crate's own docs
+// flag this explicitly as "avoidable overhead" and recommend constructing one
+// `PoseidonSponge` and reusing it across repeated hashes (their own example
+// is "hashing leaves of a Merkle tree" — exactly this call site). A shield()
+// call does ~3 commitment hashes plus one Merkle insert; naively calling the
+// one-shot function 30+ times rebuilt those tables 30+ times and still hit
+// `Error(Budget, ExceededLimit)` in testing below, so `Poseidon2Hasher` wraps
+// one sponge, built once per top-level contract call and threaded through
+// `compute_commitment` and `merkle::insert`/`get_path`.
+pub struct Poseidon2Hasher<'a> {
+    env: &'a soroban_sdk::Env,
+    sponge: soroban_poseidon::PoseidonSponge<3, soroban_sdk::crypto::bn254::Bn254Fr>,
+}
+
+impl<'a> Poseidon2Hasher<'a> {
+    pub fn new(env: &'a soroban_sdk::Env) -> Self {
+        Self {
+            env,
+            sponge: soroban_poseidon::PoseidonSponge::new(env),
+        }
+    }
+
+    /// Hash two 32-byte little-endian values, returning 32 little-endian bytes.
+    ///
+    /// `soroban_poseidon::poseidon_hash` (and the sponge's `compute_hash`)
+    /// deliberately validate that inputs are already canonical field elements
+    /// and panic ("input exceeds field modulus") otherwise — unlike the raw
+    /// host permutation, which silently reduces. But ZKELLA relies on
+    /// non-canonical raw bytes being accepted: `asset_field` is the raw
+    /// 32-byte contract-ID hash (see `address_to_field_bytes` in lib.rs),
+    /// which is essentially uniform over 2^256 and so exceeds the ~2^254
+    /// BN254 scalar-field modulus `r` more often than not. `Fr::from_bytes`
+    /// already fully reduces mod r for exactly this reason; canonicalizing
+    /// through it here preserves that existing behavior instead of
+    /// introducing a stricter validation the rest of the protocol doesn't
+    /// expect.
+    pub fn hash(&mut self, a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+        use soroban_sdk::{Bytes, Vec, U256};
+
+        let mut a_be = Fr::from_bytes(a).to_bytes();
+        a_be.reverse();
+        let mut b_be = Fr::from_bytes(b).to_bytes();
+        b_be.reverse();
+
+        let a_u256 = U256::from_be_bytes(self.env, &Bytes::from_array(self.env, &a_be));
+        let b_u256 = U256::from_be_bytes(self.env, &Bytes::from_array(self.env, &b_be));
+
+        let inputs = Vec::from_array(self.env, [a_u256, b_u256]);
+        let out_u256 = self.sponge.compute_hash(&inputs);
+
+        let out_be_bytes: Bytes = out_u256.to_be_bytes();
+        let mut out: [u8; 32] = out_be_bytes.try_into().expect("poseidon output is 32 bytes");
+        out.reverse();
+        out
+    }
+}
+
+/// Convenience one-shot wrapper for tests and call sites that only need a
+/// single hash. Perf-sensitive call sites (merkle inserts, commitment
+/// computation) should use [`Poseidon2Hasher`] directly and reuse one
+/// instance across all their hashes instead.
+pub fn poseidon2_native(env: &soroban_sdk::Env, a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    Poseidon2Hasher::new(env).hash(a, b)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -728,5 +824,79 @@ mod tests {
             0x2098f5fb9e239eab,
         ]);
         assert_eq!(h, expected, "poseidon2(0,0) must match circomlibjs reference");
+    }
+
+    // ── Native/pure-Rust equivalence gate ─────────────────────────────────────
+    //
+    // Phase-2 validation gate: poseidon2_native must reproduce poseidon2_bytes
+    // bit-for-bit before any call site (merkle.rs, compute_commitment) is
+    // allowed to switch to it. A mismatch here means either the byte-order
+    // conversion or the host/circomlib parameter matching is wrong, and would
+    // silently change every commitment/nullifier/Merkle-root value computed
+    // on-chain relative to what the SDK computes off-chain — exactly the kind
+    // of soundness break this test exists to catch before it ships.
+
+    #[test]
+    fn poseidon2_native_matches_pure_rust_zero_zero() {
+        let env = soroban_sdk::Env::default();
+        let zero = [0u8; 32];
+        let native = poseidon2_native(&env, &zero, &zero);
+        let pure_rust = poseidon2_bytes(&zero, &zero);
+        assert_eq!(native, pure_rust, "native and pure-Rust poseidon2(0,0) must match");
+        // Also re-confirm directly against the circomlibjs reference bytes
+        // (little-endian, matching poseidon2_zero_zero_matches_circomlibjs).
+        let expected = Fr([
+            0xa839ee8446b64864,
+            0xdc3124d55ffed523,
+            0x3ceac3f27b81e481,
+            0x2098f5fb9e239eab,
+        ])
+        .to_bytes();
+        assert_eq!(native, expected, "native poseidon2(0,0) must match circomlibjs reference");
+    }
+
+    #[test]
+    fn poseidon2_native_matches_pure_rust_one_two() {
+        let env = soroban_sdk::Env::default();
+        let one = Fr::ONE.to_bytes();
+        let two = Fr([2, 0, 0, 0]).to_bytes();
+        let native = poseidon2_native(&env, &one, &two);
+        let pure_rust = poseidon2_bytes(&one, &two);
+        assert_eq!(native, pure_rust, "native and pure-Rust poseidon2(1,2) must match");
+    }
+
+    #[test]
+    fn poseidon2_native_matches_pure_rust_arbitrary_values() {
+        let env = soroban_sdk::Env::default();
+        let a = Fr([0x1111222233334444, 0x5555666677778888, 0x9999aaaabbbbcccc, 0x0dddeeeeffff0000]);
+        let b = Fr([0xdeadbeefcafef00d, 0x0123456789abcdef, 0x1, 0x2]);
+        let a_bytes = a.to_bytes();
+        let b_bytes = b.to_bytes();
+        let native = poseidon2_native(&env, &a_bytes, &b_bytes);
+        let pure_rust = poseidon2_bytes(&a_bytes, &b_bytes);
+        assert_eq!(native, pure_rust, "native and pure-Rust poseidon2 must match on arbitrary reduced inputs");
+    }
+
+    #[test]
+    fn poseidon2_native_matches_pure_rust_on_non_canonical_input() {
+        // A raw 32-byte value ≥ r, e.g. an address-derived hash. This is the
+        // exact case that originally panicked with "input exceeds field
+        // modulus" before poseidon2_native canonicalized through Fr::from_bytes.
+        let env = soroban_sdk::Env::default();
+        let non_canonical = [0xffu8; 32]; // all-0xff, far larger than r
+        let b = Fr::ONE.to_bytes();
+        let native = poseidon2_native(&env, &non_canonical, &b);
+        let pure_rust = poseidon2_bytes(&non_canonical, &b);
+        assert_eq!(native, pure_rust, "native and pure-Rust must agree after reducing non-canonical input mod r");
+    }
+
+    #[test]
+    fn poseidon2_native_not_commutative() {
+        let env = soroban_sdk::Env::default();
+        let one = Fr::ONE.to_bytes();
+        let two = Fr([2, 0, 0, 0]).to_bytes();
+        let h_ab = poseidon2_native(&env, &one, &two);
+        let h_ba = poseidon2_native(&env, &two, &one);
+        assert_ne!(h_ab, h_ba);
     }
 }

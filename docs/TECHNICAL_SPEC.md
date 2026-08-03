@@ -117,6 +117,8 @@ Where:
 
 Homomorphic property: `cv_in1 + cv_in2 = cv_out1 + cv_out2` (value conservation verifiable without revealing values).
 
+**Current implementation note:** the circuits and contracts as implemented today (`circuits/common/value_commit.circom`'s `ValueCommit` template, `sdk/src/notes/builder.ts`'s `computeValueCommit`) bind `value` and `rcv` via a Poseidon2 hash (`cv = Poseidon2(value, rcv)`), not the real BN254 G1 scalar-multiplication-and-add construction described above. Balance conservation itself is still soundly enforced — the transfer circuit directly constrains `Σ in_value === Σ out_value + fee` over the private `value` signals inside the R1CS, which doesn't depend on the commitment scheme — but the homomorphic *external* check (`cv_in1 + cv_in2 = cv_out1 + cv_out2`, verifiable by a third party without a proof) is not available with a Poseidon-based `value_commit`, since Poseidon isn't additively homomorphic. Real Pedersen-over-G1 arithmetic is a real, open simplification to close (see `docs/CIRCUIT_SPEC.md`'s note on the same point), not a documentation lag.
+
 ### 2.4 Note Encryption
 
 Symmetric encryption of note plaintext for transmission to recipient.
@@ -134,18 +136,18 @@ encryption_key = BLAKE2b-256(shared_secret || ephemeral_pk)
 ciphertext     = ChaCha20-Poly1305.Encrypt(encryption_key, nonce=0, plaintext=note_plaintext)
 ```
 
-**Note plaintext format (88 bytes):**
+**Note plaintext format (128 bytes, matching `sdk/src/notes/encrypt.ts`):**
 ```
-value       : u64    (8 bytes)
-asset_id    : [u8;32] (32 bytes)  — SEP-41 asset contract address
-rho         : [u8;32] (32 bytes)  — nullifier seed, random
-rcm         : [u8;16] (16 bytes)  — commitment randomness, random
+value       : u64     (8 bytes)
+asset_id    : [u8;56]  (56 bytes) — UTF-8 Stellar StrKey address (C.../G...), zero-padded — not a raw 32-byte field element; the field encoding used inside circuits/contracts is derived from this StrKey, not transmitted directly
+rho         : [u8;32]  (32 bytes) — nullifier seed, random
+rcm         : [u8;32]  (32 bytes) — commitment randomness, random field element (a full BN254 Fr element, not 16 bytes — an earlier draft of this spec under-sized it)
 ```
 
-**Transmitted note (ciphertext bundle, 152 bytes):**
+**Transmitted note (ciphertext bundle, 176 bytes, `ENCRYPTED_NOTE_LEN` on-chain):**
 ```
 ephemeral_pk  : [u8;32]  — compressed G1 point
-ciphertext    : [u8;104] — encrypted note plaintext + 16-byte Poly1305 MAC
+ciphertext    : [u8;144] — 128-byte plaintext + 16-byte Poly1305 MAC
 ```
 
 ### 2.5 Groth16 Proof System
@@ -170,10 +172,10 @@ The fundamental unit of private balance.
 
 ```rust
 struct Note {
-    value:    u64,        // token amount
-    asset_id: BytesN<32>, // SEP-41 contract address
+    value:    u64,        // token amount (i128 on-chain in ct20; u64 in the transmitted plaintext)
+    asset_id: BytesN<32>, // field-element encoding of the SEP-41 contract address (see §2.4 for the StrKey-vs-field-element distinction)
     rho:      BytesN<32>, // nullifier seed (random, unique per note)
-    rcm:      BytesN<16>, // randomness for commitment
+    rcm:      BytesN<32>, // randomness for commitment (a full field element, not 16 bytes)
 }
 ```
 
@@ -226,12 +228,13 @@ Merkle path for leaf at index `i`: the 32 sibling nodes from leaf to root.
 
 ```rust
 struct TransferPublicInputs {
-    anchor:           BytesN<32>,    // Merkle root at proof generation time
-    nullifiers:       Vec<BytesN<32>>, // one per input note
-    commitments:      Vec<BytesN<32>>, // one per output note
-    value_commitments: Vec<BytesN<32>>, // Pedersen commitments for balance check
-    fee:              u64,           // transaction fee in stroops
-    asset_id:         BytesN<32>,    // must be consistent across all notes
+    anchor:            BytesN<32>,      // Merkle root at proof generation time
+    nullifiers:        Vec<BytesN<32>>, // one per input note
+    out_commitments:   Vec<BytesN<32>>, // one per output note
+    in_value_commits:  Vec<BytesN<32>>, // Poseidon-based value bindings for the balance check (see §2.3's note on Pedersen vs. the current Poseidon-based simplification)
+    out_value_commits: Vec<BytesN<32>>,
+    fee:               i128,            // transaction fee in stroops — matches ct20's i128 amount type, not u64
+    asset_id:          Address,         // SEP-41 contract address; must be consistent across all notes in one call
 }
 ```
 
@@ -255,41 +258,44 @@ All storage uses Soroban `instance` storage for the contract metadata and `persi
 
 ### 4.1 Key Hierarchy
 
+Real derivation, matching `sdk/src/keys/keys.ts`'s `fromSeed` exactly (domain-separated BLAKE2b, each reduced mod the BN254 scalar field order `r`, not the Poseidon-based construction an earlier draft of this spec described):
+
 ```
-seed (32 bytes, BIP-39 mnemonic or random)
+seed (32 bytes, random — no BIP-39 mnemonic support today)
 │
 └── spending_key (sk)
-     = BLAKE2b-256(seed || "zkella_spend_v1")
-     ∈ F_p
+     = BLAKE2b-256(seed || "zkella_spend_v1") mod r
      │
      ├── nullifier_key (nk)
-     │    = H_pos2(sk, 1)
-     │    ∈ F_p
+     │    = BLAKE2b-256(sk || "zkella_nullifier_v1") mod r
      │    [used to compute nullifiers, must stay secret]
      │
      ├── viewing_key (vk)
-     │    = H_pos2(sk, 2)
-     │    ∈ F_p
+     │    = BLAKE2b-256(sk || "zkella_viewing_v1") mod r
      │    [can decrypt incoming notes, cannot spend, shareable with auditors]
      │
      └── transmission_key (tk)
-          = sk * G   (BN254 G1 point, compressed 32 bytes)
+          = vk * G   (BN254 G1 scalar mult, compressed 32 bytes)
           [public, used by senders to encrypt notes to this recipient]
 ```
 
+`tk` is derived from `vk`, not `sk` — deliberately, so a viewing-key-only holder (an auditor who never has `sk`) can still be reached via the same ECDH relation notes are encrypted under, without needing the full spending key. An earlier implementation derived `tk` from `sk` directly and separately set `tk` to `vk`'s own raw bytes, which leaked the viewing key itself to anyone who saw a shielded address; `vk * G` is a one-way function of `vk`, closing that leak.
+
 ### 4.2 Address
 
-A ZKELLA shielded address encodes the transmission key and a diversifier:
+A ZKELLA shielded address encodes a diversified transmission key, matching `ZKELLAKeys.deriveAddress`:
 
 ```
-diversifier   ←  random 11 bytes
-d_G           =  diversifier * G   (BN254 G1 point)
-pk_d          =  sk * d_G          (BN254 G1 point)
+diversifier   =  BLAKE2b-11(sk || diversifier_index)
+g_d           =  hash_to_curve_G1(diversifier)   (real BN254 G1 point, try-and-increment)
+pk_d          =  vk * g_d                        (BN254 G1 scalar mult — by vk, not sk)
 
-address = Base58Check(diversifier || pk_d_compressed)
+address = "zkella1" || Base58(version_byte || diversifier || pk_d)
 ```
 
-Multiple addresses can be generated from one spending key. All resolve to the same viewing key. This is the diversified address model from Zcash Sapling.
+Multiple addresses can be generated from one spending key (by `diversifier_index`). All resolve to the same viewing key — the diversified address model from Zcash Sapling. `g_d` doubles as the Diffie-Hellman base point a sender must use when encrypting to this specific diversified address (see `sdk/src/notes/encrypt.ts`'s `basePoint` parameter), so decryption still works via `vk`/`ephemeralPk` alone without the recipient needing to disclose which diversifier a given note used.
+
+**Known gap:** the current encoding has **no checksum** — a typo'd address is silently a different, wrong address rather than a decode error. A SHA-256d 4-byte checksum (real Base58Check, as this section originally specified) is planned but not yet implemented; always verify shielded addresses out-of-band before sending funds.
 
 ### 4.3 Viewing Key Export Format
 
@@ -311,14 +317,16 @@ An account holder can generate a ZK proof that their address does not appear in 
 
 ```
 proof: "I know a spending key sk such that:
-  1. tk = sk * G  (I control this address)
-  2. address ∉ sanctions_merkle_tree  (non-membership proof)
+  1. tk_commitment = Poseidon2(sk, 0)  (I control this address — a Poseidon-based
+      binding today, not yet the real BN254 scalar-mult tk = sk * G; same
+      simplification noted for ValueCommit in §2.3/CIRCUIT_SPEC.md)
+  2. address ∉ sanctions_merkle_tree  (sorted Merkle non-membership proof)
   3. sanctions_root = <public value>  (against latest published root)"
 ```
 
-Public inputs: `[sanctions_root, tk_commitment]`  
-Circuit: Poseidon-based Merkle non-membership proof + key ownership check  
-Proof size: ~200 bytes (Groth16)
+Public inputs: `[sanctions_root, tk_commitment]`
+Circuit: Poseidon-based Merkle non-membership proof + key-ownership binding (`circuits/compliance/non_membership.circom`, real and implemented — see `docs/CIRCUIT_SPEC.md` §7)
+Proof size: 256 bytes (Groth16, uncompressed BN254 wire format — see §13.1)
 
 ---
 
@@ -433,8 +441,8 @@ Public inputs include `nullifiers[4]` and `out_commitments[4]`.
 
 Simpler circuit: no Merkle proof (note is not yet in the tree).
 
-Private inputs: `value, asset_id, rho, rcm, rcv`  
-Public inputs: `commitment, value_commitment`
+Private inputs: `value, asset_id, rho, rcm, rcv`
+Public inputs: `commitment, value_commit, pub_value, pub_asset_id` — see `docs/CIRCUIT_SPEC.md` §2 for the exact template; `pub_value`/`pub_asset_id` are the revealed amount/asset the circuit constrains to equal the private `value`/`asset_id`, not additional independent signals.
 
 Constraints: ~2,000 gates. Proving time: ~200ms.
 
@@ -442,28 +450,31 @@ Constraints: ~2,000 gates. Proving time: ~200ms.
 
 **File:** `circuits/unshield/unshield.circom`
 
-Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]`  
-Public inputs: `anchor, nullifier, value, asset_id, recipient` (value and asset are revealed)
+Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]`
+Public inputs: `anchor, nullifier, pub_value, pub_asset_id, recipient_hash` (amount and asset are revealed via `pub_value`/`pub_asset_id`; `recipient_hash = Poseidon2(address_field(to), 0)` binds the withdrawal destination — see `docs/CIRCUIT_SPEC.md` §3)
 
-Constraints: ~6,000 gates. Proving time: ~600ms.
+Constraints: ~6,200 gates. Proving time: ~600ms.
 
 ### 5.5 Swap Fairness Circuit
 
 **File:** `circuits/swap/swap_fairness.circom`
 
-Proves that a swap execution honoured the user's committed slippage tolerance.
+Proves that a swap execution honoured the user's committed slippage tolerance, without having revealed `amount_in`/`max_slippage_bps`/`min_amount_out` at commit time. Matches `circuits/swap/swap_fairness.circom` exactly (see `docs/CIRCUIT_SPEC.md` §6).
 
-Private inputs: `intent_nonce, asset_in, asset_out, amount_in, max_slippage_bps`  
-Public inputs: `intent_commitment, amount_out, execution_price_bps`
+Private inputs: `intent_nonce, amount_in, max_slippage_bps`
+Public inputs: `intent_commitment, asset_in, asset_out, amount_out, min_amount_out`
 
 ```
 intent_commitment === Poseidon2(
   Poseidon2(asset_in, asset_out),
-  Poseidon2(amount_in || max_slippage_bps, intent_nonce)
+  Poseidon2(amount_in * 2^32 + max_slippage_bps, intent_nonce)
 )
 
-execution_price_bps >= (10000 - max_slippage_bps) * amount_in / amount_out
+min_amount_out === floor(amount_in * (10000 - max_slippage_bps) / 10000)
+amount_out >= min_amount_out
 ```
+
+`asset_in`/`asset_out` are public in this circuit (unlike `intent_nonce`/`amount_in`/`max_slippage_bps`, which stay private) because `contracts/swap::reveal_and_claim` needs to bind the proof to the specific assets already recorded in on-chain swap state before it will accept it. An earlier draft of this spec used a different `execution_price_bps` public signal that was never implemented; `min_amount_out`, derived in-circuit from the private `amount_in`/`max_slippage_bps`, is what the real circuit and contract use.
 
 Constraints: ~3,500 gates. Proving time: ~400ms.
 
@@ -490,7 +501,7 @@ Each circuit's Phase 2 (`zkey`) will be generated via a multi-party computation 
 
 ## 6. Smart Contract Interfaces
 
-The contract interfaces in this section define the intended protocol surface. The repository currently includes soft PoC contract code only. Existing Soroban contracts must be reviewed, improved, and completed before they can be treated as final CT-20, viewing-key, swap, or governance implementations.
+The interfaces in this section are the **real, current** contract surfaces (verified against `contracts/*/src/lib.rs` at the time of writing), not aspirational ones — an earlier draft of this spec described a materially different, never-built shape for the swap and governance contracts in particular; that draft is replaced below. These interfaces have been through an internal senior-auditor pass and a live-Testnet run (shield/unshield/swap), but not yet an *external* security review, so treat the behavior as real and exercised, not as finished, audited-by-a-third-party protocol logic.
 
 ### 6.1 CT-20 Token Contract
 
@@ -498,25 +509,29 @@ The contract interfaces in this section define the intended protocol surface. Th
 
 ```rust
 pub trait CT20Interface {
+    fn initialize(env: Env, admin: Address, verifier: Address);
 
     /// Deposit a public SEP-41 token amount and receive a shielded note.
-    /// The note commitment is added to the Merkle tree.
-    /// Emits: NoteCommitmentEvent { index, commitment, encrypted_note }
+    /// Verifies a real Groth16 proof against the verifier's `Shield` circuit
+    /// before inserting the note commitment into the Merkle tree.
+    /// Emits: ("zkella","shield") { leaf_index, asset, commitment },
+    ///        ("zkella","note")   { leaf_index, commitment, encrypted_note }
     fn shield(
         env:            Env,
         from:           Address,     // must authorize
         asset:          Address,     // SEP-41 token contract
         amount:         i128,
+        rho:            BytesN<32>,
+        rcm:            BytesN<32>,
         commitment:     BytesN<32>,  // note commitment
-        encrypted_note: Bytes,       // 152-byte ciphertext bundle
-        shield_proof:   Bytes,       // Groth16 proof (~200 bytes)
+        encrypted_note: Bytes,       // 176-byte ciphertext bundle (see §2.4)
+        shield_proof:   Bytes,       // Groth16 proof, 256-byte wire format (see §2.5)
         shield_pub:     ShieldPublicInputs,
-    ) -> u32;                        // leaf index in Merkle tree
+    ) -> Result<u32, Error>;         // leaf index in Merkle tree
 
-    /// Transfer between shielded notes (2-in/2-out or 4-in/4-out).
-    /// Spends nullifiers, adds output commitments to tree.
-    /// Emits: NullifierEvent { nullifier } × N_in
-    /// Emits: NoteCommitmentEvent { index, commitment, encrypted_note } × N_out
+    /// Private note-to-note transfer, 2-in/2-out. Spends nullifiers, adds
+    /// output commitments to the tree. `transfer4` is the same shape against
+    /// the 4-in/4-out circuit.
     fn transfer(
         env:             Env,
         nullifiers:      Vec<BytesN<32>>,
@@ -524,167 +539,169 @@ pub trait CT20Interface {
         encrypted_notes: Vec<Bytes>,
         proof:           Bytes,
         pub_inputs:      TransferPublicInputs,
-    ) -> Vec<u32>;                   // leaf indices of output commitments
+    ) -> Result<Vec<u32>, Error>;    // leaf indices of output commitments
+
+    fn transfer4(
+        env: Env, nullifiers: Vec<BytesN<32>>, commitments: Vec<BytesN<32>>,
+        encrypted_notes: Vec<Bytes>, proof: Bytes, pub_inputs: TransferPublicInputs,
+    ) -> Result<Vec<u32>, Error>;
 
     /// Reveal a note and withdraw to a public address.
-    /// Emits: NullifierEvent, UnshieldEvent { to, amount, asset }
     fn unshield(
         env:        Env,
         nullifier:  BytesN<32>,
         to:         Address,
         proof:      Bytes,
         pub_inputs: UnshieldPublicInputs,
-    );
+    ) -> Result<(), Error>;
 
-    /// Read the current Merkle root.
     fn merkle_root(env: Env) -> BytesN<32>;
-
-    /// Check if a nullifier has been spent.
+    fn merkle_path(env: Env, leaf_index: u32) -> Vec<BytesN<32>>;
+    fn leaf_count(env: Env) -> u32;
     fn is_spent(env: Env, nullifier: BytesN<32>) -> bool;
-
-    /// Return total shielded supply for an asset.
     fn shielded_supply(env: Env, asset: Address) -> i128;
 
-    /// Emergency pause — governance only.
-    fn pause(env: Env);
-    fn unpause(env: Env);
+    fn pause(env: Env) -> Result<(), Error>;
+    fn unpause(env: Env) -> Result<(), Error>;
+    fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error>;
+    fn accept_admin(env: Env) -> Result<(), Error>;
 }
 ```
 
-**Verification logic (transfer):**
+**Verification logic (transfer, unshield, shield — all real, not pseudocode-only):** each calls `VerifierClient::new(&env, &verifier).verify(circuit, public_inputs, proof)`, which the `contracts/verifier` contract implements as: deserialize the wire-format proof into `(A, B, C)` over BN254, compute `vk_x = IC[0] + Σ public_input[i] · IC[i+1]` via `env.crypto().bn254().g1_msm(...)`, then a single `pairing_check([−A, α, vk_x, C], [B, β, γ, δ])` call. `−A` is computed as `g1_mul(A, r−1)` (scalar multiplication by `r−1` in a prime-order group is exact negation — no separate negate host function exists).
+
+**Merkle tree insertion (incremental, `contracts/ct20/src/merkle.rs`):** a depth-32 tree; `merkle::insert` recomputes only the O(depth) empty-subtree roots needed for a fresh leaf (an earlier version recomputed the whole empty-hash chain from scratch on every level — O(depth²) — see `docs/POC_IMPLEMENTATION.md` for the fix and its budget impact).
+
+### 6.2 Verifier Registry Contract
+
+**File:** `contracts/verifier/src/lib.rs`
 
 ```rust
-fn verify_transfer_proof(
-    env: &Env,
-    proof: &Bytes,
-    pub_inputs: &TransferPublicInputs,
-) -> bool {
-    // 1. Deserialize proof into (A: G1, B: G2, C: G1)
-    // 2. Load verifying key from contract storage
-    // 3. Compute vk_x = Σ pub_inputs[i] * vk_IC[i]  (BN254 G1 mul + add)
-    // 4. Call bn254_multi_pairing_check:
-    //    e(A, B) == e(alpha, beta) * e(vk_x, gamma) * e(C, delta)
-    // 5. Return result
+pub trait VerifierRegistry {
+    fn initialize(env: Env, admin: Address);
+    fn register_verifying_key(env: Env, circuit: CircuitType, vk: Bytes) -> Result<(), Error>; // first-time only
+    fn update_verifying_key(env: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error>; // rotation, admin-gated
+    fn get_verifying_key(env: Env, circuit: CircuitType) -> Result<Bytes, Error>;
+    fn verify(env: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> bool;
 }
 ```
 
-**Merkle tree insertion (incremental):**
+`CircuitType` is `{ Shield = 0, Transfer = 1, Unshield = 2, NonMembership = 3, Transfer4x4 = 4, SwapFairness = 5 }` — one verifying key per variant, shared across `ct20`, `swap`, and `compliance`.
 
-```rust
-fn insert_commitment(env: &Env, cm: BytesN<32>) -> u32 {
-    let index = env.storage().instance().get::<_, u32>(&StorageKey::NextLeafIndex)
-                   .unwrap_or(0);
-    // Store leaf
-    env.storage().persistent().set(&StorageKey::MerkleLeaf(index), &cm);
-    // Update path from leaf to root using Poseidon2
-    let root = recompute_root(env, index, cm);
-    env.storage().instance().set(&StorageKey::MerkleRoot, &root);
-    env.storage().instance().set(&StorageKey::NextLeafIndex, &(index + 1));
-    index
-}
-```
-
-### 6.2 Viewing Key Registry Contract
+### 6.3 Viewing Key Registry Contract
 
 **File:** `contracts/viewing_keys/src/lib.rs`
 
 ```rust
 pub trait ViewingKeyRegistry {
-
-    /// Register a viewing key commitment on-chain.
-    /// Allows auditors to verify they hold a valid key for an address.
-    /// vk_commitment = Poseidon2(vk, address_diversifier)
-    fn register(
-        env:           Env,
-        owner:         Address,      // must authorize
-        vk_commitment: BytesN<32>,
-        birthday:      u32,          // ledger number for sync start
-    );
-
-    /// Publish a compliance proof for a specific audit request.
-    /// proof: ZK proof that address ∉ sanctions_merkle_tree
-    fn publish_compliance_proof(
-        env:             Env,
-        owner:           Address,
-        sanctions_root:  BytesN<32>,
-        proof:           Bytes,
-        pub_inputs:      CompliancePublicInputs,
-    );
-
-    /// Retrieve the latest compliance proof for an address.
-    fn get_compliance_proof(
-        env:     Env,
-        owner:   Address,
-    ) -> Option<ComplianceRecord>;
+    /// Register a viewing key commitment on-chain: vk_commitment = Poseidon2(vk, diversifier).
+    fn register(env: Env, owner: Address, vk_commitment: BytesN<32>, birthday: u32);
+    fn get_viewing_key_commitment(env: Env, owner: Address) -> Option<BytesN<32>>;
 }
 ```
 
-### 6.3 Shielded Swap Contract
+Sanctions/compliance proof publication is **not** on this contract — see §6.4. An earlier draft of this spec combined the two into one `ViewingKeyRegistry` trait; the repository implementation keeps them separate so an unrelated compliance-record store doesn't share a contract with the viewing-key registry.
+
+### 6.4 Compliance Contract
+
+**File:** `contracts/compliance/src/lib.rs`
+
+```rust
+pub trait Compliance {
+    fn initialize(env: Env, verifier: Address);
+
+    /// Publishes a verified sanctions-list non-membership proof for `owner`.
+    /// Checked against the verifier's `NonMembership` circuit before storage
+    /// — unlike an earlier design, an invalid proof is never stored.
+    fn publish_compliance_proof(
+        env: Env, owner: Address, proof: Bytes, pub_inputs: CompliancePublicInputs,
+    ) -> Result<(), Error>;
+
+    fn get_compliance_proof(env: Env, owner: Address) -> Option<ComplianceRecord>;
+}
+
+struct CompliancePublicInputs {
+    sanctions_root: BytesN<32>,
+    tk_commitment:  BytesN<32>,
+}
+```
+
+### 6.5 Shielded Swap Contract
 
 **File:** `contracts/swap/src/lib.rs`
 
+The design here reuses `ct20`'s own already-real shield/unshield paths for the value-moving steps, rather than a separate DEX-execution model — see §9 for why this differs from earlier drafts of this spec.
+
 ```rust
 pub trait ShieldedSwap {
+    fn initialize(env: Env, admin: Address, verifier: Address, ct20: Address);
 
-    /// Commit to a swap intent. Locks the input shielded note nullifier.
-    /// intent_commitment = Poseidon2(Poseidon2(asset_in, asset_out),
-    ///                               Poseidon2(amount_in || max_slippage, nonce))
+    /// Escrows `amount_in` of `asset_in` right now via a real `ct20::unshield`
+    /// cross-call — `ownership_proof` is a genuine `unshield.circom` proof,
+    /// reused as the swap's note-ownership proof (no separate ownership
+    /// circuit exists or is needed).
     fn commit_swap(
-        env:               Env,
-        nullifier_in:      BytesN<32>,   // spends input note
-        intent_commitment: BytesN<32>,
-        commitment_proof:  Bytes,        // proves nullifier is valid
-        expiry_ledger:     u32,          // swap expires if not executed
-    ) -> BytesN<32>;                     // swap_id
+        env: Env, nullifier_in: BytesN<32>, intent_commitment: BytesN<32>,
+        asset_in: Address, asset_out: Address, amount_in: i128, anchor: BytesN<32>,
+        refund_to: Address, ownership_proof: Bytes, expiry_ledger: u32,
+    ) -> BytesN<32>; // swap_id = sha256(intent_commitment)
 
-    /// Relayer calls this to execute the swap via Stellar DEX.
-    /// Reveals intent and executes the actual token swap.
-    fn execute_swap(
-        env:        Env,
-        swap_id:    BytesN<32>,
-        asset_in:   Address,
-        asset_out:  Address,
-        amount_in:  i128,
-        amount_out: i128,      // actual amount received from DEX
-        relayer:    Address,   // receives relayer fee
-    );
+    /// Relayer really fronts `amount_out` of `asset_out` into escrow (a real
+    /// SEP-41 transfer), in exchange for the already-escrowed `asset_in` once
+    /// a valid fairness proof is revealed.
+    fn execute_swap(env: Env, swap_id: BytesN<32>, amount_out: i128, relayer: Address);
 
-    /// User confirms execution and receives output as shielded note.
+    /// Verifies the fairness proof (binds the revealed `amount_out` back to
+    /// the original `intent_commitment`, without `min_amount_out` having been
+    /// revealed at commit time), pays the relayer the escrowed `asset_in`,
+    /// and re-shields `asset_out` as a new note via a real, separate
+    /// `ct20::shield` call (`shield_proof` — a distinct proof from
+    /// `fairness_proof`).
     fn reveal_and_claim(
-        env:               Env,
-        swap_id:           BytesN<32>,
-        intent_nonce:      BytesN<32>,
-        max_slippage_bps:  u32,
-        out_commitment:    BytesN<32>,
-        encrypted_note:    Bytes,
-        fairness_proof:    Bytes,
-        fairness_pub:      SwapFairnessPublicInputs,
-    ) -> u32;                  // output note leaf index
+        env: Env, swap_id: BytesN<32>, out_rho: BytesN<32>, out_rcm: BytesN<32>,
+        out_commitment: BytesN<32>, out_value_commit: BytesN<32>, encrypted_note: Bytes,
+        fairness_proof: Bytes, fairness_pub: SwapFairnessPublicInputs, shield_proof: Bytes,
+    ) -> u32; // output note leaf index
 
-    /// Reclaim input if swap was not executed before expiry.
-    fn cancel_swap(
-        env:     Env,
-        swap_id: BytesN<32>,
-        proof:   Bytes,        // proves ownership of original note
-    );
+    /// Refunds `asset_in` to `refund_to` if never executed, once expired.
+    fn cancel_swap(env: Env, swap_id: BytesN<32>);
+
+    /// Unwinds an executed-but-never-claimed swap once a grace window past
+    /// expiry has passed: returns the relayer's fronted `asset_out` *and*
+    /// refunds the escrowed `asset_in`, in the same call.
+    fn reclaim_expired_swap(env: Env, swap_id: BytesN<32>);
+
+    fn set_relayer(env: Env, relayer: Address, approved: bool); // admin-gated, scoped to this contract
+}
+
+struct SwapFairnessPublicInputs {
+    intent_commitment: BytesN<32>,
+    asset_in:          Address,
+    asset_out:         Address,
+    amount_out:        i128,
+    min_amount_out:    i128,
 }
 ```
 
-### 6.4 Governance Contract
+### 6.6 Governance Contract
 
 **File:** `contracts/governance/src/lib.rs`
 
-Manages verifying key upgrades, pause authority, and relayer whitelist.
+Owns timelocked verifying-key rotation on top of `contracts/verifier`, and its own admin lifecycle. `contracts/governance` is set as `contracts/verifier`'s own admin address, so its cross-contract calls into `verifier` satisfy that contract's `admin.require_auth()` implicitly.
 
 ```rust
 pub trait ZKELLAGovernance {
-    fn update_verifying_key(env: Env, admin: Address, circuit_id: u8, new_vk: Bytes);
-    fn set_relayer(env: Env, admin: Address, relayer: Address, approved: bool);
-    fn transfer_admin(env: Env, current_admin: Address, new_admin: Address);
+    fn initialize(env: Env, admin: Address, verifier: Address);
+    fn register_vk(env: Env, circuit: CircuitType, vk: Bytes);        // first-time registration, no timelock
+    fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes); // starts the 7-day timelock
+    fn execute_vk_update(env: Env, circuit: CircuitType);              // after the timelock elapses
+    fn cancel_vk_update(env: Env, circuit: CircuitType);
+    fn transfer_admin(env: Env, new_admin: Address);                  // two-step handover
+    fn accept_admin(env: Env);
 }
 ```
 
-Verifying key update has a 7-day timelock enforced at the contract level.
+Relayer authorization (`set_relayer`) lives on `contracts/swap` itself (§6.5), not on governance — an earlier draft of this spec placed it here; the repository implementation scopes relayer approval to the contract that actually uses it.
 
 ---
 
@@ -791,29 +808,34 @@ Stellar RPC nodes retain contract events for ~17,280 ledgers (~7 days at 5s/ledg
 
 ### 8.2 Architecture
 
+The real reference implementation (`indexer/`, TypeScript/Node) uses `node:sqlite` rather than the PostgreSQL store this diagram originally specified as the target — no external database dependency, and `merkle_root`/`merkle_path` are proxied live to `ct20` itself rather than duplicated into their own tables, since the contract is already the source of truth for current tree state:
+
 ```
                 ┌─────────────────────────────┐
                 │       zkella-indexer         │
-                │                              │
+                │       (Node/TypeScript)       │
   Stellar RPC ──► Event Listener               │
                 │   └── Soroban event stream   │
                 │                              │
-                │  Note Store (PostgreSQL)      │
+                │  Note Store (node:sqlite)     │
                 │   ├── encrypted_notes table  │
-                │   ├── nullifiers table        │
-                │   └── merkle_leaves table    │
+                │   └── nullifiers table        │
+                │   (merkle state: proxied live │
+                │    to ct20, not stored here)  │
                 │                              │
                 │  REST API                    │◄── zkella-sdk
                 │   ├── GET /notes             │
                 │   ├── GET /merkle/path/{idx} │
-                │   ├── GET /nullifiers/batch  │
-                │   └── GET /root              │
+                │   ├── GET /merkle/root        │
+                │   ├── GET /commitment/{hex}   │
+                │   ├── POST /nullifiers/batch  │
+                │   └── GET /health             │
                 └─────────────────────────────┘
 ```
 
 ### 8.3 Indexer API Specification
 
-**Base URL:** `https://indexer.zkella.io/v1` (also self-hostable)
+Self-hosted only today — there is no hosted `indexer.zkella.io` endpoint; run `npm run indexer` per `indexer/README.md` and point the SDK at your own instance (default `http://localhost:8787`).
 
 ```
 GET /notes?from_ledger={n}&limit={m}
@@ -891,55 +913,67 @@ Payload encrypted with AES-256-GCM using a key derived from the spending key:
 
 ## 9. Shielded Swap Primitive
 
+**This section describes the real, implemented, audited design** (`contracts/swap`). An earlier draft of this spec described a Stellar-DEX-execution model (relayers calling `PathPaymentStrictReceive`/`ManageSellOffer`, an off-chain P2P relay server) that was never built this way — nothing in the current contract calls the Stellar DEX. What's implemented instead is simpler and already real: the relayer directly fronts the output asset as SEP-41 liquidity, and the contract's own escrow/payout logic (reusing `ct20`'s shield/unshield paths) does the rest. Routing that liquidity through the actual DEX, if the relayer chooses to, is an off-chain concern the contract doesn't need to know about — wiring an on-chain DEX call into the flow itself remains roadmap work, not something this section should describe as already specified in detail.
+
 ### 9.1 Trust Model
 
 The shielded swap uses a **weak privacy model**:
-- Amount hidden from on-chain passive observers ✓
-- Amount revealed to the designated relayer ✗ (relayer must see intent to execute)
+- Amount hidden from on-chain passive observers, up to what `commit_swap`'s public arguments reveal (`asset_in`, `asset_out`, `amount_in` are currently public call arguments, not hidden — see the note in §12.4)
+- Amount revealed to the designated relayer, who must front the exact `amount_out` in `execute_swap`
 
-This is sufficient for: front-running protection, competitive intelligence protection, and basic financial privacy. A fully private model (hidden from relayer) would require a TEE relayer or private mempool, which is out of scope for v1.
+This is sufficient for basic front-running protection on the *output* amount and price (which is only revealed at `reveal_and_claim` time, bound to the original commitment by the fairness proof), not for full amount confidentiality throughout the swap.
 
 ### 9.2 Relayer Model
 
-Relayers are permissioned via the governance contract. They:
-- Monitor committed swap intents on-chain
-- Off-chain receive encrypted swap parameters from users (direct P2P via relay server)
-- Execute swaps via Stellar DEX `PathPaymentStrictReceive` or `ManageSellOffer`
-- Earn a relayer fee (configurable, deducted from output amount)
+Relayers are permissioned per-swap-contract via `set_relayer(relayer, approved)` (admin-gated, scoped to `contracts/swap` itself — not the governance contract). A relayer:
+- calls `execute_swap` to front `amount_out` of `asset_out` into escrow — a real SEP-41 transfer, checked by the contract, not a promise,
+- is paid the escrowed `asset_in` once the claimant reveals a valid fairness proof via `reveal_and_claim`,
+- can reclaim their fronted `asset_out` (and the claimant's `refund_to` gets `asset_in` back) via `reclaim_expired_swap` if the claimant never claims within the grace window after expiry.
 
-Multiple relayers compete for execution. Users can set a relayer preference or use any available relayer.
+How a relayer actually sources `amount_out` — including whether they route through the Stellar DEX — is entirely off-chain and outside the contract's concern; the contract only verifies that the real transfer happened.
 
-### 9.3 Swap Flow Detail
+### 9.3 Swap Flow Detail (real, matches `contracts/swap/src/lib.rs`)
 
 ```
-Step 1 — User: Generate intent off-chain
-  intent = { asset_in, asset_out, amount_in, max_slippage_bps, nonce }
+Step 1 — User: build the fairness-circuit witness off-chain
+  intent = { asset_in, asset_out, amount_in, max_slippage_bps, intent_nonce }
+  min_amount_out = floor(amount_in * (10000 - max_slippage_bps) / 10000)
   intent_commitment = Poseidon2(Poseidon2(asset_in, asset_out),
-                                 Poseidon2(amount_in || max_slippage_bps, nonce))
+                                 Poseidon2(amount_in * 2^32 + max_slippage_bps, intent_nonce))
+  (amount_out and min_amount_out stay private until reveal_and_claim)
 
-Step 2 — User: Submit commit_swap transaction
-  - Spends input note nullifier (locks the funds)
-  - Publishes intent_commitment on-chain
-  - Sends encrypted intent to relayer relay server (off-chain)
-  - Sets expiry_ledger = current + 720  (~1 hour)
+Step 2 — User: commit_swap(nullifier_in, intent_commitment, asset_in, asset_out,
+                            amount_in, anchor, refund_to, ownership_proof, expiry_ledger)
+  - ownership_proof is a real unshield.circom proof; the call cross-calls
+    ct20::unshield(nullifier_in, swap_contract_address, ownership_proof, ...),
+    which both verifies note ownership and atomically escrows amount_in of
+    asset_in into the swap contract's own balance
+  - swap_id = sha256(intent_commitment) is returned
 
-Step 3 — Relayer: Execute swap
-  - Receives and decrypts intent from relay server
-  - Calls execute_swap(swap_id, asset_in, asset_out, amount_in, amount_out)
-  - Executes actual Stellar DEX path payment
-  - amount_out recorded on-chain
+Step 3 — Relayer: execute_swap(swap_id, amount_out, relayer)
+  - relayer really transfers amount_out of asset_out into escrow
+  - state moves Committed -> Executed
 
-Step 4 — User: Claim output as shielded note
-  - Generates fairness_proof: "execution_price >= (1 - max_slippage) * reference_price"
-  - Constructs output note for amount_out minus relayer_fee
-  - Calls reveal_and_claim(swap_id, nonce, max_slippage, out_commitment, encrypted_note, proof)
-  - Output note added to Merkle tree
+Step 4 — User: reveal_and_claim(swap_id, out_rho, out_rcm, out_commitment,
+                                 out_value_commit, encrypted_note,
+                                 fairness_proof, fairness_pub, shield_proof)
+  - fairness_proof (real swap_fairness.circom proof) is checked against the
+    verifier; binds the now-revealed amount_out/min_amount_out back to
+    intent_commitment
+  - relayer is paid the escrowed asset_in
+  - a separate, real shield.circom proof (shield_proof) re-shields amount_out
+    of asset_out as a brand-new note via ct20::shield, returning its leaf index
 
-Step 5 (fallback) — User: Cancel if expired
-  - If relayer did not execute by expiry_ledger
-  - Calls cancel_swap(swap_id, proof)
-  - Input funds returned as new shielded note
+Step 5 (fallback) — anyone: cancel_swap(swap_id) once expired and never executed
+  refunds asset_in to refund_to
+
+Step 5b (fallback) — anyone: reclaim_expired_swap(swap_id), once executed but
+  never claimed and the post-expiry grace window has passed
+  returns the relayer's fronted asset_out AND refunds asset_in to refund_to,
+  in the same call
 ```
+
+This full lifecycle has been run end-to-end on live Stellar Testnet with real Groth16 proofs at every stage — see `docs/POC_IMPLEMENTATION.md` for transaction hashes.
 
 ---
 
@@ -1021,75 +1055,91 @@ async function generateComplianceProof(
 
 ### 11.1 Package Structure
 
+The package is named `@zkella/sdk` (`sdk/package.json`) but has not been published to the npm registry yet — it's consumed today via local TypeScript imports within this monorepo (`sdk/src/...`). The real structure, current as of this writing:
+
 ```
-zkella-sdk/
+sdk/
 ├── src/
-│   ├── keys/          # Key generation and derivation
-│   ├── notes/         # Note construction, commitment, encryption
-│   ├── circuits/      # WASM proof generation (snarkjs)
-│   │   ├── shield.wasm
-│   │   ├── transfer_2in2out.wasm
-│   │   ├── transfer_4in4out.wasm
-│   │   ├── unshield.wasm
-│   │   └── swap_fairness.wasm
-│   ├── contracts/     # Soroban contract bindings (generated)
-│   ├── indexer/       # Indexer client
-│   ├── wallet/        # High-level wallet abstraction
-│   └── compliance/    # Viewing key export, compliance proofs
+│   ├── keys/          # ZKELLAKeys — real: spending/nullifier/viewing/transmission key derivation, diversified addresses
+│   ├── notes/         # Real: note construction, commitment/nullifier/value-commit computation, ECDH encryption
+│   ├── crypto/         # Real: Poseidon2 (circomlibjs) and BN254 G1 ops (ffjavascript) backing keys/notes
+│   ├── prover/         # Real: snarkjs-based Groth16 proof generation for shield, transfer, transfer4, unshield, swapFairness
+│   ├── wallet/
+│   │   ├── wallet.ts    # Real — ZKELLAWallet: shield()/transfer()/unshield() build real proofs and submit real signed Soroban transactions
+│   │   ├── swap.ts      # Stub — ZKELLASwap's methods return placeholders; the real contracts/swap contract works, this wrapper isn't wired to it yet
+│   │   └── auditor.ts   # Stub — ZKELLAAuditor.sync() never actually decrypts anything
+│   ├── compliance/      # Stub — ZKELLACompliance's proof generation/publishing are placeholders
+│   ├── indexer/         # Real — IndexerClient, matches the real indexer/ service's HTTP API
+│   └── types.ts
 ```
 
-### 11.2 Core API
+There is no `sdk/src/circuits/` or `sdk/src/contracts/` directory — compiled circuit artifacts live under the top-level `circuits/<name>/build/` (referenced by path from `sdk/src/prover/*`), and there are no generated Soroban contract-client bindings for TypeScript yet; `sdk/src/wallet/wallet.ts` builds `ScVal`s by hand (see its `structScVal`/`vecScVal` helpers).
+
+### 11.2 Core API (real methods marked; stubs marked explicitly)
 
 ```typescript
-// Key management
-const keys = ZKELLAKeys.fromSeed(seed)
-// keys.spendingKey, keys.viewingKey, keys.transmissionKey
+// Key management — real
+const keys = await ZKELLAKeys.fromSeed(seed)   // async — derives sk/nk/vk/tk
+// keys.spendingKey.{raw, nullifierKey, viewingKey, transmissionKey}
 
-// Wallet
+// Wallet — real
 const wallet = new ZKELLAWallet({
-  keys,
-  indexerUrl: 'https://indexer.zkella.io/v1',
-  network: 'mainnet',
-  sorobanRpc: 'https://soroban-rpc.stellar.org'
+  keys: keys.spendingKey,
+  network:     'testnet',                               // 'testnet' | 'mainnet'
+  sorobanRpc:  'https://soroban-testnet.stellar.org',
+  indexerUrl:  'http://localhost:8787',
+  ct20Address: 'CXXX...YYY',
+  stellarSecret: 'S...',                                 // signs the submitted transactions
+  shieldCircuit:    { wasmPath: '...shield.wasm',    zkeyPath: '...shield.zkey' },
+  transferCircuit:  { wasmPath: '...transfer.wasm',  zkeyPath: '...transfer.zkey' },
+  unshieldCircuit:  { wasmPath: '...unshield.wasm',  zkeyPath: '...unshield.zkey' },
 })
 
-await wallet.sync()  // fetch and decrypt all notes from indexer
+await wallet.sync()  // fetch and decrypt all notes from the indexer
 
 const balance = await wallet.balance(USDC_CONTRACT)
-// { shielded: 1000n, unshielded: 500n }
+// { shielded: 1000n } — there is no separate public/"unshielded" balance field;
+// that's the wallet's own Stellar account balance, tracked outside this SDK
 
-// Shield
-const tx = await wallet.shield({
-  asset: USDC_CONTRACT,
-  amount: 100_000_000n,  // 100 USDC (7 decimals)
-})
-await tx.submit()
+// Shield — real: builds a real note + real Groth16 proof, returns a submit() thunk
+const { note, submit } = await wallet.shield({ asset: USDC_CONTRACT, amount: 100_000_000n })
+const { leafIndex } = await submit()
 
-// Transfer
-const tx = await wallet.transfer({
-  to: 'zkella1abc...xyz',  // recipient shielded address
-  asset: USDC_CONTRACT,
+// Transfer — real, but needs >=2 spendable notes (no dummy-input support yet);
+// only 2-in/2-out is wired into the wallet today (transfer4's prover exists,
+// but the wallet doesn't do 4-input note selection yet)
+const { submit: submitTransfer } = await wallet.transfer({
+  to:     '<recipient's raw hex transmission key>',       // full zkella1... diversified-address parsing isn't wired into the wallet yet
+  asset:  USDC_CONTRACT,
   amount: 50_000_000n,
-  memo: 'optional plaintext memo',
 })
-await tx.submit()
+await submitTransfer()
 
-// Unshield
-const tx = await wallet.unshield({
-  asset: USDC_CONTRACT,
+// Unshield — real; full-note withdrawal only (no unshield-with-change entrypoint)
+const { submit: submitUnshield } = await wallet.unshield({
+  asset:  USDC_CONTRACT,
   amount: 25_000_000n,
-  to: 'GABCD...WXYZ',    // public Stellar address
+  to:     'GABCD...WXYZ',
 })
-await tx.submit()
+await submitUnshield()
 
-// Compliance
+// Viewing key export — real
 const vkExport = wallet.exportViewingKey()
-const proof = await wallet.generateComplianceProof(sanctionsListUrl)
+
+// Shielded swap — STUB: contracts/swap itself is real, audited, and has been
+// run end-to-end on live Testnet (see docs/POC_IMPLEMENTATION.md), but the
+// ZKELLASwap wrapper class shown in earlier drafts of this spec (commitSwap/
+// waitForExecution/revealAndClaim/cancelSwap) is not implemented — its
+// methods return placeholder values today.
+
+// Compliance / auditor — STUB: ZKELLACompliance.generateNonSanctionedProof()
+// and ZKELLAAuditor's note decryption are both placeholders today, even
+// though the underlying contracts/compliance contract is real.
 ```
 
-### 11.3 Note Selection Strategy
+### 11.3 Note Selection Strategy (target design; wallet.ts's current implementation is simpler)
 
-Notes are selected using a **greedy smallest-first** algorithm to minimize fragmentation:
+The real `wallet.transfer()` today picks the two largest unspent notes of the target asset (simple, not fee-optimal coin selection) rather than the smallest-first/fragmentation-minimizing strategy below, which remains the intended target:
 
 ```typescript
 function selectNotes(
@@ -1121,7 +1171,7 @@ function selectNotes(
 
 | Threat | Mitigation |
 |---|---|
-| Observer learns transfer amount | Amounts inside Pedersen commitments, never on-chain in plaintext |
+| Observer learns transfer amount | Amounts stay private circuit witnesses, never on-chain in plaintext — the transfer circuit's balance check runs over the private values directly (see §2.3's implementation note: today's `value_commit` is Poseidon-based, not yet the real homomorphic Pedersen-over-G1 construction, but this doesn't weaken the balance-conservation guarantee itself) |
 | Observer links sender to recipient | Note commitments are unlinkable; nullifiers reveal nothing about notes |
 | Double spend | On-chain nullifier set; contract rejects duplicate nullifiers atomically |
 | Invalid proof accepted | BN254 multi-pairing verification on Soroban; forgery requires breaking BN254 DL |
@@ -1156,27 +1206,30 @@ If users do not trust the ceremony, they should wait for a PLONK-based circuit (
 2. A global passive adversary observing the Stellar network can correlate shield/unshield timing with external activity
 3. Note set size is limited to 2^32 (~4 billion) by the 32-level Merkle tree
 4. Circuit support is limited to homogeneous asset transfers (all inputs and outputs must share the same asset_id in one proof)
+5. `commit_swap`'s `asset_in`, `asset_out`, and `amount_in` are plain, public call arguments today, not hidden inside the intent commitment's proof — only `min_amount_out`/`amount_out` stay private until `reveal_and_claim`. Full amount/asset confidentiality throughout the swap (not just at reveal time) is not yet part of the implemented design.
 
 ---
 
 ## 13. Performance and Resource Budget
 
-### 13.1 Client-Side Proving Times (snarkjs WASM, modern desktop browser)
+### 13.1 Client-Side Proving Times (snarkjs WASM, Node/browser)
 
 | Circuit | Gates | Proving Time | Proof Size |
 |---|---|---|---|
-| Shield | ~2,000 | ~200ms | 192 bytes |
-| Unshield | ~6,000 | ~600ms | 192 bytes |
-| Transfer 2-in/2-out | ~15,450 | ~2.0s | 192 bytes |
-| Transfer 4-in/4-out | ~28,000 | ~4.5s | 192 bytes |
-| Swap fairness | ~3,500 | ~400ms | 192 bytes |
-| Sanctions non-membership | ~9,000 | ~1.0s | 192 bytes |
+| Shield | ~2,000 | ~200ms | 256 bytes |
+| Unshield | ~6,000 | ~600ms | 256 bytes |
+| Transfer 2-in/2-out | ~15,450 | ~2.0s | 256 bytes |
+| Transfer 4-in/4-out | ~28,000 | ~4.5s | 256 bytes |
+| Swap fairness | ~3,500 | ~400ms | 256 bytes |
+| Sanctions non-membership | ~9,000 | ~1.0s | 256 bytes |
 
-All Groth16 proofs are 192 bytes regardless of circuit size.
+All Groth16 proofs are 256 bytes regardless of circuit size (uncompressed BN254 points — see `docs/CIRCUIT_SPEC.md` §1 for why this isn't the 192-byte compressed size some Groth16 tooling defaults to). Proving-time estimates in this table are unmeasured design-time guesses, not benchmarked numbers.
 
 ### 13.2 Soroban On-Chain Verification Cost
 
-| Operation | Soroban Instructions (estimate) |
+The table below is the original design-time estimate. It has since been superseded by a **real measurement**: a full `shield()` call (commitment computation + Merkle insert + real on-chain Groth16 verification) costs **~104M instructions** in Soroban's own host environment (`InvocationResourceLimits::mainnet()`, 400M budget) — about 26%, with the verifier's cross-contract Groth16 check alone at ~30M of that. This was also confirmed on live Stellar Testnet across four real `shield()` transactions. See `docs/POC_IMPLEMENTATION.md` for the methodology, the regression test, and transaction hashes. The estimate below undercounts by roughly two orders of magnitude — kept here only to show how far an unmeasured guess can be from Soroban's real per-operation cost, not as a usable budget figure.
+
+| Operation | Soroban Instructions (original, unmeasured estimate) |
 |---|---|
 | Deserialize proof + public inputs | ~50,000 |
 | Compute vk_x (N public inputs × G1 mul + add) | ~200,000–400,000 |
@@ -1184,23 +1237,34 @@ All Groth16 proofs are 192 bytes regardless of circuit size.
 | Merkle root update (32 levels × Poseidon2) | ~160,000 |
 | Nullifier storage write (×N) | ~50,000 per nullifier |
 
-Total estimated per-transfer transaction cost: ~1–3 XLM at current fee levels (dominated by ledger entry writes, not compute).
-
 ### 13.3 Indexer Resource Requirements
 
-| Resource | Minimum | Recommended |
+The real reference implementation (`indexer/`) uses Node's built-in `node:sqlite` — no external database dependency — which is a meaningfully different (and much lighter) profile than the PostgreSQL-based target this table originally described:
+
+| Resource | Real reference implementation | Target (production, multi-operator) |
 |---|---|---|
-| CPU | 2 cores | 4 cores |
-| RAM | 2 GB | 8 GB |
-| Storage (year 1 at 10K tx/day) | ~20 GB | 100 GB SSD |
-| Bandwidth | 10 Mbps | 100 Mbps |
-| Database | PostgreSQL 14+ | PostgreSQL 16 + read replica |
+| Runtime | Node.js 22.5+ (`node:sqlite`, experimental) | Same, or a compiled service |
+| Storage | SQLite file, size scales with note/nullifier event volume | PostgreSQL or equivalent durable store, sized for target throughput |
+| CPU / RAM | Single core / low RAM sufficient for reference-scale testnet use | 2–4 cores, 2–8 GB RAM depending on load |
+| Operators | One (this repo's reference deployment) | Multiple independent operators for resilience |
 
 ---
 
 ## 14. Deployment Plan
 
 The deployment plan starts from the current soft PoC baseline. Before any final release, all existing contracts and SDK modules must move through review, implementation completion, resource profiling, and hardening. The current PoC contracts should not be promoted directly to production.
+
+### 14.0 Reviewer-readiness milestones
+
+To address the main review concerns directly, the roadmap now includes explicit milestones for:
+
+- a real testnet shield transaction that completes with on-chain proof verification within Soroban budget,
+- a documented custom-indexer deployment model with replay support, health monitoring, and independent operator compatibility,
+- an operational runbook and incident-response plan for contract failures, indexer outages, and key handling,
+- a clear compliance narrative around viewing keys and selective disclosure,
+- public testnet evidence and a visible milestone cadence for Stellar ecosystem engagement.
+
+**Current status against this plan:** shield/transfer/unshield are past "review and improve" and have real Groth16 verification, exercised on live Testnet (§14.1's "shield → transfer → unshield full cycle" is done for shield and unshield end-to-end with real value movement; transfer is validated locally with real proofs, not yet on live Testnet). The shielded swap contract has also been audited and run end-to-end on live Testnet — ahead of where this phased plan originally placed it. The trusted-setup ceremony used for every real-circuit test and every live-Testnet transaction to date is explicitly a local, single-contributor dev ceremony (§14.1's testnet ceremony step, not §14.3's production one) — see `docs/POC_IMPLEMENTATION.md` for exactly what's been validated where. The SDK has not been published to npm under any tag yet (§14.1's `@zkella/sdk@0.1.0-testnet` milestone), and no external security review (§14.2) has happened — the audit work in this repository so far was performed by the team building the protocol.
 
 ### 14.1 Testnet Phase (Months 1–4)
 
@@ -1231,31 +1295,38 @@ The deployment plan starts from the current soft PoC baseline. Before any final 
 
 ### 14.4 Repository Layout
 
+Real, current layout (contract and circuit sets have grown since this section was first written):
+
 ```
 ZKELLA/
 ├── circuits/
-│   ├── transfer_2in2out/
-│   │   ├── transfer.circom
-│   │   ├── transfer.r1cs        # generated
-│   │   ├── transfer.wasm        # generated
-│   │   └── transfer.zkey        # after ceremony
-│   ├── transfer_4in4out/
+│   ├── common/                  # shared Circom templates (Poseidon2, Merkle, range, commitments)
 │   ├── shield/
 │   ├── unshield/
-│   ├── swap/
-│   └── compliance/
+│   ├── transfer_2in2out/
+│   ├── transfer_4in4out/
+│   ├── swap/                    # swap_fairness.circom
+│   └── compliance/               # non_membership.circom
+│       each with build/*.r1cs, *.zkey, *_js/*.wasm, verification_key.json (generated; dev ceremony only so far)
 ├── contracts/
-│   ├── ct20/
-│   ├── viewing_keys/
-│   ├── swap/
-│   └── governance/
-├── indexer/                      # Go or Rust service
-├── sdk/                          # TypeScript npm package
-├── app/                          # React reference wallet
+│   ├── ct20/                    # confidential token: shield/transfer/transfer4/unshield
+│   ├── ct20-interface/           # #[contractclient]-only crate — lets other contracts call ct20 without pulling in its own #[contract] exports
+│   ├── verifier/                 # shared Groth16 verifying-key registry + verify()
+│   ├── verifier-interface/        # same #[contractclient]-only pattern for verifier
+│   ├── governance/               # timelocked verifying-key rotation
+│   ├── viewing_keys/              # viewing-key commitment registry
+│   ├── compliance/               # sanctions non-membership proof storage
+│   └── swap/                     # shielded swap primitive
+├── indexer/                      # TypeScript/Node service (not Go/Rust) — node:sqlite, no build step
+├── sdk/                          # @zkella/sdk — not yet published to npm; consumed via local imports
+├── app/                          # reference wallet (planned, not yet started)
 └── docs/
     ├── TECHNICAL_SPEC.md         # this document
     ├── CIRCUIT_SPEC.md           # detailed constraint listings
-    └── INTEGRATION_GUIDE.md     # for third-party builders
+    ├── ARCHITECTURE.md           # full system architecture
+    ├── POC_IMPLEMENTATION.md     # what's validated where (local vs. live Testnet)
+    ├── SCF_READINESS.md          # reviewer-response and milestone package
+    └── INTEGRATION_GUIDE.md      # for third-party builders
 ```
 
 ---

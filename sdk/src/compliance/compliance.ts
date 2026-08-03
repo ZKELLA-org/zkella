@@ -20,14 +20,14 @@ export class ZKELLACompliance {
 
   static async fetchSanctionsList(url: string): Promise<SanctionsList> {
     const res  = await fetch(url)
-    const data = await res.json()
+    const data = (await res.json()) as { root: string; version: string; published_ledger: number }
     return {
       root:            data.root,
       version:         data.version,
       publishedLedger: data.published_ledger,
       fetchPath:       async (address: string) => {
         const r = await fetch(`${url}/path/${address}`)
-        return r.json()
+        return (await r.json()) as { path: string[]; boundaryLeaves: string[] }
       },
     }
   }

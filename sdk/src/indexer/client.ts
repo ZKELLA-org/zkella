@@ -22,19 +22,19 @@ export class IndexerClient {
       `${this.baseUrl}/notes?from_ledger=${fromLedger}&limit=${limit}`
     )
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    return res.json()
+    return (await res.json()) as { notes: IndexerNote[]; nextLedger: number }
   }
 
   async getMerklePath(leafIndex: number): Promise<MerklePath> {
     const res = await fetch(`${this.baseUrl}/merkle/path/${leafIndex}`)
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    return res.json()
+    return (await res.json()) as MerklePath
   }
 
   async getMerkleRoot(): Promise<{ root: string; leafCount: number }> {
     const res = await fetch(`${this.baseUrl}/merkle/root`)
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    return res.json()
+    return (await res.json()) as { root: string; leafCount: number }
   }
 
   async batchCheckNullifiers(
@@ -46,7 +46,7 @@ export class IndexerClient {
       body:    JSON.stringify({ nullifiers }),
     })
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    const data = await res.json()
+    const data = (await res.json()) as { spent: Record<string, boolean> }
     return data.spent
   }
 
@@ -58,12 +58,12 @@ export class IndexerClient {
   async getLeafByCommitment(commitmentHex: string): Promise<{ leafIndex: number }> {
     const res = await fetch(`${this.baseUrl}/commitment/${commitmentHex}`)
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    return res.json()
+    return (await res.json()) as { leafIndex: number }
   }
 
   async health(): Promise<{ syncedLedger: number; tipLedger: number; lag: number }> {
     const res = await fetch(`${this.baseUrl}/health`)
     if (!res.ok) throw new Error(`indexer error: ${res.status}`)
-    return res.json()
+    return (await res.json()) as { syncedLedger: number; tipLedger: number; lag: number }
   }
 }

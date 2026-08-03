@@ -4,9 +4,9 @@
 
 **Implementation status:** this document specifies the intended circuit family for the protocol. The repository code and current circuit artifacts are soft PoC material only; they must be reviewed, tested against final contract semantics, optimized, and improved before production use.
 
-All circuits are written in Circom 2.0 and compiled to Groth16 over BN254.  
-Proof size: 192 bytes (fixed, all circuits).  
-Verifying key: loaded from Soroban contract storage, upgradeable via governance timelock.
+All circuits are written in Circom 2.2 and compiled to Groth16 over BN254.
+Proof size: 256 bytes (fixed, all circuits) — the wire format `contracts/verifier` expects is *uncompressed* BN254 points (`A`: 64 bytes G1, `B`: 128 bytes G2, `C`: 64 bytes G1), matching Soroban's native `crypto::bn254` host types exactly; this is not the 192-byte compressed encoding some other Groth16 tooling defaults to. See `sdk/src/prover/encoding.ts` for the exact byte layout and `docs/POC_IMPLEMENTATION.md` for confirmation against a real submitted proof.
+Verifying key: loaded from Soroban contract storage (`contracts/verifier`), upgradeable via governance timelock (`contracts/governance`).
 
 ---
 
@@ -195,7 +195,7 @@ component main {public [commitment, value_commit, pub_value, pub_asset_id]}
   = Shield();
 ```
 
-**Public inputs (5 field elements):**
+**Public inputs (4 field elements; the verifying key's `IC` array has 5 entries — `IC[0]` for the constant term plus one per public input):**
 ```
 commitment      : F_p  — note commitment
 value_commit    : F_p  — value binding

@@ -52,6 +52,21 @@ export interface WalletConfig {
   sorobanRpc:   string
   indexerUrl:   string
   ct20Address:  string
+  /**
+   * Stellar account that signs and pays for every Soroban transaction this
+   * wallet submits (`shield()`'s SEP-41 `from`, and the source account for
+   * every contract invocation). Distinct from `keys` (the shielded-pool
+   * spending key) — one is a Stellar account identity, the other is a
+   * ZKELLA note-ownership identity; conflating them isn't required by the
+   * protocol and isn't assumed here.
+   */
+  stellarSecret: string
+  /** Compiled circuit artifacts — see `sdk/src/prover/*`. Each is required
+   *  only for the corresponding `ZKELLAWallet` method. */
+  shieldCircuit?:    { wasmPath: string; zkeyPath: string }
+  transferCircuit?:  { wasmPath: string; zkeyPath: string }
+  transfer4Circuit?: { wasmPath: string; zkeyPath: string }
+  unshieldCircuit?:  { wasmPath: string; zkeyPath: string }
 }
 
 export interface ViewingKeyExport {

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contracts:
+    name: Soroban contracts (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - name: cargo test --workspace
+        working-directory: contracts
+        run: cargo test --workspace
+      - name: cargo build --workspace --target wasm32v1-none --release
+        working-directory: contracts
+        run: cargo build --workspace --target wasm32v1-none --release
+
+  sdk:
+    name: SDK and circuits (npm test + typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - name: Typecheck
+        run: npx tsc --noEmit -p tsconfig.test.json
+      - name: Unit tests
+        run: npm test

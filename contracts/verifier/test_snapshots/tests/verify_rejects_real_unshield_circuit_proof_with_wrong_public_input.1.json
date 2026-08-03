@@ -1,0 +1,132 @@
+{
+  "generators": {
+    "address": 2,
+    "nonce": 0,
+    "mux_id": 0
+  },
+  "auth": [
+    [],
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "function_name": "register_verifying_key",
+              "args": [
+                {
+                  "u32": 2
+                },
+                {
+                  "bytes": "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa2d9cca5351120b63aa991da6bec4b807d543867c2ebc51da8ee2eba181a0d478040e060e1fedac5c6567b436890917c9f21093c0c6db108e446371a6dab2d4a419d2a654617d5bfb4f9aa088c7cfc33780d00aba13dc5e59af91ace654fcab320defa3acf67254c86dc6627f1a28a1624aa685129c26e697f3b1368c146998921488716f57136a9c6e0aea900c443e8bf4851a3b4a9de095b2bbe6ee45a0928c04fcc15f28278f536deca9a58745100a454426ad38a1ef86532dbc9150ab3c5721d875b836271817bf90fa35fc178f4e34a755dc95fb801df7917ac67871669609b798ca5c6e03e3be8e3f39305f451a4e7b6605aab3718b26a468506657b21a1fe02728ff258d1f58b1c8dec33ba170a5f4ac4adbf50ad72b4378cb8e17ee000d48c9210286aed1e336f8d33b25f02c1c91ef2681c8d70cbab0dd69aa2e0cfb1ffba34d56dd06b0a47830cf0d5687b18771651409aeed5b3530ad124ac656891fd63eef08b7d24f442835884a08a6db7d5f8cc4336a06c4b658e35b7e698f070aa3095674f8d47ff59423e7563055bff31554bab4e1a4c31fbb4ad433ba34fc1ce0f8189093bcab3693812d9c92cae91cafb077622e004b81d46e784de4bac02416127a41885c66ff7d8a98af5b52042b2f84d8883ee2593a5195a376ec2600241347b2dcb3c525784408da8d2c6012ac0ab456c68f0c5efd25e30edfcf0d3c"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    []
+  ],
+  "ledger": {
+    "protocol_version": 27,
+    "sequence_number": 0,
+    "timestamp": 0,
+    "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "base_reserve": 0,
+    "min_persistent_entry_ttl": 4096,
+    "min_temp_entry_ttl": 16,
+    "max_entry_ttl": 6312000,
+    "ledger_entries": [
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "801925984706572462"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Admin"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "VerifyingKey"
+                          },
+                          {
+                            "u32": 2
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa2d9cca5351120b63aa991da6bec4b807d543867c2ebc51da8ee2eba181a0d478040e060e1fedac5c6567b436890917c9f21093c0c6db108e446371a6dab2d4a419d2a654617d5bfb4f9aa088c7cfc33780d00aba13dc5e59af91ace654fcab320defa3acf67254c86dc6627f1a28a1624aa685129c26e697f3b1368c146998921488716f57136a9c6e0aea900c443e8bf4851a3b4a9de095b2bbe6ee45a0928c04fcc15f28278f536deca9a58745100a454426ad38a1ef86532dbc9150ab3c5721d875b836271817bf90fa35fc178f4e34a755dc95fb801df7917ac67871669609b798ca5c6e03e3be8e3f39305f451a4e7b6605aab3718b26a468506657b21a1fe02728ff258d1f58b1c8dec33ba170a5f4ac4adbf50ad72b4378cb8e17ee000d48c9210286aed1e336f8d33b25f02c1c91ef2681c8d70cbab0dd69aa2e0cfb1ffba34d56dd06b0a47830cf0d5687b18771651409aeed5b3530ad124ac656891fd63eef08b7d24f442835884a08a6db7d5f8cc4336a06c4b658e35b7e698f070aa3095674f8d47ff59423e7563055bff31554bab4e1a4c31fbb4ad433ba34fc1ce0f8189093bcab3693812d9c92cae91cafb077622e004b81d46e784de4bac02416127a41885c66ff7d8a98af5b52042b2f84d8883ee2593a5195a376ec2600241347b2dcb3c525784408da8d2c6012ac0ab456c68f0c5efd25e30edfcf0d3c"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "code": ""
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      }
+    ]
+  },
+  "events": []
+}
