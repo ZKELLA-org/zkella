@@ -1,6 +1,6 @@
 //! Test-only Groth16 fixture generator.
 //!
-//! ct20's own shield() tests need a proof that genuinely verifies against
+//! token's own shield() tests need a proof that genuinely verifies against
 //! the exact public inputs those tests compute at run time (in particular
 //! `pub_asset_id`, derived from a dynamically-generated test `Address` that
 //! differs on every run — so no fixed hex constant can match it). Rather
@@ -53,7 +53,7 @@ fn g2_bytes(p: &G2Affine) -> [u8; 128] {
 
 /// `little_endian_bytes` -> arkworks `Fr`, reducing mod r (matching the
 /// protocol-wide convention that raw 32-byte fields are canonicalized before
-/// use, e.g. `ct20::poseidon::Fr::from_bytes`).
+/// use, e.g. `token::poseidon::Fr::from_bytes`).
 fn fr_from_le_bytes(le: &[u8; 32]) -> Fr {
     let mut be = *le;
     be.reverse();

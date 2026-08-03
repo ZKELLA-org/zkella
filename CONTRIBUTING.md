@@ -10,7 +10,7 @@ For security-sensitive findings (soundness gaps, authorization bugs, anything th
 
 ## Repository layout
 
-- `contracts/` — Soroban contracts (Rust). `ct20` (confidential token), `verifier` (Groth16 verifying-key registry), `governance` (timelocked key rotation), `viewing_keys`/`compliance` (disclosure), `swap` (shielded swap primitive), plus `*-interface` crates for cross-contract calls.
+- `contracts/` — Soroban contracts (Rust). `token` (`ShieldedToken`, the confidential token contract), `verifier` (Groth16 verifying-key registry), `governance` (timelocked key rotation), `viewing_keys`/`compliance` (disclosure), `swap` (shielded swap primitive), plus `*-interface` crates for cross-contract calls.
 - `circuits/` — Circom circuits (`shield`, `unshield`, `transfer_2in2out`, `transfer_4in4out`, `swap`, `compliance`) and shared templates under `circuits/common/`.
 - `sdk/` — TypeScript SDK (`@zkella/sdk`): keys, notes, proving, wallet, indexer client.
 - `indexer/` — reference indexer service (Node/TypeScript, `node:sqlite`).

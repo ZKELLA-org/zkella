@@ -27,7 +27,7 @@ export interface SwapFairnessWitness {
   intentNonce:    bigint
   amountIn:       bigint
   maxSlippageBps: bigint
-  assetIn:        string  // SEP-41 contract address (field-encoded, same as ct20 asset_id)
+  assetIn:        string  // SEP-41 contract address (field-encoded, same as token asset_id)
   assetOut:       string
   amountOut:      bigint
   minAmountOut:   bigint

@@ -2,7 +2,7 @@
  * End-to-end shield test on Stellar Testnet.
  *
  * Prerequisites:
- *   - CT20_CONTRACT_ID env var set to a deployed CT-20 contract address
+ *   - TOKEN_CONTRACT_ID env var set to a deployed ShieldedToken contract address
  *   - STELLAR_SECRET env var set to a funded testnet account secret key
  *   - SOROBAN_RPC_URL env var (default: https://soroban-testnet.stellar.org)
  *   - USDC_TESTNET env var set to a testnet USDC contract address
@@ -17,10 +17,10 @@ import { encryptNote }     from '../../sdk/src/notes/encrypt'
 
 const RPC_URL     = process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org'
 const SECRET      = process.env.STELLAR_SECRET  ?? ''
-const CT20_ID     = process.env.CT20_CONTRACT_ID ?? ''
+const TOKEN_ID     = process.env.TOKEN_CONTRACT_ID ?? ''
 const USDC_ID     = process.env.USDC_TESTNET    ?? ''
 
-const SKIP = !SECRET || !CT20_ID || !USDC_ID
+const SKIP = !SECRET || !TOKEN_ID || !USDC_ID
 
 describe('Shield — end-to-end on Stellar Testnet', () => {
 
@@ -46,8 +46,8 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     expect(encryptedNote).toHaveLength(176)
 
     // 4. Read root before shield
-    const ct20     = new Contract(CT20_ID)
-    const rootBefore = await callView(server, account, keypair, ct20, 'merkle_root', [])
+    const token     = new Contract(TOKEN_ID)
+    const rootBefore = await callView(server, account, keypair, token, 'merkle_root', [])
 
     // 5. Build the shield transaction
     const shieldPubInputs = {
@@ -62,7 +62,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
       networkPassphrase: Networks.TESTNET,
     })
       .addOperation(
-        ct20.call(
+        token.call(
           'shield',
           nativeToScVal(keypair.publicKey(), { type: 'address' }),
           nativeToScVal(USDC_ID,              { type: 'address' }),
@@ -101,19 +101,19 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     expect(typeof leafIndex).toBe('number')
 
     // 9. Verify Merkle root changed
-    const rootAfter = await callView(server, account, keypair, ct20, 'merkle_root', [])
+    const rootAfter = await callView(server, account, keypair, token, 'merkle_root', [])
     expect(rootBefore).not.toEqual(rootAfter)
     console.log(`✓ Merkle root updated`)
 
     // 10. Verify shielded supply increased
-    const supply = await callView(server, account, keypair, ct20, 'shielded_supply', [
+    const supply = await callView(server, account, keypair, token, 'shielded_supply', [
       nativeToScVal(USDC_ID, { type: 'address' }),
     ]) as string | number | bigint
     expect(BigInt(supply)).toBeGreaterThanOrEqual(AMOUNT)
     console.log(`✓ Shielded supply: ${supply}`)
 
     // 11. Verify leaf count incremented
-    const leafCount = await callView(server, account, keypair, ct20, 'leaf_count', [])
+    const leafCount = await callView(server, account, keypair, token, 'leaf_count', [])
     expect(Number(leafCount)).toBeGreaterThan(0)
     console.log(`✓ Leaf count: ${leafCount}`)
 

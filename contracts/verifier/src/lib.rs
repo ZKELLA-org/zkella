@@ -5,7 +5,7 @@
 //! Stores one verifying key per [`CircuitType`] and exposes [`VerifierContract::verify`],
 //! a generic Groth16 pairing check against Soroban's native BN254 host functions
 //! (`bn254_g1_add`, `bn254_g1_mul`, `bn254_multi_pairing_check`, protocol 25+).
-//! Keeping this in its own contract — rather than embedding the VK in `ct20`'s
+//! Keeping this in its own contract — rather than embedding the VK in `token`'s
 //! instance storage — lets the verifying key be rotated (via `governance`'s
 //! timelock) without redeploying the token contract, and keeps VK-management
 //! privileges scoped separately from token-admin powers.
@@ -19,8 +19,8 @@
 //! G2 = 128 bytes `be(X)||be(Y)` with each coordinate an Fp2 element `be(c1)||be(c0)`.
 //! Public inputs are field elements as 32-byte **little-endian** `BytesN<32>` —
 //! matching the convention every other 32-byte field value uses across ZKELLA
-//! (`ct20`'s commitments, nullifiers, `Fr::to_bytes`/`from_bytes` in
-//! `ct20::poseidon`), not the host's native big-endian point encoding. `verify`
+//! (`token`'s commitments, nullifiers, `Fr::to_bytes`/`from_bytes` in
+//! `token::poseidon`), not the host's native big-endian point encoding. `verify`
 //! reverses byte order internally before constructing each `U256`, the same
 //! way `Poseidon2Hasher::hash` does, so callers never need to flip bytes
 //! themselves.
@@ -42,7 +42,7 @@ use soroban_sdk::{
 // incidental codegen-unit partitioning (the same class of fragility
 // documented in `verifier-interface`'s own doc comment for the unrelated
 // duplicate-export bug), not on IC-defined `use` vs `pub use` semantics.
-// `ct20`/`governance`/`compliance` only `use` (not re-export) these types
+// `token`/`governance`/`compliance` only `use` (not re-export) these types
 // internally to call out via `VerifierClient`, which is why they didn't hit
 // this. The two definitions are `#[repr(u32)]` with identical variants, so
 // they're wire-compatible: XDR encodes/decodes by discriminant, not by
@@ -59,7 +59,7 @@ pub enum CircuitType {
     SwapFairness = 5,
 }
 
-// `ct20`/`governance`/`compliance` test modules construct proofs and
+// `token`/`governance`/`compliance` test modules construct proofs and
 // register VKs against this crate's own generated `VerifierContractClient`
 // (dev-dependency, for a real verifier in-process) while their *production*
 // code is typed against `zkella_verifier_interface::CircuitType`. This
@@ -564,7 +564,7 @@ mod tests {
 
     // Order: commitment, value_commit, pub_value, pub_asset_id (matches
     // shield.circom's `component main {public [...]}` list and
-    // ShieldPublicInputs in ct20/src/types.rs), little-endian 32 bytes each.
+    // ShieldPublicInputs in token/src/types.rs), little-endian 32 bytes each.
     const SHIELD_PUBLIC_INPUTS_LE_HEX: [&str; 4] = [
         "34e0b1164d8115f16361db88db58197334127310d50ed897e3ca979f403b302c",
         "2b0a0ab5d86942b81c38e99c402c056398fb75a23605e1b082b4ac584af6b118",
@@ -588,7 +588,7 @@ mod tests {
     // nullifier/output-commitment distinctness constraints in
     // transfer_2in2out/transfer.circom, with a genuine two-distinct-note
     // witness — not just a proof that the *contract* rejects a duplicated
-    // synthetic proof (covered separately in ct20's own test suite), but
+    // synthetic proof (covered separately in token's own test suite), but
     // proof the *circuit itself* now compiles and produces valid witnesses
     // under the fixed constraint set.
     #[test]
@@ -674,8 +674,8 @@ mod tests {
     // input notes (leaf indices 0-3 of an otherwise-empty depth-32 tree,
     // pairwise-combined then chained through empty-subtree roots) and 4
     // fresh output notes. Until now `CircuitType::Transfer4x4` was only
-    // exercised against ct20's synthetic arkworks-based test proofs (see
-    // `contracts/ct20/src/test_groth16.rs`), which prove the *contract*
+    // exercised against token's synthetic arkworks-based test proofs (see
+    // `contracts/token/src/test_groth16.rs`), which prove the *contract*
     // plumbing but not that this specific compiled circuit's constraints
     // are satisfiable/sound — this closes that gap the same way shield,
     // transfer_2in2out, and unshield already were.

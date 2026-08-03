@@ -18,10 +18,10 @@ use types::{
     NoteCommitmentEvent, NullifierEvent, ShieldEvent,
     StorageKey, TransferPublicInputs, UnshieldEvent,
 };
-// Re-exported for downstream crates that deploy a real `CT20Contract` in
+// Re-exported for downstream crates that deploy a real `ShieldedToken` in
 // their own tests (e.g. `contracts/swap`'s test suite, which shields a real
-// note via a direct `CT20ContractClient` call before exercising
-// `swap::commit_swap`'s cross-call into `ct20::unshield`).
+// note via a direct `ShieldedTokenClient` call before exercising
+// `swap::commit_swap`'s cross-call into `token::unshield`).
 pub use types::{Error, ShieldPublicInputs, UnshieldPublicInputs};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -99,10 +99,10 @@ fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
-pub struct CT20Contract;
+pub struct ShieldedToken;
 
 #[contractimpl]
-impl CT20Contract {
+impl ShieldedToken {
 
     /// Initialize the contract. Can only be called once.
     /// `verifier` is the address of a deployed `zkella-verifier` registry
@@ -703,7 +703,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
-    /// Deploys ct20 alongside a real `zkella-verifier` registry, initialized
+    /// Deploys token alongside a real `zkella-verifier` registry, initialized
     /// with `admin` as its admin (no VK registered yet). Tests that need
     /// `shield()` to actually succeed must register a VK via
     /// `prove_and_register_shield` below; tests that only exercise checks
@@ -728,10 +728,10 @@ mod tests {
         env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
         env.mock_all_auths();
         let admin    = Address::generate(&env);
-        let ct20     = env.register(CT20Contract, ());
+        let token     = env.register(ShieldedToken, ());
         let verifier = env.register(zkella_verifier::VerifierContract, ());
         zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
-        (env, admin, ct20, verifier)
+        (env, admin, token, verifier)
     }
 
     /// Builds a genuinely valid (if synthetic — see test_groth16.rs) Groth16
@@ -767,8 +767,8 @@ mod tests {
 
     #[test]
     fn initialize_sets_admin_and_root() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
 
         client.initialize(&admin, &verifier);
 
@@ -779,17 +779,17 @@ mod tests {
     #[test]
     #[should_panic(expected = "already initialized")]
     fn initialize_cannot_be_called_twice() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
         client.initialize(&admin, &verifier);
     }
 
     #[test]
     fn merkle_root_changes_after_shield() {
-        let (env, admin, ct20, verifier) = setup();
+        let (env, admin, token, verifier) = setup();
         env.mock_all_auths();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let root_before = client.merkle_root();
@@ -858,9 +858,9 @@ mod tests {
         // Same commitment/public inputs as a real shield, but the proof
         // registered is for a *different* VK — must be rejected by the
         // verifier, not silently accepted.
-        let (env, admin, ct20, verifier) = setup();
+        let (env, admin, token, verifier) = setup();
         env.mock_all_auths();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -907,9 +907,9 @@ mod tests {
 
     #[test]
     fn shield_rejects_negative_amount() {
-        let (env, admin, ct20, verifier) = setup();
+        let (env, admin, token, verifier) = setup();
         env.mock_all_auths();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -936,9 +936,9 @@ mod tests {
 
     #[test]
     fn shield_rejects_duplicate_commitment() {
-        let (env, admin, ct20, verifier) = setup();
+        let (env, admin, token, verifier) = setup();
         env.mock_all_auths();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -982,9 +982,9 @@ mod tests {
 
     #[test]
     fn shield_rejects_wrong_encrypted_note_length() {
-        let (env, admin, ct20, verifier) = setup();
+        let (env, admin, token, verifier) = setup();
         env.mock_all_auths();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -1017,8 +1017,8 @@ mod tests {
         // transfer(): empty vecs fail the 2-in-2-out arity check.
         // unshield(): recipient_hash=[0;32] won't match Poseidon2(address, 0)
         // for a real generated address. Neither reaches proof verification.
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let transfer_result = client.try_transfer(
@@ -1055,8 +1055,8 @@ mod tests {
 
     #[test]
     fn transfer_succeeds_with_valid_proof() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1130,8 +1130,8 @@ mod tests {
 
     #[test]
     fn transfer4_succeeds_with_valid_proof() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1208,8 +1208,8 @@ mod tests {
 
     #[test]
     fn transfer4_rejects_duplicate_nullifier_in_same_call() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1291,8 +1291,8 @@ mod tests {
     /// to the accompanying fix in transfer_2in2out/transfer.circom).
     #[test]
     fn transfer_rejects_duplicate_nullifier_in_same_call() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1357,8 +1357,8 @@ mod tests {
     /// free of duplicate leaves is simpler to reason about).
     #[test]
     fn transfer_rejects_duplicate_output_commitment_in_same_call() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1413,8 +1413,8 @@ mod tests {
 
     #[test]
     fn transfer_rejects_already_spent_nullifier() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let asset = Address::generate(&env);
@@ -1498,8 +1498,8 @@ mod tests {
 
     #[test]
     fn unshield_succeeds_with_valid_proof_and_releases_tokens() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -1566,7 +1566,7 @@ mod tests {
 
         assert!(client.is_spent(&nullifier));
         assert_eq!(stellar_asset.balance(&recipient), 500_000i128);
-        assert_eq!(stellar_asset.balance(&ct20), shield_amount - 500_000i128);
+        assert_eq!(stellar_asset.balance(&token), shield_amount - 500_000i128);
         assert_eq!(
             client.shielded_supply(&token_addr),
             shield_amount - pub_value,
@@ -1580,8 +1580,8 @@ mod tests {
         // unshielding any positive amount must fail cleanly rather than
         // wrapping supply negative or succeeding despite no real backing
         // having ever been recorded for this asset.
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -1590,7 +1590,7 @@ mod tests {
         let recipient   = Address::generate(&env);
 
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
-        stellar_asset.mint(&ct20, &1_000_000_000);
+        stellar_asset.mint(&token, &1_000_000_000);
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let anchor = client.merkle_root();
@@ -1628,8 +1628,8 @@ mod tests {
 
     #[test]
     fn unshield_rejects_wrong_recipient_hash() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);
@@ -1639,7 +1639,7 @@ mod tests {
         let wrong_recipient = Address::generate(&env);
 
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
-        stellar_asset.mint(&ct20, &1_000_000_000);
+        stellar_asset.mint(&token, &1_000_000_000);
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let anchor = client.merkle_root();
@@ -1677,8 +1677,8 @@ mod tests {
     /// check alone) — about 26% of the 400M budget, comfortable headroom.
     #[test]
     fn shield_fits_within_mainnet_instruction_budget() {
-        let (env, admin, ct20, verifier) = setup();
-        let client = CT20ContractClient::new(&env, &ct20);
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
         let token_admin = Address::generate(&env);

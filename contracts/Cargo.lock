@@ -1929,27 +1929,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zkella-ct20"
-version = "0.1.0"
-dependencies = [
- "ark-bn254",
- "ark-ec",
- "ark-ff",
- "ark-std",
- "soroban-poseidon",
- "soroban-sdk",
- "zkella-verifier",
- "zkella-verifier-interface",
-]
-
-[[package]]
-name = "zkella-ct20-interface"
-version = "0.1.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "zkella-governance"
 version = "0.1.0"
 dependencies = [
@@ -1968,10 +1947,31 @@ dependencies = [
  "ark-std",
  "soroban-poseidon",
  "soroban-sdk",
- "zkella-ct20",
- "zkella-ct20-interface",
+ "zkella-token",
+ "zkella-token-interface",
  "zkella-verifier",
  "zkella-verifier-interface",
+]
+
+[[package]]
+name = "zkella-token"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+ "soroban-poseidon",
+ "soroban-sdk",
+ "zkella-verifier",
+ "zkella-verifier-interface",
+]
+
+[[package]]
+name = "zkella-token-interface"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

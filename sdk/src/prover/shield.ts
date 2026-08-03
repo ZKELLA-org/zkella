@@ -23,7 +23,7 @@ export { encodeProof, encodeVerifyingKey } from './encoding'
  * after this proof is built (it only binds this one shield call's
  * `value_commit`, not the note's long-term identity/spendability — the
  * on-chain `commitment` and future nullifier depend only on `rho`/`rcm`),
- * and folding it into `Note` would also blow past `ct20`'s fixed 176-byte
+ * and folding it into `Note` would also blow past `token`'s fixed 176-byte
  * `ENCRYPTED_NOTE_LEN` if it were ever added to the transmitted note
  * plaintext. `generateShieldProof` below generates and discards it.
  */

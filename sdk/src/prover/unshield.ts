@@ -14,7 +14,7 @@ const MERKLE_DEPTH = 32
  *   Public:  anchor, nullifier, pub_value, pub_asset_id, recipient_hash
  *
  * `recipient_hash` isn't circuit-constrained (see unshield.circom's own
- * comment) — `contracts/ct20::unshield` checks it against `to` directly:
+ * comment) — `contracts/token::unshield` checks it against `to` directly:
  * `recipient_hash === Poseidon2(address_field(to), 0)`. Get this wrong and
  * the contract call fails with `RecipientMismatch` before it ever reaches
  * proof verification, regardless of whether the proof itself is valid.
@@ -24,16 +24,16 @@ export interface UnshieldWitness {
   nk:   Uint8Array     // spending key's nullifier key (ZKELLAKeys.spendingKey.nullifierKey)
   /**
    * 32 sibling hashes for `note.leafIndex`, each a 32-byte little-endian
-   * field element — from `ct20.merkle_path(leafIndex)` (a view call; there's
+   * field element — from `token.merkle_path(leafIndex)` (a view call; there's
    * no indexer yet to source this from, see `docs/POC_IMPLEMENTATION.md`).
    * Path directions are *not* passed separately — they're `leafIndex`'s own
-   * bits, computed here exactly like `contracts/ct20::merkle::get_path_indices`.
+   * bits, computed here exactly like `contracts/token::merkle::get_path_indices`.
    */
   merklePath: Uint8Array[]
 }
 
 export interface UnshieldPublicInputs {
-  anchor:    Uint8Array  // current ct20.merkle_root(), as 32-byte LE
+  anchor:    Uint8Array  // current token.merkle_root(), as 32-byte LE
   recipient: string      // Stellar address `to` — the withdrawal destination
 }
 
@@ -108,7 +108,7 @@ export async function generateUnshieldProof(
 
 /**
  * Direction bits for `leafIndex` (0 = left, 1 = right), one per Merkle
- * level. Must match `contracts/ct20::merkle::get_path_indices` bit-for-bit:
+ * level. Must match `contracts/token::merkle::get_path_indices` bit-for-bit:
  * bit `i` is `(leafIndex >> i) & 1`.
  */
 function pathIndicesFor(leafIndex: number): number[] {

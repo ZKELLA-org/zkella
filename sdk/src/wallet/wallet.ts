@@ -136,7 +136,7 @@ export class ZKELLAWallet {
         pub_value:    amount,
         value_commit: valueCommit,
       }
-      const result = await this.submitContractCall(this.config.ct20Address, 'shield', [
+      const result = await this.submitContractCall(this.config.tokenAddress, 'shield', [
         nativeToScVal(this.sourceKeypair.publicKey(), { type: 'address' }),
         nativeToScVal(asset,                           { type: 'address' }),
         nativeToScVal(amount,                          { type: 'i128' }),
@@ -237,7 +237,7 @@ export class ZKELLAWallet {
         fee,
         asset_id: asset,
       }
-      const returned = await this.submitContractCall(this.config.ct20Address, 'transfer', [
+      const returned = await this.submitContractCall(this.config.tokenAddress, 'transfer', [
         vecScVal(result.nullifiers, 'bytes'),
         vecScVal(result.outputNotes.map(n => n.commitment), 'bytes'),
         vecScVal([encryptedToRecipient, encryptedChange], 'bytes'),
@@ -262,7 +262,7 @@ export class ZKELLAWallet {
    * Unshield (withdraw) a single note's full value to a public Stellar
    * address. Partial-amount unshielding requires a preceding `transfer()`
    * to split the note into the exact amount first — there's no
-   * unshield-with-change entry point on `ct20` today.
+   * unshield-with-change entry point on `token` today.
    */
   async unshield(opts: { asset: string; amount: bigint; to: string }): Promise<{ submit: () => Promise<void> }> {
     requireCircuit(this.config.unshieldCircuit, 'unshieldCircuit', 'unshield()')
@@ -292,7 +292,7 @@ export class ZKELLAWallet {
         pub_asset_id:   opts.asset,
         recipient_hash: result.recipientHash,
       }
-      await this.submitContractCall(this.config.ct20Address, 'unshield', [
+      await this.submitContractCall(this.config.tokenAddress, 'unshield', [
         nativeToScVal(result.nullifier, { type: 'bytes' }),
         nativeToScVal(opts.to,          { type: 'address' }),
         nativeToScVal(result.proof,     { type: 'bytes' }),
@@ -384,12 +384,12 @@ export class ZKELLAWallet {
   }
 
   private async getMerkleRoot(): Promise<Uint8Array> {
-    const root = await this.callView(this.config.ct20Address, 'merkle_root', [])
+    const root = await this.callView(this.config.tokenAddress, 'merkle_root', [])
     return root as Uint8Array
   }
 
   private async getMerklePathBytes(leafIndex: number): Promise<Uint8Array[]> {
-    const path = await this.callView(this.config.ct20Address, 'merkle_path', [
+    const path = await this.callView(this.config.tokenAddress, 'merkle_path', [
       nativeToScVal(leafIndex, { type: 'u32' }),
     ]) as Uint8Array[]
     if (path.length !== MERKLE_DEPTH) {

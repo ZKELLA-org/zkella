@@ -5,7 +5,7 @@
 
 **ZK-native confidential finance infrastructure for the Stellar Soroban ecosystem.**
 
-ZKELLA delivers production-oriented confidential finance infrastructure for Soroban: a CT-20 token standard, auditor viewing keys, Travel Rule-aligned disclosure workflows, persistent note indexing, and a shielded swap primitive.
+ZKELLA delivers production-oriented confidential finance infrastructure for Soroban: a shielded confidential token, auditor viewing keys, Travel Rule-aligned disclosure workflows, persistent note indexing, and a shielded swap primitive.
 
 ---
 
@@ -25,14 +25,14 @@ This repository contains the ZKELLA protocol specification, architecture, Soroba
 
 Current implementation foundation:
 
-- `contracts/ct20` shield / transfer / transfer4 (4-in-4-out) / unshield flow: commitment computation, duplicate-checking, Merkle insertion, nullifier tracking, event emission, and on-chain Groth16 proof verification — validated with real transactions on live Stellar Testnet (three real `shield()` calls, real proofs, real native-XLM transfers; see `docs/POC_IMPLEMENTATION.md`)
+- `contracts/token` (the `ShieldedToken` contract) shield / transfer / transfer4 (4-in-4-out) / unshield flow: commitment computation, duplicate-checking, Merkle insertion, nullifier tracking, event emission, and on-chain Groth16 proof verification — validated with real transactions on live Stellar Testnet (three real `shield()` calls, real proofs, real native-XLM transfers; see `docs/POC_IMPLEMENTATION.md`)
 - `contracts/verifier`: a shared Groth16/BN254 verifying-key registry, verified against Soroban's native pairing host functions and genuine proofs from the compiled `shield.circom`, `transfer.circom` (2-in-2-out), and `unshield.circom` circuits
 - `contracts/governance`: timelocked verifying-key rotation, cross-calling the verifier registry
 - `contracts/compliance`: sanctions-list non-membership proofs, verified before storage
-- `contracts/swap`: real value movement, not just proof verification — `commit_swap` escrows real funds via a real `ct20::unshield` cross-call (doubling as the note-ownership proof), `execute_swap` requires real relayer-fronted liquidity, `reveal_and_claim` pays the relayer and re-shields the output as a real new note via `ct20::shield`, and `cancel_swap`/`reclaim_expired_swap` really refund both sides if a swap is never executed or never claimed — audited, fixed (a fund-orphaning collision bug, a CEI reentrancy risk, and a nested cross-contract auth gap only a real Testnet transaction surfaced), and run end-to-end on live Stellar Testnet with genuine `circom`/`snarkjs` proofs at every stage (see `docs/POC_IMPLEMENTATION.md`)
-- `contracts/ct20/src/poseidon.rs` and `contracts/ct20/src/merkle.rs`: native host-backed Poseidon2 and incremental Merkle tree logic
+- `contracts/swap`: real value movement, not just proof verification — `commit_swap` escrows real funds via a real `ShieldedToken::unshield` cross-call (doubling as the note-ownership proof), `execute_swap` requires real relayer-fronted liquidity, `reveal_and_claim` pays the relayer and re-shields the output as a real new note via `ShieldedToken::shield`, and `cancel_swap`/`reclaim_expired_swap` really refund both sides if a swap is never executed or never claimed — audited, fixed (a fund-orphaning collision bug, a CEI reentrancy risk, and a nested cross-contract auth gap only a real Testnet transaction surfaced), and run end-to-end on live Stellar Testnet with genuine `circom`/`snarkjs` proofs at every stage (see `docs/POC_IMPLEMENTATION.md`)
+- `contracts/token/src/poseidon.rs` and `contracts/token/src/merkle.rs`: native host-backed Poseidon2 and incremental Merkle tree logic
 - TypeScript SDK note construction and note encryption helpers in `sdk/src/notes`, with real BN254 ECDH (including diversified-address hash-to-curve) in `sdk/src/crypto/bn254.ts`
-- `sdk/src/prover/{shield,transfer,transfer4,unshield}.ts`: real Groth16 proof generation for every ct20 entry point via `snarkjs`, sharing one wire-format encoder (`sdk/src/prover/encoding.ts`) cross-validated byte-for-byte against real proof/VK bytes — shield's against the exact proof submitted in a real live-Testnet transaction, the rest against real compiled-circuit proofs (see `tests/unit/prover*.test.ts`) — no Python side-channel needed.
+- `sdk/src/prover/{shield,transfer,transfer4,unshield}.ts`: real Groth16 proof generation for every token entry point via `snarkjs`, sharing one wire-format encoder (`sdk/src/prover/encoding.ts`) cross-validated byte-for-byte against real proof/VK bytes — shield's against the exact proof submitted in a real live-Testnet transaction, the rest against real compiled-circuit proofs (see `tests/unit/prover*.test.ts`) — no Python side-channel needed.
 - `sdk/src/wallet/wallet.ts`: real Soroban RPC transaction construction, signing, submission, and confirmation-polling for `shield()`/`transfer()`/`unshield()` — no more JSON-stub XDR building
 - `indexer/`: a real, running indexer service (real event polling, real SQLite persistence, real HTTP API), validated against live Stellar Testnet — see `indexer/README.md`
 - see `docs/POC_IMPLEMENTATION.md` for what's validated where (locally vs. live Testnet) and what's still open
@@ -63,13 +63,13 @@ See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol de
 
 ZKELLA is structured as five layered components, each independently useful and collectively forming a complete privacy infrastructure stack.
 
-### Component 1: CT-20 Confidential Token Standard
+### Component 1: Shielded Confidential Token
 
-A Soroban token standard where balances are stored as Pedersen commitments. Transfers require a Groth16 range proof — proving the amount is valid and the sender has sufficient balance without revealing either value.
+A Soroban SEP-41-wrapping token contract (`ShieldedToken`, `contracts/token`) where balances are stored as Pedersen commitments. Transfers require a Groth16 range proof — proving the amount is valid and the sender has sufficient balance without revealing either value.
 
 - Circom circuits: 2-input/2-output and 4-input/4-output configurations
 - Multi-asset support: one contract handles multiple token types simultaneously
-- Wrap any existing Stellar asset (USDC, XLM, any SEP-41 token) into a CT-20 shielded version
+- Wrap any existing Stellar asset (USDC, XLM, any SEP-41 token) into a shielded version
 - Functions: `shield()`, `transfer()`, `unshield()`
 
 ### Component 2: Auditor Viewing Key System
@@ -119,7 +119,7 @@ A Stellar-native private swap interface.
          ┌───────────────┼───────────────┐
          ▼               ▼               ▼
   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-  │  CT-20      │ │  Viewing    │ │  Shielded   │
+  │  Shielded   │ │  Viewing    │ │  Shielded   │
   │  Token      │ │  Key System │ │  Swap       │
   │  Contract   │ │  + Audit    │ │  Primitive  │
   └─────────────┘ └─────────────┘ └─────────────┘
@@ -169,8 +169,8 @@ ZKELLA/
 │   ├── swap/                    # shielded swap commit-reveal fairness circuit
 │   └── compliance/               # sanctions non-membership circuit
 ├── contracts/
-│   ├── ct20/                   # confidential token standard
-│   ├── ct20-interface/          # #[contractclient]-only crate for cross-contract calls into ct20
+│   ├── token/                   # shielded confidential token (ShieldedToken)
+│   ├── token-interface/          # #[contractclient]-only crate for cross-contract calls into token
 │   ├── verifier/                # shared Groth16 verifying-key registry
 │   ├── verifier-interface/       # #[contractclient]-only crate for cross-contract calls into verifier
 │   ├── governance/              # timelocked verifying-key rotation

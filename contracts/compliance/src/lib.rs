@@ -122,7 +122,7 @@ mod tests {
     use ark_ff::{BigInteger, PrimeField};
     use ark_std::UniformRand;
 
-    // Same construction technique as zkella-verifier's and ct20's own test
+    // Same construction technique as zkella-verifier's and token's own test
     // suites: pick beta = gamma = delta = H (standard G2 generator), choose
     // alpha/IC freely, set A = alpha + vk_x + C via real curve arithmetic.
     // NOT all-zero bytes: an all-identity VK/proof is a degenerate case that

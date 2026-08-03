@@ -1,5 +1,5 @@
 [package]
-name    = "zkella-ct20-interface"
+name    = "zkella-token-interface"
 version = "0.1.0"
 edition = "2021"
 

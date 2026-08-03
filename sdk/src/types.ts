@@ -51,7 +51,7 @@ export interface WalletConfig {
   network:      'testnet' | 'mainnet'
   sorobanRpc:   string
   indexerUrl:   string
-  ct20Address:  string
+  tokenAddress:  string
   /**
    * Stellar account that signs and pays for every Soroban transaction this
    * wallet submits (`shield()`'s SEP-41 `from`, and the source account for

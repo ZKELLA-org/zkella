@@ -1,15 +1,15 @@
 //! Minimal Poseidon2 hashing for `swap`'s own use: computing
 //! `recipient_hash = Poseidon2(address_field(this_contract), 0)` to match
-//! what `ct20::unshield` independently computes for its `RecipientMismatch`
+//! what `token::unshield` independently computes for its `RecipientMismatch`
 //! check when `to = this_contract`'s address.
 //!
-//! Copied verbatim from `contracts/ct20/src/poseidon.rs`'s `Fr`
+//! Copied verbatim from `contracts/token/src/poseidon.rs`'s `Fr`
 //! (canonicalization) and `Poseidon2Hasher` (native-host-backed hashing) —
 //! not re-derived — because any deviation in the field-reduction algorithm
-//! would silently produce a *different* hash than ct20's own, breaking the
+//! would silently produce a *different* hash than token's own, breaking the
 //! recipient-hash check with no useful error message. Not extracted into a
 //! shared library crate (a cleaner option, deferred rather than skipped)
-//! because `contracts/ct20` doesn't currently expose `poseidon` outside its
+//! because `contracts/token` doesn't currently expose `poseidon` outside its
 //! own crate, and reorganizing that heavily-tested module was judged higher
 //! risk than a small, precise duplication for this specific need.
 

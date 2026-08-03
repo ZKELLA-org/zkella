@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { poseidon2 } from '../../sdk/src/crypto/poseidon'
 
-// Mirrors the Rust incremental Merkle tree logic in contracts/ct20/src/merkle.rs
+// Mirrors the Rust incremental Merkle tree logic in contracts/token/src/merkle.rs
 // Validates:
 //   1. The empty-leaf constant matches what Rust hard-codes (EMPTY_LEAF)
 //   2. Path computation for single-leaf insertion
@@ -27,12 +27,12 @@ async function emptySubtreeRoot(level: number, emptyLeaf: Uint8Array): Promise<U
 
 jest.setTimeout(60_000)
 
-describe('Incremental Merkle tree (mirrors contracts/ct20/src/merkle.rs)', () => {
+describe('Incremental Merkle tree (mirrors contracts/token/src/merkle.rs)', () => {
 
   test('empty leaf = Poseidon2(zero, zero) matches Rust constant', async () => {
     const zero = new Uint8Array(32)
     const result = await hash2(zero, zero)
-    // Rust EMPTY_LEAF from contracts/ct20/src/merkle.rs (updated to match circomlibjs)
+    // Rust EMPTY_LEAF from contracts/token/src/merkle.rs (updated to match circomlibjs)
     // hex: 6448b64684ee39a823d5fe5fd52431dc81e4817bf2c3ea3cab9e239efbf59820
     const expected = new Uint8Array(Buffer.from(
       '6448b64684ee39a823d5fe5fd52431dc' +

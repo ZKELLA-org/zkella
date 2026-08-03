@@ -11,9 +11,9 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, IntoVal, Vec,
 };
 use zkella_verifier_interface::{CircuitType, VerifierClient};
-use zkella_ct20_interface::{
-    Ct20Client, ShieldPublicInputs as Ct20ShieldPublicInputs,
-    UnshieldPublicInputs as Ct20UnshieldPublicInputs,
+use zkella_token_interface::{
+    TokenClient, ShieldPublicInputs as TokenShieldPublicInputs,
+    UnshieldPublicInputs as TokenUnshieldPublicInputs,
 };
 
 /// Ledgers after `expiry_ledger` a relayer who already fronted liquidity at
@@ -30,13 +30,13 @@ pub enum StorageKey {
     ApprovedRelayer(Address),
     Admin,
     Verifier,
-    Ct20,
+    Token,
 }
 
 /// Extract the raw 32-byte contract ID from a Soroban Address via XDR.
-/// Identical to (and must stay in sync with) `ct20::address_to_field_bytes` —
+/// Identical to (and must stay in sync with) `token::address_to_field_bytes` —
 /// duplicated rather than shared because `swap` doesn't otherwise depend on
-/// `ct20`. See that function's doc comment for why this reads the *last* 32
+/// `token`. See that function's doc comment for why this reads the *last* 32
 /// bytes of the XDR rather than a fixed forward offset.
 fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     let xdr = addr.to_xdr(env);
@@ -95,23 +95,23 @@ pub struct ShieldedSwap;
 #[contractimpl]
 impl ShieldedSwap {
 
-    pub fn initialize(env: Env, admin: Address, verifier: Address, ct20: Address) {
+    pub fn initialize(env: Env, admin: Address, verifier: Address, token_contract: Address) {
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&StorageKey::Verifier, &verifier);
-        env.storage().instance().set(&StorageKey::Ct20, &ct20);
+        env.storage().instance().set(&StorageKey::Token, &token_contract);
     }
 
     /// Commits to a swap intent for `nullifier_in`, escrowing `amount_in` of
     /// `asset_in` into this contract's balance right now.
     ///
     /// `ownership_proof` is a **real Groth16 proof — a genuine
-    /// `unshield.circom` proof**, not a stub: this cross-calls `ct20`'s own
+    /// `unshield.circom` proof**, not a stub: this cross-calls `token`'s own
     /// `unshield(nullifier_in, this_contract, ownership_proof, ...)`,
-    /// reusing ct20's already-real, already-audited unshield verification
+    /// reusing token's already-real, already-audited unshield verification
     /// as the swap's note-ownership proof. That call both proves the
     /// committer owns a real, unspent note worth `amount_in` of `asset_in`
     /// *and* atomically pulls that value into this contract's own balance
-    /// (marking the note's nullifier spent on ct20's side) — there's no
+    /// (marking the note's nullifier spent on token's side) — there's no
     /// separate ownership circuit to build or maintain.
     pub fn commit_swap(
         env:               Env,
@@ -145,24 +145,24 @@ impl ShieldedSwap {
 
         let swap_addr = env.current_contract_address();
 
-        // recipient_hash binds `to` = this contract, matching ct20::unshield's
+        // recipient_hash binds `to` = this contract, matching token::unshield's
         // own RecipientMismatch check.
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let to_field = address_to_field_bytes(&env, &swap_addr);
         let recipient_hash_bytes = hasher.hash(&to_field, &[0u8; 32]);
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
 
-        let ct20: Address = env.storage().instance().get(&StorageKey::Ct20).expect("not initialized");
+        let token_contract: Address = env.storage().instance().get(&StorageKey::Token).expect("not initialized");
 
-        // Real ownership proof + real escrow, via ct20's own unshield path.
-        // Panics (propagating ct20's error) if the proof, nullifier, or
+        // Real ownership proof + real escrow, via token's own unshield path.
+        // Panics (propagating token's error) if the proof, nullifier, or
         // anchor don't check out — commit_swap simply doesn't complete, so
         // there's no partial/inconsistent state to clean up afterward.
-        Ct20Client::new(&env, &ct20).unshield(
+        TokenClient::new(&env, &token_contract).unshield(
             &nullifier_in,
             &swap_addr,
             &ownership_proof,
-            &Ct20UnshieldPublicInputs {
+            &TokenUnshieldPublicInputs {
                 anchor,
                 nullifier: nullifier_in.clone(),
                 pub_value: amount_in,
@@ -247,14 +247,14 @@ impl ShieldedSwap {
     ///   - pays the relayer the escrowed `asset_in` (their compensation for
     ///     fronting `asset_out` at `execute_swap` time)
     ///   - re-shields the escrowed `asset_out` as a fresh note for the
-    ///     claimant, via ct20's own `shield()` — `shield_proof` is a
+    ///     claimant, via token's own `shield()` — `shield_proof` is a
     ///     **separate, real Groth16 proof** (a genuine `shield.circom`
     ///     proof for the *output* note's commitment) from `fairness_proof`;
     ///     the caller needs both, since they prove different things
     ///     (fairness of the executed price vs. correctness of the new
     ///     note's own commitment).
     ///
-    /// Returns the real leaf index ct20 assigns the new note.
+    /// Returns the real leaf index token assigns the new note.
     #[allow(clippy::too_many_arguments)]
     pub fn reveal_and_claim(
         env:              Env,
@@ -313,19 +313,19 @@ impl ShieldedSwap {
 
         // Re-shield the escrowed asset_out as a new note for the claimant.
         // `from` = this contract; Soroban auto-authorizes a contract's own
-        // *direct* calls, so `ct20::shield`'s own `from.require_auth()` is
-        // satisfied for free. But `ct20::shield` then calls
-        // `token::Client::transfer(from = this contract, to = ct20, amount)`
-        // on `asset_out` — a call `ct20` makes, not `swap` — which needs
+        // *direct* calls, so `token::shield`'s own `from.require_auth()` is
+        // satisfied for free. But `token::shield` then calls
+        // `token::Client::transfer(from = this contract, to = token, amount)`
+        // on `asset_out` — a call `token` makes, not `swap` — which needs
         // this contract's auth *two* levels deep in the call stack. Soroban
         // only auto-authorizes one hop, so that inner `transfer`'s
         // `require_auth()` needs an explicit entry here via
         // `authorize_as_current_contract`, describing exactly the sub-call
-        // `ct20::shield` is about to make. Without this, the call fails on
+        // `token::shield` is about to make. Without this, the call fails on
         // real (non-mocked) auth with `Error(Auth, InvalidAction)` — a gap
         // the unit tests' blanket `mock_all_auths_allowing_non_root_auth()`
         // never exercised, only caught by a real live-Testnet transaction.
-        let ct20: Address = env.storage().instance().get(&StorageKey::Ct20).expect("not initialized");
+        let token_contract: Address = env.storage().instance().get(&StorageKey::Token).expect("not initialized");
         let swap_addr = env.current_contract_address();
         env.authorize_as_current_contract(Vec::from_array(
             &env,
@@ -337,7 +337,7 @@ impl ShieldedSwap {
                         &env,
                         [
                             swap_addr.into_val(&env),
-                            ct20.into_val(&env),
+                            token_contract.into_val(&env),
                             state.amount_out.into_val(&env),
                         ],
                     ),
@@ -345,7 +345,7 @@ impl ShieldedSwap {
                 sub_invocations: Vec::new(&env),
             })],
         ));
-        let leaf_index = Ct20Client::new(&env, &ct20).shield(
+        let leaf_index = TokenClient::new(&env, &token_contract).shield(
             &env.current_contract_address(),
             &state.asset_out,
             &state.amount_out,
@@ -354,7 +354,7 @@ impl ShieldedSwap {
             &out_commitment,
             &encrypted_note,
             &shield_proof,
-            &Ct20ShieldPublicInputs {
+            &TokenShieldPublicInputs {
                 commitment: out_commitment.clone(),
                 value_commit: out_value_commit,
                 pub_value: state.amount_out,
@@ -443,12 +443,12 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use zkella_verifier::{VerifierContract, VerifierContractClient};
-    use zkella_ct20::{
-        CT20Contract, CT20ContractClient,
+    use zkella_token::{
+        ShieldedToken, ShieldedTokenClient,
         ShieldPublicInputs as NativeShieldPublicInputs,
     };
 
-    /// Note commitment, matching `ct20::compute_commitment` exactly:
+    /// Note commitment, matching `token::compute_commitment` exactly:
     /// `H(H(value, asset_field), H(rho, rcm))`.
     fn note_commitment(
         env: &Env,
@@ -483,17 +483,17 @@ mod tests {
         asset_in:       Address,
         asset_out:      Address,
         verifier:       Address,
-        ct20:           Address,
+        token_contract:  Address,
         swap:           Address,
     }
 
-    /// Deploys verifier + ct20 + swap wired together, two real Stellar
+    /// Deploys verifier + token + swap wired together, two real Stellar
     /// Asset Contracts for asset_in/asset_out, and a relayer approved on
     /// `swap`. Real contracts throughout — the only thing "synthetic" here
     /// is that proofs are built via `test_groth16::build_valid_groth16_proof`
     /// (a genuine Groth16 relation, just not tied to a specific circuit's
     /// constraints) rather than a real `circom`-compiled proof, exactly
-    /// mirroring `zkella-ct20`'s own test suite's established pattern —
+    /// mirroring `zkella-token`'s own test suite's established pattern —
     /// circuit-level soundness is proven once, at the circuit level, in
     /// `zkella-verifier`'s real-circuit tests.
     fn setup() -> Setup {
@@ -501,7 +501,7 @@ mod tests {
         env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
         // `mock_all_auths()` only covers the root call's own authorization
         // tree; `commit_swap`/`reveal_and_claim` have `swap` itself
-        // authorize as `from` for nested `ct20::unshield`/`ct20::shield`
+        // authorize as `from` for nested `token::unshield`/`token::shield`
         // calls (a contract auto-authorizing its own address, per Soroban's
         // standard "contract calling as itself" rule), which is a *non-root*
         // auth in the call stack and needs this variant instead.
@@ -518,21 +518,21 @@ mod tests {
         let verifier = env.register(VerifierContract, ());
         VerifierContractClient::new(&env, &verifier).initialize(&admin);
 
-        let ct20 = env.register(CT20Contract, ());
-        CT20ContractClient::new(&env, &ct20).initialize(&admin, &verifier);
+        let token_contract = env.register(ShieldedToken, ());
+        ShieldedTokenClient::new(&env, &token_contract).initialize(&admin, &verifier);
 
         let swap = env.register(ShieldedSwap, ());
-        ShieldedSwapClient::new(&env, &swap).initialize(&admin, &verifier, &ct20);
+        ShieldedSwapClient::new(&env, &swap).initialize(&admin, &verifier, &token_contract);
         ShieldedSwapClient::new(&env, &swap).set_relayer(&relayer, &true);
 
         env.ledger().with_mut(|li| li.sequence_number = 100);
 
-        Setup { env, admin, relayer, asset_in, asset_out, verifier, ct20, swap }
+        Setup { env, admin, relayer, asset_in, asset_out, verifier, token_contract, swap }
     }
 
-    /// Shields `amount` of `asset` for `shielder` into `ct20`, returning the
+    /// Shields `amount` of `asset` for `shielder` into `token`, returning the
     /// note's (rho, rcm, commitment, leaf_index) — a real shield() call with
-    /// a real (synthetic-relation) proof, exactly like ct20's own tests.
+    /// a real (synthetic-relation) proof, exactly like token's own tests.
     fn shield_note(
         s: &Setup,
         shielder: &Address,
@@ -561,8 +561,8 @@ mod tests {
             .register_verifying_key(&CircuitType::Shield.into(), &vk);
 
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
-        let ct20_client = CT20ContractClient::new(&s.env, &s.ct20);
-        let leaf_index = ct20_client.shield(
+        let token_client = ShieldedTokenClient::new(&s.env, &s.token_contract);
+        let leaf_index = token_client.shield(
             shielder, asset, &amount, &rho, &rcm, &commitment, &encrypted_note, &proof,
             &NativeShieldPublicInputs {
                 commitment: commitment.clone(),
@@ -656,7 +656,7 @@ mod tests {
         let _ = (in_rho, in_rcm, in_leaf);
 
         let nullifier_in = BytesN::from_array(&s.env, &[99u8; 32]);
-        let anchor = CT20ContractClient::new(&s.env, &s.ct20).merkle_root();
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor);
 
         let intent_commitment = BytesN::from_array(&s.env, &[42u8; 32]);
@@ -670,10 +670,10 @@ mod tests {
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
-        // ct20::unshield — verify both sides.
+        // token::unshield — verify both sides.
         let asset_in_client = token::Client::new(&s.env, &s.asset_in);
         assert_eq!(asset_in_client.balance(&s.swap), amount_in);
-        assert_eq!(CT20ContractClient::new(&s.env, &s.ct20).shielded_supply(&s.asset_in), 0);
+        assert_eq!(ShieldedTokenClient::new(&s.env, &s.token_contract).shielded_supply(&s.asset_in), 0);
 
         let amount_out = 950_000i128;
         let min_amount_out = 900_000i128;
@@ -713,9 +713,9 @@ mod tests {
         assert_eq!(asset_in_client.balance(&s.relayer), amount_in);
         assert_eq!(asset_in_client.balance(&s.swap), 0);
 
-        // The output note was really shielded into ct20 for the claimant.
+        // The output note was really shielded into token for the claimant.
         assert_eq!(asset_out_client.balance(&s.swap), 0);
-        assert_eq!(CT20ContractClient::new(&s.env, &s.ct20).shielded_supply(&s.asset_out), amount_out);
+        assert_eq!(ShieldedTokenClient::new(&s.env, &s.token_contract).shielded_supply(&s.asset_out), amount_out);
         assert!(leaf_index > in_leaf, "output note should land at a later leaf than the input note");
     }
 
@@ -725,7 +725,7 @@ mod tests {
     /// simulating a non-unique `intent_nonce`) would both pull a *second*
     /// real note's value into escrow and silently overwrite the first
     /// swap's `SwapState`, orphaning that first escrow. The duplicate check
-    /// runs before the (real, expensive) `ct20::unshield` cross-call, so the
+    /// runs before the (real, expensive) `token::unshield` cross-call, so the
     /// second attempt is rejected before ever spending a second note's
     /// nullifier — the proof bytes below are never actually verified.
     #[test]
@@ -737,7 +737,7 @@ mod tests {
 
         shield_note(&s, &shielder, &s.asset_in, amount_in, 70, 71);
         let nullifier_a = BytesN::from_array(&s.env, &[101u8; 32]);
-        let anchor_a = CT20ContractClient::new(&s.env, &s.ct20).merkle_root();
+        let anchor_a = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in, &anchor_a);
 
         let intent_commitment = BytesN::from_array(&s.env, &[123u8; 32]);
@@ -768,7 +768,7 @@ mod tests {
         shield_note(&s, &shielder, &s.asset_in, amount_in, 30, 31);
 
         let nullifier_in = BytesN::from_array(&s.env, &[77u8; 32]);
-        let anchor = CT20ContractClient::new(&s.env, &s.ct20).merkle_root();
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor);
 
         let intent_commitment = BytesN::from_array(&s.env, &[55u8; 32]);
@@ -799,7 +799,7 @@ mod tests {
         shield_note(&s, &shielder, &s.asset_in, amount_in, 40, 41);
 
         let nullifier_in = BytesN::from_array(&s.env, &[88u8; 32]);
-        let anchor = CT20ContractClient::new(&s.env, &s.ct20).merkle_root();
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor);
 
         let intent_commitment = BytesN::from_array(&s.env, &[66u8; 32]);
@@ -837,7 +837,7 @@ mod tests {
         shield_note(&s, &shielder, &s.asset_in, amount_in, 50, 51);
 
         let nullifier_in = BytesN::from_array(&s.env, &[11u8; 32]);
-        let anchor = CT20ContractClient::new(&s.env, &s.ct20).merkle_root();
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor);
 
         let intent_commitment = BytesN::from_array(&s.env, &[22u8; 32]);

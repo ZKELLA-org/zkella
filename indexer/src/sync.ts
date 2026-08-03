@@ -1,4 +1,4 @@
-// Polls Stellar RPC's `getEvents` for `ct20`'s `("zkella","note")` and
+// Polls Stellar RPC's `getEvents` for `token`'s `("zkella","note")` and
 // `("zkella","nf")` contract events and persists them — the whole reason
 // this service exists: Stellar RPC only retains events for a short window
 // (a few days), so anything a wallet needs to recover note history or
@@ -17,7 +17,7 @@ const TOPIC_NF     = xdr.ScVal.scvSymbol('nf').toXDR('base64')
 
 export interface SyncConfig {
   rpcUrl:      string
-  ct20Address: string
+  tokenAddress: string
   db:          IndexerDb
   startLedger: number
   pollIntervalMs: number
@@ -63,8 +63,8 @@ export class Syncer {
       const response = await this.server.getEvents({
         startLedger: cursor,
         filters: [
-          { type: 'contract', contractIds: [this.config.ct20Address], topics: [[TOPIC_ZKELLA, TOPIC_NOTE]] },
-          { type: 'contract', contractIds: [this.config.ct20Address], topics: [[TOPIC_ZKELLA, TOPIC_NF]] },
+          { type: 'contract', contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NOTE]] },
+          { type: 'contract', contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NF]] },
         ],
         limit: 1000,
       })

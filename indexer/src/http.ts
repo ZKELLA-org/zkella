@@ -14,7 +14,7 @@ const SIMULATION_KEYPAIR = Keypair.random()
 
 export interface HttpConfig {
   db:          IndexerDb
-  ct20Address: string
+  tokenAddress: string
   rpcUrl:      string
   network:     'testnet' | 'mainnet'
   port:        number
@@ -35,7 +35,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * Proxies `ct20.merkle_path`/`merkle_root` view calls directly rather than
+ * Proxies `token.merkle_path`/`merkle_root` view calls directly rather than
  * maintaining a redundant second copy of the Merkle tree — the contract is
  * already the source of truth for current tree state; the indexer's own
  * database only needs to cover what the contract *can't* serve itself
@@ -50,7 +50,7 @@ async function callView(config: HttpConfig, method: string, args: ReturnType<typ
     fee: '100',
     networkPassphrase: config.network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET,
   })
-    .addOperation(new Contract(config.ct20Address).call(method, ...args))
+    .addOperation(new Contract(config.tokenAddress).call(method, ...args))
     .setTimeout(10)
     .build()
 
@@ -133,7 +133,7 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
   return server
 }
 
-/** Direction bits for `leafIndex`, matching `contracts/ct20::merkle::get_path_indices`. */
+/** Direction bits for `leafIndex`, matching `contracts/token::merkle::get_path_indices`. */
 function pathIndicesFor(leafIndex: number, depth: number): number[] {
   const bits: number[] = []
   let idx = leafIndex

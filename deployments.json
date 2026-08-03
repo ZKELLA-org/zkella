@@ -3,7 +3,7 @@
     "verifier":     "CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG",
     "governance":   "CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD",
     "compliance":   "CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q",
-    "ct20":         "CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE",
+    "token":        "CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE",
     "swap":         "CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3",
     "viewing_keys": null,
     "_note":        "Redeployed 2026-08-03 after a senior audit of contracts/swap; see docs/POC_IMPLEMENTATION.md's 'Update: senior audit, contract-stack redeployment, and a real live-Testnet swap lifecycle'. swap CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH is a superseded pre-fix instance with funds recoverable via reclaim_expired_swap."
@@ -12,7 +12,7 @@
     "verifier":     null,
     "governance":   null,
     "compliance":   null,
-    "ct20":         null,
+    "token":        null,
     "swap":         null,
     "viewing_keys": null
   }

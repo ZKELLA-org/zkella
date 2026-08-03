@@ -10,12 +10,12 @@ crate-type = ["cdylib"]
 soroban-sdk = { workspace = true }
 soroban-poseidon = { workspace = true }
 zkella-verifier-interface = { path = "../verifier-interface" }
-zkella-ct20-interface = { path = "../ct20-interface" }
+zkella-token-interface = { path = "../token-interface" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 zkella-verifier = { path = "../verifier" }
-zkella-ct20 = { path = "../ct20", features = ["testutils"] }
+zkella-token = { path = "../token", features = ["testutils"] }
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"

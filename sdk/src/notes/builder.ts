@@ -32,7 +32,7 @@ export async function buildNote(
 
 /**
  * Compute note commitment: Poseidon2(Poseidon2(value, assetId), Poseidon2(rho, rcm))
- * Matches the on-chain compute_commitment() in contracts/ct20/src/lib.rs exactly.
+ * Matches the on-chain compute_commitment() in contracts/token/src/lib.rs exactly.
  */
 export async function computeCommitment(
   value:   bigint,

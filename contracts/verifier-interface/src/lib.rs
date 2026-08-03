@@ -3,7 +3,7 @@
 //! Cross-contract interface for `contracts/verifier`, with no `#[contract]`/
 //! `#[contractimpl]` of its own.
 //!
-//! Contracts that need to *call* the verifier (`ct20`, `governance`,
+//! Contracts that need to *call* the verifier (`token`, `governance`,
 //! `compliance`) should depend on this crate, not on `zkella-verifier`
 //! directly. Depending on `zkella-verifier` directly pulls its actual
 //! `#[contractimpl]` — including its WASM export directives for `initialize`,
@@ -13,7 +13,7 @@
 //! externally visible), a caller that also happens to export a function with
 //! the same name (e.g. its own `initialize`) hits a WASM linker error:
 //! `duplicate symbol: initialize`. This was found empirically: `compliance`
-//! hit it depending on `zkella-verifier` directly, while `ct20` and
+//! hit it depending on `zkella-verifier` directly, while `token` and
 //! `governance` happened not to under the codegen-unit partitioning in place
 //! at the time — a difference that is not something to build on, since nothing
 //! guarantees it survives a toolchain update or unrelated code changes. A

@@ -38,7 +38,7 @@ The product is built as a layered system:
                                          ▼
              +---------------------------+-------------------+
              |      Soroban / ZKELLA On-chain Layer         |
-             |  - CT-20 confidential token contract           |
+             |  - ShieldedToken contract           |
              |  - viewing key registry contract              |
              |  - shielded swap contract                     |
              |  - governance / verifier management           |
@@ -78,7 +78,7 @@ The product is built as a layered system:
                  v                                     v
 +-----------------------------------------+   +-------------------------+
 | Soroban contract layer                   |   | Persistent state layer  |
-| - CT-20 shielded ledger                  |   | - encrypted note store  |
+| - ShieldedToken ledger                  |   | - encrypted note store  |
 | - viewing-key registry                   |   | - Merkle path service   |
 | - shielded swap controller               |   | - nullifier/root cache  |
 | - governance/verifier management         |   +-------------------------+
@@ -106,7 +106,7 @@ ZKELLA is not a private smart contract VM. It is an application-layer confidenti
 The architecture in this document describes the intended protocol. The current repository implementation has closed most of the gaps this section used to describe, but is still deliberately narrower than the full target design:
 
 - shield, transfer (2-in/2-out and 4-in/4-out), and unshield are all implemented with real on-chain Groth16/BN254 verification (not stubs), validated both locally and with real transactions on live Stellar Testnet — see `docs/POC_IMPLEMENTATION.md`,
-- the shielded swap contract (`contracts/swap`) genuinely moves value — real escrow via a `ct20::unshield` cross-call, real relayer-fronted liquidity, real payout and re-shield — and has been through a senior-auditor pass (three fixed issues) and a full live-Testnet run of its commit → execute → reveal-and-claim lifecycle with real circuit proofs at every stage,
+- the shielded swap contract (`contracts/swap`) genuinely moves value — real escrow via a `ShieldedToken::unshield` cross-call, real relayer-fronted liquidity, real payout and re-shield — and has been through a senior-auditor pass (three fixed issues) and a full live-Testnet run of its commit → execute → reveal-and-claim lifecycle with real circuit proofs at every stage,
 - the verifying-key registry is its own contract (`contracts/verifier`), separate from `contracts/governance` (which timelocks key rotation) — this split didn't exist when this document was first written,
 - `contracts/viewing_keys` (viewing-key commitment registry) and `contracts/compliance` (sanctions non-membership proofs, verified against the real verifier) are now two separate contracts, not one,
 - the persistent indexer (`indexer/`) is a real, running TypeScript/Node service — not design-only — validated against live Stellar Testnet event data (see `docs/POC_IMPLEMENTATION.md` and `indexer/README.md`),
@@ -121,7 +121,7 @@ This boundary is important for contributors: the repository should be read as a 
 | Layer | Primary technology | Responsibility |
 |---|---|---|
 | Settlement | Stellar ledger, SEP-41 assets, Stellar DEX | Public asset custody, final settlement, public liquidity, public account state |
-| Smart contracts | Rust, Soroban SDK, Soroban instance/persistent storage | CT-20 shielded ledger, nullifier registry, Merkle roots, viewing-key registry, swap controller, verifier governance |
+| Smart contracts | Rust, Soroban SDK, Soroban instance/persistent storage | ShieldedToken ledger, nullifier registry, Merkle roots, viewing-key registry, swap controller, verifier governance |
 | ZK verification | Groth16, BN254 host functions, Poseidon/Poseidon2 | Proof verification, commitment hashing, Merkle authentication, value conservation checks |
 | Circuits | Circom 2.2, snarkjs artifact pipeline | Shield, transfer (2x2, 4x4), unshield, swap fairness, and sanctions non-membership constraints |
 | Client proving | TypeScript, WASM proving artifacts (snarkjs), Node/browser runtimes | Local witness generation, proof construction, note encryption, transaction assembly |
@@ -141,7 +141,7 @@ Control plane:
   Governance contract --------------------+
         |                                  |
         v                                  v
-  CT-20 contract                  Shielded swap contract
+  ShieldedToken contract                  Shielded swap contract
 
 Data plane:
 
@@ -151,7 +151,7 @@ Data plane:
   Soroban RPC
      | 2. submit shield/transfer/unshield/swap tx
      v
-  CT-20 / swap contracts
+  ShieldedToken / swap contracts
      | 3. emit commitments, nullifiers, encrypted-note events
      v
   Indexer
@@ -168,8 +168,8 @@ The planned integration has six concrete touchpoints:
 
 | Stellar surface | Planned ZKELLA use |
 |---|---|
-| SEP-41 token contracts | Source and sink for public assets entering or leaving CT-20 custody |
-| Soroban contracts | Execution layer for CT-20, viewing-key registry, shielded swap controller, and verifier governance |
+| SEP-41 token contracts | Source and sink for public assets entering or leaving ShieldedToken custody |
+| Soroban contracts | Execution layer for ShieldedToken, viewing-key registry, shielded swap controller, and verifier governance |
 | Soroban host functions | Native BN254 and Poseidon/Poseidon2 operations for proof verification and commitment/Merkle hashing |
 | Soroban RPC | Transaction submission, simulation, state reads, event streaming, and wallet/indexer synchronization |
 | Stellar DEX | Public liquidity and execution venue for shielded swap settlement |
@@ -179,15 +179,15 @@ This integration is still planned architecture. The current repository contains 
 
 #### 1.7.1 SEP-41 asset custody model
 
-CT-20 is designed to wrap existing Stellar assets without creating a separate asset universe. A shielded note is backed by real SEP-41 token units held or controlled by the CT-20 contract.
+ShieldedToken is designed to wrap existing Stellar assets without creating a separate asset universe. A shielded note is backed by real SEP-41 token units held or controlled by the ShieldedToken contract.
 
 Planned custody flow:
 
 1. User selects a SEP-41 asset contract, such as XLM's Stellar Asset Contract or a stablecoin asset contract.
 2. Wallet/SDK builds a shield note with `asset_id = SEP-41 contract address`.
-3. Public SEP-41 units move into CT-20 custody during `shield()`.
-4. CT-20 records only the note commitment, encrypted note payload, asset identifier, and shielded supply accounting.
-5. During `unshield()`, CT-20 verifies the spend proof, marks the nullifier as spent, and releases SEP-41 units to a public Stellar address.
+3. Public SEP-41 units move into ShieldedToken custody during `shield()`.
+4. ShieldedToken records only the note commitment, encrypted note payload, asset identifier, and shielded supply accounting.
+5. During `unshield()`, ShieldedToken verifies the spend proof, marks the nullifier as spent, and releases SEP-41 units to a public Stellar address.
 
 ```
 Public Stellar balance
@@ -195,7 +195,7 @@ Public Stellar balance
         | SEP-41 transfer / contract invocation
         v
 +---------------------+        private note commitment
-| CT-20 custody       | --------------------------------+
+| ShieldedToken custody       | --------------------------------+
 | - asset balance     |                                 |
 | - shielded supply   |                                 v
 +----------+----------+                       +------------------+
@@ -208,7 +208,7 @@ Public Stellar balance                        | - rho / rcm      |
 
 Custody invariants:
 
-- shielded supply for each asset must never exceed the CT-20 contract's backing SEP-41 balance,
+- shielded supply for each asset must never exceed the ShieldedToken contract's backing SEP-41 balance,
 - each note commitment must bind `asset_id` so notes cannot be replayed across assets,
 - unshield must reveal enough public information to release the correct asset and amount while preserving private history,
 - token custody checks must be hardened before final contracts are deployed.
@@ -219,10 +219,10 @@ The planned on-chain deployment is a set of specialized Soroban contracts:
 
 | Contract | Stellar/Soroban dependency | Responsibility |
 |---|---|---|
-| CT-20 (`contracts/ct20`) | SEP-41 token interface, Soroban storage, BN254/Poseidon host functions | shield, transfer, unshield, nullifier tracking, Merkle root management, shielded supply accounting |
+| ShieldedToken (`contracts/token`) | SEP-41 token interface, Soroban storage, BN254/Poseidon host functions | shield, transfer, unshield, nullifier tracking, Merkle root management, shielded supply accounting |
 | Viewing key registry (`contracts/viewing_keys`) | Soroban storage and events | viewing-key commitment registration only |
 | Compliance (`contracts/compliance`) | Cross-calls `contracts/verifier` | verified sanctions non-membership proof storage/retrieval |
-| Shielded swap (`contracts/swap`) | `ct20`/`verifier` cross-calls, SEP-41 token transfers, relayer authorization | real escrow via `ct20::unshield`, relayer-fronted liquidity, fairness-proof-gated payout and re-shield, cancellation/reclaim paths |
+| Shielded swap (`contracts/swap`) | `ShieldedToken`/`verifier` cross-calls, SEP-41 token transfers, relayer authorization | real escrow via `ShieldedToken::unshield`, relayer-fronted liquidity, fairness-proof-gated payout and re-shield, cancellation/reclaim paths |
 | Verifier (`contracts/verifier`) | BN254 pairing/Poseidon host functions | shared Groth16 verifying-key storage and the `verify()` entrypoint every other contract calls |
 | Governance (`contracts/governance`) | Cross-calls `contracts/verifier` | timelocked verifying-key rotation, admin transfer — is `verifier`'s own admin |
 
@@ -287,7 +287,7 @@ Planned wallet RPC usage:
 
 Planned indexer RPC usage:
 
-- consume CT-20 and registry events from a configured start ledger,
+- consume ShieldedToken and registry events from a configured start ledger,
 - persist encrypted note bundles and their leaf indexes,
 - reconstruct incremental Merkle paths from event order and contract roots,
 - expose root, note, nullifier, and health APIs to wallets,
@@ -373,7 +373,7 @@ Finality and recovery assumptions:
 
 Planned testnet deployment:
 
-- deploy PoC and reviewed testnet CT-20 contracts to Stellar Testnet,
+- deploy PoC and reviewed testnet ShieldedToken contracts to Stellar Testnet,
 - publish contract IDs, WASM hashes, verifier key versions, and supported asset IDs,
 - operate a public testnet indexer,
 - document known limitations and resource-budget findings for each deployment.
@@ -391,7 +391,7 @@ The architecture assumes Stellar wallets, assets, and DEX liquidity remain the p
 
 The target architecture is composed of eight primary components:
 
-1. CT-20 confidential token contract
+1. ShieldedToken contract
 2. Verifier registry contract (Groth16 verifying-key storage and the shared `verify()` entrypoint)
 3. Governance contract (timelocked verifying-key rotation, relayer/admin controls)
 4. Viewing key registry contract
@@ -400,7 +400,7 @@ The target architecture is composed of eight primary components:
 7. zkella-sdk and off-chain prover
 8. Persistent indexer and wallet sync service
 
-The verifier and governance contracts were originally described as one combined "governance/verifier management" component; the repository implementation splits them so the verifying-key registry (`contracts/verifier`) can be reused by every other contract (`ct20`, `swap`, `compliance`) as a plain cross-contract call, while `contracts/governance` owns only the timelocked rotation policy on top of it. Likewise, viewing-key registration and sanctions-proof publication were originally one component; the repository splits them into `contracts/viewing_keys` and `contracts/compliance` so an unrelated compliance-record store doesn't share a contract with the viewing-key registry.
+The verifier and governance contracts were originally described as one combined "governance/verifier management" component; the repository implementation splits them so the verifying-key registry (`contracts/verifier`) can be reused by every other contract (`ShieldedToken`, `swap`, `compliance`) as a plain cross-contract call, while `contracts/governance` owns only the timelocked rotation policy on top of it. Likewise, viewing-key registration and sanctions-proof publication were originally one component; the repository splits them into `contracts/viewing_keys` and `contracts/compliance` so an unrelated compliance-record store doesn't share a contract with the viewing-key registry.
 
 Each component is described below.
 
@@ -415,7 +415,7 @@ Each component is described below.
                       verifier keys, pause | controls, relayer list
                                            v
 +-------------+     proofs + txs    +------+-------+     events      +---------------+
-| Wallet / SDK | -----------------> | CT-20 ledger | --------------> | Indexer       |
+| Wallet / SDK | -----------------> | ShieldedToken ledger | --------------> | Indexer       |
 |             | <----------------- |              | <-------------- | Merkle paths  |
 +------+------+  roots, balances   +------+-------+  note history   +-------+-------+
        |                                  |                          |
@@ -433,13 +433,13 @@ Each component is described below.
 | workflows   |
 +-------------+
 
-Shielded swaps extend the CT-20 ledger through a swap controller that locks input
+Shielded swaps extend the ShieldedToken ledger through a swap controller that locks input
 nullifiers, references public DEX execution, and mints verified shielded outputs.
 ```
 
-### 2.1 CT-20 confidential token contract
+### 2.1 ShieldedToken contract
 
-The CT-20 contract (`contracts/ct20`) is the core shielded ledger on Soroban. Shield, transfer (2-in/2-out and 4-in/4-out), and unshield are all implemented with real on-chain Groth16 verification, cross-calling `contracts/verifier`.
+The ShieldedToken contract (`contracts/token`) is the core shielded ledger on Soroban. Shield, transfer (2-in/2-out and 4-in/4-out), and unshield are all implemented with real on-chain Groth16 verification, cross-calling `contracts/verifier`.
 
 It handles:
 
@@ -464,7 +464,7 @@ The contract stores a persistent Merkle root and incremental tree state for note
 
 ### 2.2 Verifier registry contract
 
-`contracts/verifier` is a shared Groth16/BN254 verifying-key registry used by `ct20`, `swap`, and `compliance` alike — one contract, one verifying key per circuit, rather than each contract embedding its own copy.
+`contracts/verifier` is a shared Groth16/BN254 verifying-key registry used by `ShieldedToken`, `swap`, and `compliance` alike — one contract, one verifying key per circuit, rather than each contract embedding its own copy.
 
 Key methods:
 
@@ -514,18 +514,18 @@ Key methods:
 
 ### 2.6 Shielded swap contract
 
-The shielded swap contract (`contracts/swap`) implements a commit-reveal swap over shielded notes. It reuses `ct20`'s own already-audited shield/unshield paths for the value-moving steps rather than inventing separate custody logic, and has been through a senior-auditor pass plus a full live-Testnet run of its lifecycle (see `docs/POC_IMPLEMENTATION.md`).
+The shielded swap contract (`contracts/swap`) implements a commit-reveal swap over shielded notes. It reuses `ShieldedToken`'s own already-audited shield/unshield paths for the value-moving steps rather than inventing separate custody logic, and has been through a senior-auditor pass plus a full live-Testnet run of its lifecycle (see `docs/POC_IMPLEMENTATION.md`).
 
 It:
 
-- escrows real value via a real `ct20::unshield` cross-call at commit time (which doubles as the note-ownership proof — no separate ownership circuit),
+- escrows real value via a real `ShieldedToken::unshield` cross-call at commit time (which doubles as the note-ownership proof — no separate ownership circuit),
 - requires a real, relayer-fronted SEP-41 transfer of the output asset before a claim can be revealed,
-- verifies a fairness proof binding the revealed amount back to the original (still-private) intent commitment, pays the relayer, and re-shields the output as a new note via a real, separate `ct20::shield` call,
+- verifies a fairness proof binding the revealed amount back to the original (still-private) intent commitment, pays the relayer, and re-shields the output as a new note via a real, separate `ShieldedToken::shield` call,
 - really refunds both sides — via `cancel_swap` (never executed) or `reclaim_expired_swap` (executed but never claimed, after a grace window) — rather than only flipping a status flag.
 
 Key methods:
 
-- `initialize(admin, verifier, ct20)`
+- `initialize(admin, verifier, ShieldedToken)`
 - `commit_swap(nullifier_in, intent_commitment, asset_in, asset_out, amount_in, anchor, refund_to, ownership_proof, expiry_ledger) -> swap_id`
 - `execute_swap(swap_id, amount_out, relayer)`
 - `reveal_and_claim(swap_id, out_rho, out_rcm, out_commitment, out_value_commit, encrypted_note, fairness_proof, fairness_pub, shield_proof) -> leaf_index`
@@ -566,7 +566,7 @@ The indexer:
 Indexer trust boundaries:
 
 - The indexer is an availability and recovery layer, not a security authority.
-- Wallet clients must independently verify decrypted notes and Merkle paths against on-chain CT-20 roots.
+- Wallet clients must independently verify decrypted notes and Merkle paths against on-chain ShieldedToken roots.
 - If the indexer is unavailable, clients can still use on-chain data for critical state checks, but note reconstruction will be degraded.
 - Multiple indexers can coexist to reduce single-point-of-failure risk.
 
@@ -574,7 +574,7 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 
 - `GET /notes`
 - `GET /merkle/path/:leafIndex`
-- `GET /merkle/root` (proxied live to `ct20` itself, not duplicated)
+- `GET /merkle/root` (proxied live to `ShieldedToken` itself, not duplicated)
 - `GET /commitment/:hex`
 - `POST /nullifiers/batch`
 - `GET /health`
@@ -587,7 +587,7 @@ The repository intentionally separates implemented material from the full target
 
 | Area | Current repository state | Target architecture requirement |
 |---|---|---|
-| CT-20 shield/transfer/unshield | Real on-chain Groth16 verification for all three flows, validated locally and with real transactions on live Stellar Testnet | Hardened SEP-41 custody checks, full resource profiling at scale, complete test coverage, external security review |
+| ShieldedToken shield/transfer/unshield | Real on-chain Groth16 verification for all three flows, validated locally and with real transactions on live Stellar Testnet | Hardened SEP-41 custody checks, full resource profiling at scale, complete test coverage, external security review |
 | Verifier / governance | Real, split contracts (§2.2–2.3): shared verifying-key registry plus timelocked rotation | External audit of the timelock and admin-transfer logic |
 | Viewing keys / compliance | Real, split contracts (§2.4–2.5): viewing-key commitment registry plus verified sanctions non-membership proofs | Indexer-mediated viewing-key access workflow, richer disclosure tooling |
 | Shielded swaps | Real value movement throughout the lifecycle, audited (three fixed issues) and run end-to-end on live Testnet with real circuit proofs (see `docs/POC_IMPLEMENTATION.md`) | Any actual Stellar DEX execution integration — the current relayer model requires the relayer to front liquidity directly, with no on-chain DEX call; wiring a real DEX trade into the flow is still roadmap work |
@@ -617,7 +617,7 @@ A note commitment is the on-chain representation of a shielded note:
 cm = Poseidon2(Poseidon2(value_field, asset_field), Poseidon2(rho, rcm))
 ```
 
-This commitment is inserted into the CT-20 Merkle tree.
+This commitment is inserted into the ShieldedToken Merkle tree.
 
 ### 3.3 Nullifier
 
@@ -631,7 +631,7 @@ nf = Poseidon2(nk, rho)
 
 ### 3.4 Merkle tree
 
-The CT-20 contract uses an incremental binary Merkle tree with depth 32.
+The ShieldedToken contract uses an incremental binary Merkle tree with depth 32.
 
 - leaf node = note commitment,
 - empty leaf = `Poseidon2(0, 0)`,
@@ -655,7 +655,7 @@ The architecture supports five primary flows.
 ### 4.1 Shield flow
 
 ```
-User Wallet -> SDK -> Soroban RPC -> CT-20 -> Stellar public layer
+User Wallet -> SDK -> Soroban RPC -> ShieldedToken -> Stellar public layer
 ```
 
 Steps:
@@ -663,13 +663,13 @@ Steps:
 1. The wallet builds a shield note with `value`, `asset_id`, `rho`, `rcm`, and computes the note commitment.
 2. The SDK encrypts the note bundle for the recipient or viewing key.
 3. The SDK generates a Groth16 proof attesting to note correctness, possession of the secret key, and asset conservation.
-4. The wallet submits a `shield()` transaction to CT-20 that also includes the SEP-41 asset transfer into the contract.
-5. The CT-20 contract verifies the on-chain proof using Protocol 25 BN254 host functions, checks the SEP-41 transfer, inserts the note commitment into the Merkle tree, updates shielded supply, and emits shield event data.
+4. The wallet submits a `shield()` transaction to ShieldedToken that also includes the SEP-41 asset transfer into the contract.
+5. The ShieldedToken contract verifies the on-chain proof using Protocol 25 BN254 host functions, checks the SEP-41 transfer, inserts the note commitment into the Merkle tree, updates shielded supply, and emits shield event data.
 
 ### 4.2 Transfer flow
 
 ```
-User Wallet -> SDK -> Indexer -> Soroban RPC -> CT-20
+User Wallet -> SDK -> Indexer -> Soroban RPC -> ShieldedToken
 ```
 
 Steps:
@@ -677,13 +677,13 @@ Steps:
 1. The sender wallet requests the input note’s Merkle authentication path from the indexer.
 2. The SDK constructs one or more output notes, computes their commitments, and encrypts output bundles.
 3. The SDK generates a Groth16 transfer proof over input nullifiers, output commitments, and balance conservation.
-4. The wallet submits a `transfer()` transaction to CT-20.
-5. CT-20 verifies the proof, marks input nullifiers as spent, inserts output commitments, and emits transfer event data.
+4. The wallet submits a `transfer()` transaction to ShieldedToken.
+5. ShieldedToken verifies the proof, marks input nullifiers as spent, inserts output commitments, and emits transfer event data.
 
 ### 4.3 Unshield flow
 
 ```
-User Wallet -> SDK -> Indexer -> Soroban RPC -> CT-20 -> Stellar public layer
+User Wallet -> SDK -> Indexer -> Soroban RPC -> ShieldedToken -> Stellar public layer
 ```
 
 Steps:
@@ -691,21 +691,21 @@ Steps:
 1. The wallet obtains the note’s Merkle path from the indexer.
 2. The SDK generates an unshield proof that links the note commitment, nullifier, and public recipient address.
 3. The wallet submits an `unshield()` transaction.
-4. CT-20 verifies the proof, marks the nullifier as spent, transfers the underlying SEP-41 asset to the recipient, and emits unshield events.
+4. ShieldedToken verifies the proof, marks the nullifier as spent, transfers the underlying SEP-41 asset to the recipient, and emits unshield events.
 
 ### 4.4 Shielded swap flow
 
 ```
-User Wallet -> SDK -> Soroban RPC -> CT-20 -> Stellar DEX -> CT-20
+User Wallet -> SDK -> Soroban RPC -> ShieldedToken -> Stellar DEX -> ShieldedToken
 ```
 
 Steps:
 
-1. The wallet submits a private swap intent to CT-20 using `commit_swap()`, which locks an input note nullifier and records a swap commitment.
+1. The wallet submits a private swap intent to ShieldedToken using `commit_swap()`, which locks an input note nullifier and records a swap commitment.
 2. A relayer observes the intent, executes the corresponding public DEX trade on Stellar, and returns execution details.
 3. The wallet or relayer submits `execute_swap()` with the public trade result.
 4. The user submits `reveal_and_claim()` with a proof that the public execution matched the committed private swap terms and a shielded output note.
-5. CT-20 verifies the proof, mints the output note commitment, and emits swap event data.
+5. ShieldedToken verifies the proof, mints the output note commitment, and emits swap event data.
 6. If the swap expires without execution, the wallet can call `cancel_swap()` to recover the input note.
 
 Relayer risk and verification:
@@ -749,7 +749,7 @@ Steps:
       +--------------------------+  +-----------------------+
       |  Soroban / ZKELLA on-    |  |  zkella-indexer       |
       |  chain contracts         |  |  (persistent note     |
-      |  - CT-20, viewing keys,  |  |   storage + API)      |
+      |  - ShieldedToken, viewing keys,  |  |   storage + API)      |
       |    swap, governance      |  +-----------------------+
       +--------------------------+
                    |
@@ -769,7 +769,7 @@ The target architecture should be delivered through a staged lifecycle. The exis
 ```
 +------------------+     +------------------+     +------------------+
 | Soft PoC         | --> | Reviewed testnet  | --> | Production-ready |
-| - initial CT-20  |     | - full proofs     |     | - final contracts|
+| - initial ShieldedToken  |     | - full proofs     |     | - final contracts|
 | - SDK scaffolds  |     | - transfer flow   |     | - hardened SDK   |
 | - test vectors   |     | - unshield flow   |     | - monitored ops  |
 +------------------+     +------------------+     +------------------+
@@ -802,13 +802,13 @@ Remaining roadmap requirements:
 ### 7.2 Contract state and minimal on-chain exposure
 
 - On-chain state is limited to note commitments, nullifiers, Merkle roots, verifier parameters, proof-status markers, and authorized relayer/viewing-key commitments.
-- The CT-20 contract does not store decrypted note contents or recipient privacy secrets.
+- The ShieldedToken contract does not store decrypted note contents or recipient privacy secrets.
 - Security depends on the correctness of the contract logic and the soundness of the underlying circuits.
 
 ### 7.3 Indexer trust model
 
 - The indexer is an availability and recovery layer, not a security authority.
-- Wallets and auditor clients must verify decrypted notes and Merkle paths against the on-chain CT-20 Merkle root.
+- Wallets and auditor clients must verify decrypted notes and Merkle paths against the on-chain ShieldedToken Merkle root.
 - If the indexer is unavailable or returns stale data, the client can still validate proofs and state using Soroban RPC and on-chain root information.
 - Multiple independent indexers are recommended for resilience.
 

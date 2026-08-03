@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "ct20",
-    "ct20-interface",
+    "token",
+    "token-interface",
     "viewing_keys",
     "compliance",
     "swap",

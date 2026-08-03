@@ -14,7 +14,7 @@ This guide covers how to integrate ZKELLA's confidential token standard, viewing
 Until the implementation leaves the soft PoC stage, use these examples as technical design references and testnet scaffolding only.
 
 ZKELLA exposes:
-- A **CT-20 token contract** on Soroban — interact with it from any Soroban contract or client
+- A **`ShieldedToken` contract** on Soroban — interact with it from any Soroban contract or client
 - A **TypeScript SDK** (`@zkella/sdk`) — handles proof generation, key management, and note sync
 - A **REST indexer API** — provides Merkle paths and note history beyond the 7-day RPC window
 
@@ -77,7 +77,7 @@ const wallet = new ZKELLAWallet({
   network:      'testnet',                               // 'testnet' | 'mainnet'
   sorobanRpc:   'https://soroban-testnet.stellar.org',
   indexerUrl:   'http://localhost:8787',                  // self-hosted — see §14, no hosted endpoint exists
-  ct20Address:  'CXXX...YYY',                             // see §15 for the current live testnet address
+  tokenAddress:  'CXXX...YYY',                             // see §15 for the current live testnet address
   stellarSecret: mySecretKey,                             // signs the transactions wallet.*() submits
   shieldCircuit:   { wasmPath: '.../circuits/shield/build/shield_js/shield.wasm', zkeyPath: '.../circuits/shield/build/shield.zkey' },
   transferCircuit: { wasmPath: '.../circuits/transfer_2in2out/build/transfer_js/transfer.wasm', zkeyPath: '.../circuits/transfer_2in2out/build/transfer.zkey' },
@@ -194,26 +194,27 @@ The on-chain side is real: `contracts/compliance::publish_compliance_proof` veri
 
 ---
 
-## 13. Calling the CT-20 Contract from Another Soroban Contract
+## 13. Calling the ShieldedToken Contract from Another Soroban Contract
 
-If you are building a Soroban contract that interacts with ZKELLA (e.g., a DeFi protocol that accepts shielded deposits), use the CT-20 contract interface:
+If you are building a Soroban contract that interacts with ZKELLA (e.g., a DeFi protocol that accepts shielded deposits), use the `ShieldedToken` contract interface:
 
 ```rust
 // In your Soroban contract
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env};
 
-// Import the CT-20 client (generated from the compiled WASM's own spec).
-// Prefer depending on `zkella-ct20-interface` (a #[contractclient]-only crate,
+// Import the token client (generated from the compiled WASM's own spec).
+// Prefer depending on `zkella-token-interface` (a #[contractclient]-only crate,
 // no #[contract] of its own) instead if you're building in the same Rust
-// workspace — depending on `zkella-ct20` directly, or importing raw WASM like
+// workspace — depending on `zkella-token` directly, or importing raw WASM like
 // this from within another Soroban contract crate, risks a `duplicate symbol`
 // WASM linker error if your own contract happens to export a function with
-// the same name as one of ct20's (Soroban contract exports are unconditional,
-// never dead-code-eliminated). This raw `contractimport!` pattern is fine for
-// a standalone external contract that isn't itself part of this workspace.
-mod ct20 {
+// the same name as one of ShieldedToken's (Soroban contract exports are
+// unconditional, never dead-code-eliminated). This raw `contractimport!`
+// pattern is fine for a standalone external contract that isn't itself part
+// of this workspace.
+mod zkella_token {
     soroban_sdk::contractimport!(
-        file = "../../contracts/target/wasm32v1-none/release/zkella_ct20.wasm"
+        file = "../../contracts/target/wasm32v1-none/release/zkella_token.wasm"
     );
 }
 
@@ -223,14 +224,14 @@ pub struct MyProtocol;
 #[contractimpl]
 impl MyProtocol {
     // Check whether a nullifier has been spent (e.g. note was consumed in a transfer to us)
-    pub fn verify_shielded_deposit(env: Env, ct20: Address, nullifier: BytesN<32>) -> bool {
-        let client = ct20::Client::new(&env, &ct20);
+    pub fn verify_shielded_deposit(env: Env, token_contract: Address, nullifier: BytesN<32>) -> bool {
+        let client = zkella_token::Client::new(&env, &token_contract);
         client.is_spent(&nullifier)
     }
 
     // Read current Merkle root for use in your own circuit proofs
-    pub fn get_merkle_root(env: Env, ct20: Address) -> BytesN<32> {
-        let client = ct20::Client::new(&env, &ct20);
+    pub fn get_merkle_root(env: Env, token_contract: Address) -> BytesN<32> {
+        let client = zkella_token::Client::new(&env, &token_contract);
         client.merkle_root()
     }
 }
@@ -247,10 +248,10 @@ git clone https://github.com/Frihat-dev/ZKELLA
 cd ZKELLA
 npm install
 
-CT20_CONTRACT_ID=C...                                   \
+TOKEN_CONTRACT_ID=C...                                   \
 SOROBAN_RPC_URL=https://soroban-testnet.stellar.org     \
 ZKELLA_NETWORK=testnet                                  \
-INDEXER_START_LEDGER=<ct20's deploy ledger>             \
+INDEXER_START_LEDGER=<token's deploy ledger>             \
 npm run indexer
 # Listening on :8787 by default (INDEXER_HTTP_PORT to override)
 ```
@@ -270,7 +271,7 @@ The current live Stellar Testnet addresses (redeployed whenever a contract/circu
 | Testnet | verifier | `CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG` |
 | Testnet | governance | `CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD` |
 | Testnet | compliance | `CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q` |
-| Testnet | ct20 | `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE` |
+| Testnet | ShieldedToken | `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE` |
 | Testnet | swap | `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3` |
 | Testnet | viewing_keys | not currently deployed alongside the rest — deploy separately if needed |
 | Mainnet | (all) | not deployed — mainnet deployment requires an external security review and a real multi-party trusted-setup ceremony first |
@@ -281,7 +282,7 @@ These are evidence of a working implementation, not permanent infrastructure —
 
 ## 16. Error Reference
 
-Real `ct20::Error` variants (`contracts/ct20/src/types.rs`) — the codes below are a representative subset most integrators hit; the full enum has 17 variants:
+Real `ShieldedToken::Error` variants (`contracts/token/src/types.rs`) — the codes below are a representative subset most integrators hit; the full enum has 17 variants:
 
 | Error | Meaning | Resolution |
 |---|---|---|

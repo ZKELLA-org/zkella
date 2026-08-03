@@ -22,7 +22,7 @@ const N = 4
 export interface Transfer4InputNote {
   /** Must have a real on-chain `leafIndex` (the note being spent). */
   note: Note
-  /** 32 sibling hashes for `note.leafIndex`, from `ct20.merkle_path(leafIndex)`. */
+  /** 32 sibling hashes for `note.leafIndex`, from `token.merkle_path(leafIndex)`. */
   merklePath: Uint8Array[]
 }
 
@@ -40,7 +40,7 @@ export interface Transfer4Witness {
 }
 
 export interface Transfer4PublicInputs {
-  anchor:  Uint8Array  // current ct20.merkle_root(), as 32-byte LE
+  anchor:  Uint8Array  // current token.merkle_root(), as 32-byte LE
   assetId: string      // must match every input/output note's asset
 }
 
@@ -187,7 +187,7 @@ export async function generateTransfer4Proof(
 
 /**
  * Direction bits for `leafIndex` (0 = left, 1 = right), one per Merkle
- * level — matches `contracts/ct20::merkle::get_path_indices` bit-for-bit.
+ * level — matches `contracts/token::merkle::get_path_indices` bit-for-bit.
  */
 function pathIndicesFor(leafIndex: number): number[] {
   const bits: number[] = []

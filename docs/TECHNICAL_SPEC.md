@@ -172,7 +172,7 @@ The fundamental unit of private balance.
 
 ```rust
 struct Note {
-    value:    u64,        // token amount (i128 on-chain in ct20; u64 in the transmitted plaintext)
+    value:    u64,        // token amount (i128 on-chain in ShieldedToken; u64 in the transmitted plaintext)
     asset_id: BytesN<32>, // field-element encoding of the SEP-41 contract address (see §2.4 for the StrKey-vs-field-element distinction)
     rho:      BytesN<32>, // nullifier seed (random, unique per note)
     rcm:      BytesN<32>, // randomness for commitment (a full field element, not 16 bytes)
@@ -233,7 +233,7 @@ struct TransferPublicInputs {
     out_commitments:   Vec<BytesN<32>>, // one per output note
     in_value_commits:  Vec<BytesN<32>>, // Poseidon-based value bindings for the balance check (see §2.3's note on Pedersen vs. the current Poseidon-based simplification)
     out_value_commits: Vec<BytesN<32>>,
-    fee:               i128,            // transaction fee in stroops — matches ct20's i128 amount type, not u64
+    fee:               i128,            // transaction fee in stroops — matches ShieldedToken's i128 amount type, not u64
     asset_id:          Address,         // SEP-41 contract address; must be consistent across all notes in one call
 }
 ```
@@ -503,12 +503,12 @@ Each circuit's Phase 2 (`zkey`) will be generated via a multi-party computation 
 
 The interfaces in this section are the **real, current** contract surfaces (verified against `contracts/*/src/lib.rs` at the time of writing), not aspirational ones — an earlier draft of this spec described a materially different, never-built shape for the swap and governance contracts in particular; that draft is replaced below. These interfaces have been through an internal senior-auditor pass and a live-Testnet run (shield/unshield/swap), but not yet an *external* security review, so treat the behavior as real and exercised, not as finished, audited-by-a-third-party protocol logic.
 
-### 6.1 CT-20 Token Contract
+### 6.1 ShieldedToken Contract
 
-**File:** `contracts/ct20/src/lib.rs`
+**File:** `contracts/token/src/lib.rs`
 
 ```rust
-pub trait CT20Interface {
+pub trait ShieldedTokenInterface {
     fn initialize(env: Env, admin: Address, verifier: Address);
 
     /// Deposit a public SEP-41 token amount and receive a shielded note.
@@ -570,7 +570,7 @@ pub trait CT20Interface {
 
 **Verification logic (transfer, unshield, shield — all real, not pseudocode-only):** each calls `VerifierClient::new(&env, &verifier).verify(circuit, public_inputs, proof)`, which the `contracts/verifier` contract implements as: deserialize the wire-format proof into `(A, B, C)` over BN254, compute `vk_x = IC[0] + Σ public_input[i] · IC[i+1]` via `env.crypto().bn254().g1_msm(...)`, then a single `pairing_check([−A, α, vk_x, C], [B, β, γ, δ])` call. `−A` is computed as `g1_mul(A, r−1)` (scalar multiplication by `r−1` in a prime-order group is exact negation — no separate negate host function exists).
 
-**Merkle tree insertion (incremental, `contracts/ct20/src/merkle.rs`):** a depth-32 tree; `merkle::insert` recomputes only the O(depth) empty-subtree roots needed for a fresh leaf (an earlier version recomputed the whole empty-hash chain from scratch on every level — O(depth²) — see `docs/POC_IMPLEMENTATION.md` for the fix and its budget impact).
+**Merkle tree insertion (incremental, `contracts/token/src/merkle.rs`):** a depth-32 tree; `merkle::insert` recomputes only the O(depth) empty-subtree roots needed for a fresh leaf (an earlier version recomputed the whole empty-hash chain from scratch on every level — O(depth²) — see `docs/POC_IMPLEMENTATION.md` for the fix and its budget impact).
 
 ### 6.2 Verifier Registry Contract
 
@@ -586,7 +586,7 @@ pub trait VerifierRegistry {
 }
 ```
 
-`CircuitType` is `{ Shield = 0, Transfer = 1, Unshield = 2, NonMembership = 3, Transfer4x4 = 4, SwapFairness = 5 }` — one verifying key per variant, shared across `ct20`, `swap`, and `compliance`.
+`CircuitType` is `{ Shield = 0, Transfer = 1, Unshield = 2, NonMembership = 3, Transfer4x4 = 4, SwapFairness = 5 }` — one verifying key per variant, shared across `ShieldedToken`, `swap`, and `compliance`.
 
 ### 6.3 Viewing Key Registry Contract
 
@@ -630,13 +630,13 @@ struct CompliancePublicInputs {
 
 **File:** `contracts/swap/src/lib.rs`
 
-The design here reuses `ct20`'s own already-real shield/unshield paths for the value-moving steps, rather than a separate DEX-execution model — see §9 for why this differs from earlier drafts of this spec.
+The design here reuses `ShieldedToken`'s own already-real shield/unshield paths for the value-moving steps, rather than a separate DEX-execution model — see §9 for why this differs from earlier drafts of this spec.
 
 ```rust
 pub trait ShieldedSwap {
-    fn initialize(env: Env, admin: Address, verifier: Address, ct20: Address);
+    fn initialize(env: Env, admin: Address, verifier: Address, ShieldedToken: Address);
 
-    /// Escrows `amount_in` of `asset_in` right now via a real `ct20::unshield`
+    /// Escrows `amount_in` of `asset_in` right now via a real `ShieldedToken::unshield`
     /// cross-call — `ownership_proof` is a genuine `unshield.circom` proof,
     /// reused as the swap's note-ownership proof (no separate ownership
     /// circuit exists or is needed).
@@ -655,7 +655,7 @@ pub trait ShieldedSwap {
     /// the original `intent_commitment`, without `min_amount_out` having been
     /// revealed at commit time), pays the relayer the escrowed `asset_in`,
     /// and re-shields `asset_out` as a new note via a real, separate
-    /// `ct20::shield` call (`shield_proof` — a distinct proof from
+    /// `ShieldedToken::shield` call (`shield_proof` — a distinct proof from
     /// `fairness_proof`).
     fn reveal_and_claim(
         env: Env, swap_id: BytesN<32>, out_rho: BytesN<32>, out_rcm: BytesN<32>,
@@ -710,7 +710,7 @@ Relayer authorization (`set_relayer`) lives on `contracts/swap` itself (§6.5), 
 ### 7.1 Shield Flow (Public → Shielded)
 
 ```
-User                          zkella-sdk                    CT-20 Contract
+User                          zkella-sdk                    ShieldedToken Contract
  │                                │                               │
  │  shield(asset, amount)         │                               │
  ├───────────────────────────────>│                               │
@@ -737,7 +737,7 @@ User                          zkella-sdk                    CT-20 Contract
 ### 7.2 Private Transfer Flow
 
 ```
-Sender                        zkella-sdk                    CT-20 Contract
+Sender                        zkella-sdk                    ShieldedToken Contract
  │                                │                               │
  │  transfer(recipient, amount)   │                               │
  ├───────────────────────────────>│                               │
@@ -780,7 +780,7 @@ Recipient                     zkella-sdk                    Note Indexer
 ### 7.3 Unshield Flow (Shielded → Public)
 
 ```
-User                          zkella-sdk                    CT-20 Contract
+User                          zkella-sdk                    ShieldedToken Contract
  │                                │                               │
  │  unshield(note, recipient)     │                               │
  ├───────────────────────────────>│                               │
@@ -808,7 +808,7 @@ Stellar RPC nodes retain contract events for ~17,280 ledgers (~7 days at 5s/ledg
 
 ### 8.2 Architecture
 
-The real reference implementation (`indexer/`, TypeScript/Node) uses `node:sqlite` rather than the PostgreSQL store this diagram originally specified as the target — no external database dependency, and `merkle_root`/`merkle_path` are proxied live to `ct20` itself rather than duplicated into their own tables, since the contract is already the source of truth for current tree state:
+The real reference implementation (`indexer/`, TypeScript/Node) uses `node:sqlite` rather than the PostgreSQL store this diagram originally specified as the target — no external database dependency, and `merkle_root`/`merkle_path` are proxied live to `ShieldedToken` itself rather than duplicated into their own tables, since the contract is already the source of truth for current tree state:
 
 ```
                 ┌─────────────────────────────┐
@@ -821,7 +821,7 @@ The real reference implementation (`indexer/`, TypeScript/Node) uses `node:sqlit
                 │   ├── encrypted_notes table  │
                 │   └── nullifiers table        │
                 │   (merkle state: proxied live │
-                │    to ct20, not stored here)  │
+                │    to ShieldedToken, not stored here)  │
                 │                              │
                 │  REST API                    │◄── zkella-sdk
                 │   ├── GET /notes             │
@@ -913,7 +913,7 @@ Payload encrypted with AES-256-GCM using a key derived from the spending key:
 
 ## 9. Shielded Swap Primitive
 
-**This section describes the real, implemented, audited design** (`contracts/swap`). An earlier draft of this spec described a Stellar-DEX-execution model (relayers calling `PathPaymentStrictReceive`/`ManageSellOffer`, an off-chain P2P relay server) that was never built this way — nothing in the current contract calls the Stellar DEX. What's implemented instead is simpler and already real: the relayer directly fronts the output asset as SEP-41 liquidity, and the contract's own escrow/payout logic (reusing `ct20`'s shield/unshield paths) does the rest. Routing that liquidity through the actual DEX, if the relayer chooses to, is an off-chain concern the contract doesn't need to know about — wiring an on-chain DEX call into the flow itself remains roadmap work, not something this section should describe as already specified in detail.
+**This section describes the real, implemented, audited design** (`contracts/swap`). An earlier draft of this spec described a Stellar-DEX-execution model (relayers calling `PathPaymentStrictReceive`/`ManageSellOffer`, an off-chain P2P relay server) that was never built this way — nothing in the current contract calls the Stellar DEX. What's implemented instead is simpler and already real: the relayer directly fronts the output asset as SEP-41 liquidity, and the contract's own escrow/payout logic (reusing `ShieldedToken`'s shield/unshield paths) does the rest. Routing that liquidity through the actual DEX, if the relayer chooses to, is an off-chain concern the contract doesn't need to know about — wiring an on-chain DEX call into the flow itself remains roadmap work, not something this section should describe as already specified in detail.
 
 ### 9.1 Trust Model
 
@@ -945,7 +945,7 @@ Step 1 — User: build the fairness-circuit witness off-chain
 Step 2 — User: commit_swap(nullifier_in, intent_commitment, asset_in, asset_out,
                             amount_in, anchor, refund_to, ownership_proof, expiry_ledger)
   - ownership_proof is a real unshield.circom proof; the call cross-calls
-    ct20::unshield(nullifier_in, swap_contract_address, ownership_proof, ...),
+    ShieldedToken::unshield(nullifier_in, swap_contract_address, ownership_proof, ...),
     which both verifies note ownership and atomically escrows amount_in of
     asset_in into the swap contract's own balance
   - swap_id = sha256(intent_commitment) is returned
@@ -962,7 +962,7 @@ Step 4 — User: reveal_and_claim(swap_id, out_rho, out_rcm, out_commitment,
     intent_commitment
   - relayer is paid the escrowed asset_in
   - a separate, real shield.circom proof (shield_proof) re-shields amount_out
-    of asset_out as a brand-new note via ct20::shield, returning its leaf index
+    of asset_out as a brand-new note via ShieldedToken::shield, returning its leaf index
 
 Step 5 (fallback) — anyone: cancel_swap(swap_id) once expired and never executed
   refunds asset_in to refund_to
@@ -1088,7 +1088,7 @@ const wallet = new ZKELLAWallet({
   network:     'testnet',                               // 'testnet' | 'mainnet'
   sorobanRpc:  'https://soroban-testnet.stellar.org',
   indexerUrl:  'http://localhost:8787',
-  ct20Address: 'CXXX...YYY',
+  tokenAddress: 'CXXX...YYY',
   stellarSecret: 'S...',                                 // signs the submitted transactions
   shieldCircuit:    { wasmPath: '...shield.wasm',    zkeyPath: '...shield.zkey' },
   transferCircuit:  { wasmPath: '...transfer.wasm',  zkeyPath: '...transfer.zkey' },
@@ -1278,8 +1278,8 @@ To address the main review concerns directly, the roadmap now includes explicit 
 
 ### 14.2 Security Review Phase (Months 5-6)
 
-- Run independent review of CT-20 contract, viewing key contract, swap contract, and Circom circuits
-- Scope: CT-20 contract, viewing key contract, swap contract, all Circom circuits
+- Run independent review of ShieldedToken contract, viewing key contract, swap contract, and Circom circuits
+- Scope: ShieldedToken contract, viewing key contract, swap contract, all Circom circuits
 - Address all security findings before mainnet
 - Re-profile Soroban resource usage after every material contract or circuit change
 - Freeze final contract interfaces only after review findings and performance issues are resolved
@@ -1309,8 +1309,8 @@ ZKELLA/
 │   └── compliance/               # non_membership.circom
 │       each with build/*.r1cs, *.zkey, *_js/*.wasm, verification_key.json (generated; dev ceremony only so far)
 ├── contracts/
-│   ├── ct20/                    # confidential token: shield/transfer/transfer4/unshield
-│   ├── ct20-interface/           # #[contractclient]-only crate — lets other contracts call ct20 without pulling in its own #[contract] exports
+│   ├── token/                    # ShieldedToken — confidential token: shield/transfer/transfer4/unshield
+│   ├── token-interface/           # #[contractclient]-only crate — lets other contracts call ShieldedToken without pulling in its own #[contract] exports
 │   ├── verifier/                 # shared Groth16 verifying-key registry + verify()
 │   ├── verifier-interface/        # same #[contractclient]-only pattern for verifier
 │   ├── governance/               # timelocked verifying-key rotation
