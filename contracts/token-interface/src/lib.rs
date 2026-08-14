@@ -91,10 +91,11 @@ pub trait Token {
     ) -> Result<u32, Error>;
 
     fn unshield(
-        env:        Env,
-        nullifier:  BytesN<32>,
-        to:         Address,
-        proof:      Bytes,
-        pub_inputs: UnshieldPublicInputs,
+        env:         Env,
+        nullifier:   BytesN<32>,
+        to:          Address,
+        binding_tag: BytesN<32>,
+        proof:       Bytes,
+        pub_inputs:  UnshieldPublicInputs,
     ) -> Result<(), Error>;
 }

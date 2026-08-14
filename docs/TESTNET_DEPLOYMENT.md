@@ -18,6 +18,15 @@ This document lists the current live contract addresses and every on-chain trans
 
 `verifier`'s admin is `governance`'s own contract address (a self-authorizing pattern: cross-contract calls from `governance` satisfy `verifier`'s `admin.require_auth()` without a separate signature). `ShieldedToken`, `governance`, and `compliance` all point at this same `verifier` instance; `swap` points at this `verifier` and `token`.
 
+**Known drift as of this writing: the contracts above predate several real fixes that exist in source only.** Nothing below this line is affected by any of them — every transaction on this page happened before these source changes — but don't assume any deployed contract here has a fix just because the source repository does:
+
+- `token`'s Merkle root-history tolerance window (`contracts/token/src/merkle.rs`, see `docs/POC_IMPLEMENTATION.md`'s "Update: Merkle root-history window") — this instance still enforces exact-root-equality on `transfer()`/`unshield()`, not the widened 32-root window.
+- `token`'s `unshield()` new `binding_tag` parameter, and everything that depends on it — `swap`'s `commit_swap` proof-replay fix, and `unshield()`'s updated signature generally (see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the full account). The deployed `token`/`swap` pair still has the exploitable version.
+- `swap`'s `initialize` re-initialization guard, `reveal_and_claim`'s `intent_commitment` binding check, and `reclaim_expired_swap`'s overflow guard — none of these exist in the deployed `swap` instance above.
+- `governance`'s `register_vk` removal (first-time VK registration is no longer a fast, untimelocked path) — the deployed `governance` instance above still has the old, faster (and less safe) behavior. This is directly relevant here: this page's own setup transactions used the now-removed `register_vk` for `Shield`/`Unshield`/`SwapFairness` — an accurate historical record of what was actually called, not something to retroactively rewrite, but a future re-registration (e.g. for `Transfer`/`Transfer4x4`, still unregistered as of this writing) against a redeployed `governance` would need to go through `queue_vk_update`/`execute_vk_update` instead.
+
+Redeploying the full contract stack (and updating `deployments.json` and this file accordingly) remains open before any of this can be described as live-validated rather than locally-validated.
+
 A prior `swap` instance, `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`, is superseded — see "Swap redeployment" below.
 
 ## Setup transactions

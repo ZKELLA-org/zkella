@@ -12,6 +12,9 @@ import { IndexerDb } from './db.ts'
 // checksum bytes — caught by the indexer's own live-Testnet smoke test).
 const SIMULATION_KEYPAIR = Keypair.random()
 
+const DEFAULT_NOTES_LIMIT = 500
+const MAX_NOTES_LIMIT     = 1000
+
 export interface HttpConfig {
   db:          IndexerDb
   tokenAddress: string
@@ -19,6 +22,22 @@ export interface HttpConfig {
   network:     'testnet' | 'mainnet'
   port:        number
   startLedger: number
+}
+
+/**
+ * Clamps the `/notes` `?limit=` query param to `[1, MAX_NOTES_LIMIT]`,
+ * falling back to `DEFAULT_NOTES_LIMIT` for anything unparseable. Exported
+ * and pulled out of the request handler specifically so this validation
+ * logic — the actual fix for a real unbounded-query vector (SQLite treats a
+ * *negative* `LIMIT` as "unlimited", so an unvalidated value here wasn't
+ * just wasteful for huge inputs, it could return the entire table) — has a
+ * direct, fast unit test instead of only being exercisable through a live
+ * HTTP request.
+ */
+export function parseNotesLimit(raw: string | null): number {
+  const rawLimit = Number(raw ?? String(DEFAULT_NOTES_LIMIT))
+  if (!Number.isFinite(rawLimit)) return DEFAULT_NOTES_LIMIT
+  return Math.min(Math.max(Math.trunc(rawLimit), 1), MAX_NOTES_LIMIT)
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -76,7 +95,7 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
 
       if (req.method === 'GET' && url.pathname === '/notes') {
         const fromLedger = Number(url.searchParams.get('from_ledger') ?? '0')
-        const limit = Number(url.searchParams.get('limit') ?? '500')
+        const limit = parseNotesLimit(url.searchParams.get('limit'))
         sendJson(res, 200, config.db.getNotesFrom(fromLedger, limit))
         return
       }

@@ -1592,6 +1592,22 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "RootHistory"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "483c5414adbe44d02e8127f6db0b8ab8c92f41f54a24ae48ae6b8487d739dc2b"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "ShieldedSupply"
                           },
                           {

@@ -356,10 +356,14 @@ impl ShieldedToken {
             }
         }
 
-        // ── 3. Anchor must be the current Merkle root ─────────────────────────
+        // ── 3. Anchor must be a recent Merkle root ────────────────────────────
+        // Accepts the current root or any of the last `ROOT_HISTORY_SIZE - 1`
+        // roots before it, not only an exact match against the current root
+        // — see `merkle::is_known_root`'s doc comment for why strict equality
+        // made legitimate proofs fail whenever unrelated activity (even on a
+        // different asset) landed first.
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let current_root = merkle::root(&env, &mut hasher);
-        if pub_inputs.anchor != current_root {
+        if !merkle::is_known_root(&env, &pub_inputs.anchor, &mut hasher) {
             return Err(Error::InvalidAnchor);
         }
 
@@ -468,21 +472,35 @@ impl ShieldedToken {
 
     /// Move a note from the shielded pool back to a public address `to`.
     ///
-    /// `pub_inputs.recipient_hash` must equal `Poseidon2(address_field(to), 0)`.
+    /// `pub_inputs.recipient_hash` must equal `Poseidon2(address_field(to), binding_tag)`.
     /// This binding is deliberately NOT enforced by the circuit itself (see
     /// `circuits/unshield/unshield.circom`'s comment — it's included as a
     /// public input but unconstrained there), so the contract checks it here.
     /// This is the authoritative definition of that binding — the wallet/SDK's
-    /// unshield() implementation (not yet written; see `sdk/src/wallet/wallet.ts`)
-    /// must compute `recipient_hash` exactly this way, matching the same
-    /// domain-separation-via-second-slot pattern already used in
-    /// `circuits/compliance/non_membership.circom`.
+    /// unshield() implementation (`sdk/src/wallet/wallet.ts`) must compute
+    /// `recipient_hash` exactly this way.
+    ///
+    /// `binding_tag` exists so a caller can cryptographically bind this
+    /// specific proof to more than just `to` — critically used by
+    /// `contracts/swap::commit_swap`, which reuses this function as its
+    /// note-ownership proof and passes `binding_tag =
+    /// Poseidon2(intent_commitment, refund_to)`. Without this, the proof was
+    /// bound only to (nullifier, amount, asset, `to` = the swap contract's
+    /// own fixed address) — identical for every user and every swap, so
+    /// anyone who observed a submitted-but-not-yet-final `commit_swap`
+    /// transaction (e.g. via a failed/retried submission visible in public
+    /// transaction history) could resubmit the exact same proof bytes with
+    /// their *own* `refund_to`, stealing the escrowed value once the swap
+    /// expired. A direct (non-swap) unshield passes `binding_tag =
+    /// [0u8; 32]`, preserving the original `Poseidon2(address_field(to), 0)`
+    /// formula exactly.
     pub fn unshield(
-        env:        Env,
-        nullifier:  BytesN<32>,
-        to:         Address,
-        proof:      Bytes,
-        pub_inputs: UnshieldPublicInputs,
+        env:         Env,
+        nullifier:   BytesN<32>,
+        to:          Address,
+        binding_tag: BytesN<32>,
+        proof:       Bytes,
+        pub_inputs:  UnshieldPublicInputs,
     ) -> Result<(), Error> {
         Self::assert_not_paused(&env)?;
 
@@ -491,18 +509,22 @@ impl ShieldedToken {
             return Err(Error::CommitmentMismatch);
         }
 
-        // ── 2. recipient_hash binds `to` ───────────────────────────────────────
+        // ── 2. recipient_hash binds `to` (and, via binding_tag, the caller's
+        // own additional context — see this function's doc comment) ─────────
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let to_field = address_to_field_bytes(&env, &to);
-        let expected_recipient_hash = hasher.hash(&to_field, &[0u8; 32]);
+        let binding_tag_bytes: [u8; 32] = binding_tag.into();
+        let expected_recipient_hash = hasher.hash(&to_field, &binding_tag_bytes);
         let provided_recipient_hash: [u8; 32] = pub_inputs.recipient_hash.clone().into();
         if expected_recipient_hash != provided_recipient_hash {
             return Err(Error::RecipientMismatch);
         }
 
-        // ── 3. Anchor must be the current Merkle root ─────────────────────────
-        let current_root = merkle::root(&env, &mut hasher);
-        if pub_inputs.anchor != current_root {
+        // ── 3. Anchor must be a recent Merkle root ────────────────────────────
+        // See `transfer_internal`'s identical check and `merkle::is_known_root`
+        // for why this accepts a small window of recent roots rather than
+        // only the exact current one.
+        if !merkle::is_known_root(&env, &pub_inputs.anchor, &mut hasher) {
             return Err(Error::InvalidAnchor);
         }
 
@@ -853,6 +875,206 @@ mod tests {
         assert_eq!(client.leaf_count(), 1u32);
     }
 
+    /// Shields a fixed amount of a fresh SEP-41 asset from a fresh user, `n`
+    /// times in a row, each with a distinct `rho` (so each commitment, and
+    /// therefore the Merkle root, differs). Returns the root recorded right
+    /// after the *first* shield (leaf 0) — the anchor the root-history-window
+    /// tests below check against — plus the token address, in case a caller
+    /// wants to shield further with the same asset/user.
+    fn shield_n_times(
+        env:      &Env,
+        client:   &ShieldedTokenClient,
+        verifier: &Address,
+        n:        u32,
+    ) -> (BytesN<32>, Address) {
+        env.mock_all_auths();
+        let token_admin = Address::generate(env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+
+        let user = Address::generate(env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(env, &token_addr);
+        stellar_asset.mint(&user, &(1_000_000_000i128 * (n as i128 + 1)));
+
+        let amount = 100_000_000i128;
+        let mut first_root: Option<BytesN<32>> = None;
+
+        for i in 0..n {
+            let rho = BytesN::from_array(env, &[i as u8; 32]);
+            let rcm = BytesN::from_array(env, &[0x99u8; 32]);
+
+            let mut hasher = poseidon::Poseidon2Hasher::new(env);
+            let computed = compute_commitment(env, amount, &token_addr, &rho, &rcm, &mut hasher);
+            let commitment = BytesN::from_array(env, &computed);
+            let value_commit = BytesN::from_array(env, &[0u8; 32]);
+
+            let pub_inputs = ShieldPublicInputs {
+                commitment:   commitment.clone(),
+                value_commit: value_commit.clone(),
+                pub_value:    amount,
+                pub_asset_id: token_addr.clone(),
+            };
+
+            // Each iteration's synthetic proof is only valid against its own
+            // freshly-derived VK (commitment differs every time via `rho`).
+            // `register_verifying_key` only succeeds once per circuit, so
+            // every iteration after the first must `update_verifying_key`
+            // instead — fine here since no two shields in this loop need to
+            // verify against the same VK simultaneously.
+            let mut value_bytes = [0u8; 32];
+            value_bytes[..16].copy_from_slice(&(amount as u128).to_le_bytes());
+            let asset_bytes = address_to_field_bytes(env, &token_addr);
+            let public_inputs_le: [[u8; 32]; 4] = [
+                commitment.clone().into(),
+                value_commit.clone().into(),
+                value_bytes,
+                asset_bytes,
+            ];
+            let (vk_bytes, proof) = test_groth16::build_valid_shield_proof(env, public_inputs_le);
+            let verifier_client = zkella_verifier::VerifierContractClient::new(env, verifier);
+            if i == 0 {
+                verifier_client.register_verifying_key(&CircuitType::Shield.into(), &vk_bytes);
+            } else {
+                verifier_client.update_verifying_key(&CircuitType::Shield.into(), &vk_bytes);
+            }
+            let encrypted_note = Bytes::from_array(env, &[0u8; 176]);
+
+            client.shield(
+                &user, &token_addr, &amount, &rho, &rcm, &commitment,
+                &encrypted_note, &proof, &pub_inputs,
+            );
+
+            if i == 0 {
+                first_root = Some(client.merkle_root());
+            }
+        }
+
+        (first_root.expect("n must be >= 1"), token_addr)
+    }
+
+    #[test]
+    fn transfer_accepts_anchor_still_within_root_history_window() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        // Exactly ROOT_HISTORY_SIZE shields land after (and including) the
+        // one whose resulting root we anchor to below — the anchor is still
+        // the oldest entry in the history window, not yet evicted.
+        let (anchor, asset) = shield_n_times(&env, &client, &verifier, merkle::ROOT_HISTORY_SIZE);
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[201u8; 32]),
+            BytesN::from_array(&env, &[202u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[203u8; 32]),
+            BytesN::from_array(&env, &[204u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            zero_commits.get(0).unwrap().into(),
+            zero_commits.get(1).unwrap().into(),
+            zero_commits.get(0).unwrap().into(),
+            zero_commits.get(1).unwrap().into(),
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        // Must succeed: `anchor` (root after leaf 0) is still present in the
+        // history window after exactly ROOT_HISTORY_SIZE total insertions.
+        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert_eq!(leaf_indices.len(), 2);
+    }
+
+    #[test]
+    fn transfer_rejects_anchor_evicted_from_root_history_window() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        // ROOT_HISTORY_SIZE + 1 total insertions: the (ROOT_HISTORY_SIZE+1)-th
+        // shield evicts leaf 0's root from the history window.
+        let (anchor, asset) = shield_n_times(&env, &client, &verifier, merkle::ROOT_HISTORY_SIZE + 1);
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[211u8; 32]),
+            BytesN::from_array(&env, &[212u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[213u8; 32]),
+            BytesN::from_array(&env, &[214u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            zero_commits.get(0).unwrap().into(),
+            zero_commits.get(1).unwrap().into(),
+            zero_commits.get(0).unwrap().into(),
+            zero_commits.get(1).unwrap().into(),
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        // Must fail: `anchor` (root after leaf 0) has aged out of the
+        // ROOT_HISTORY_SIZE window by the time this call lands.
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        assert_eq!(result, Err(Ok(Error::InvalidAnchor)));
+    }
+
     #[test]
     fn shield_rejects_invalid_proof() {
         // Same commitment/public inputs as a real shield, but the proof
@@ -1041,6 +1263,7 @@ mod tests {
         let unshield_result = client.try_unshield(
             &BytesN::from_array(&env, &[0u8; 32]),
             &Address::generate(&env),
+            &BytesN::from_array(&env, &[0u8; 32]),
             &Bytes::new(&env),
             &types::UnshieldPublicInputs {
                 anchor:         BytesN::from_array(&env, &[0u8; 32]),
@@ -1562,7 +1785,8 @@ mod tests {
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
 
-        client.unshield(&nullifier, &recipient, &proof, &pub_inputs);
+        let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
+        client.unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
 
         assert!(client.is_spent(&nullifier));
         assert_eq!(stellar_asset.balance(&recipient), 500_000i128);
@@ -1621,7 +1845,8 @@ mod tests {
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
 
-        let result = client.try_unshield(&nullifier, &recipient, &proof, &pub_inputs);
+        let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
+        let result = client.try_unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
         assert!(result.is_err());
         assert!(!client.is_spent(&nullifier), "a rejected unshield must not mark the nullifier spent");
     }
@@ -1658,8 +1883,62 @@ mod tests {
             recipient_hash,
         };
 
-        let result = client.try_unshield(&nullifier, &wrong_recipient, &Bytes::new(&env), &pub_inputs);
+        let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
+        let result = client.try_unshield(&nullifier, &wrong_recipient, &binding_tag, &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
+    }
+
+    /// Regression test for a critical audit finding fixed in
+    /// `contracts/swap`: `binding_tag` lets a caller cryptographically bind
+    /// an unshield proof to more than just `to` — a proof whose
+    /// `recipient_hash` was computed with one `binding_tag` must be rejected
+    /// if submitted with a *different* `binding_tag`, even though `to` and
+    /// every other field are identical. Without this, `contracts/swap`
+    /// could not bind its reused ownership proof to a specific
+    /// (`intent_commitment`, `refund_to`) pair, letting a replayed proof be
+    /// resubmitted with a different `refund_to` to steal escrowed funds.
+    #[test]
+    fn unshield_binding_tag_changes_the_accepted_recipient_hash() {
+        let (env, admin, token, verifier) = setup();
+        env.mock_all_auths();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let recipient   = Address::generate(&env);
+
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&token, &1_000_000_000);
+
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let anchor = client.merkle_root();
+        let nullifier = BytesN::from_array(&env, &[71u8; 32]);
+        let recipient_field = address_to_field_bytes(&env, &recipient);
+
+        let tag_a = BytesN::from_array(&env, &[0xAAu8; 32]);
+        let tag_b = BytesN::from_array(&env, &[0xBBu8; 32]);
+        let tag_a_bytes: [u8; 32] = tag_a.clone().into();
+
+        // recipient_hash computed for tag_a.
+        let recipient_hash_bytes = hasher.hash(&recipient_field, &tag_a_bytes);
+        let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
+
+        let pub_value: i128 = 100;
+        let pub_inputs = UnshieldPublicInputs {
+            anchor,
+            nullifier: nullifier.clone(),
+            pub_value,
+            pub_asset_id: token_addr,
+            recipient_hash,
+        };
+
+        // Submitting with tag_b (a different binding_tag) must fail, even
+        // though `to`/nullifier/amount/asset are all identical and correct.
+        let result = client.try_unshield(&nullifier, &recipient, &tag_b, &Bytes::new(&env), &pub_inputs);
+        assert!(result.is_err());
+        assert!(!client.is_spent(&nullifier));
     }
 
     /// Regression test for the reviewers' central "budget viability" concern

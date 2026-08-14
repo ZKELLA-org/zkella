@@ -40,7 +40,7 @@ Current implementation foundation:
 Planned implementation scope:
 
 - A real (non-dev) multi-party trusted-setup ceremony per circuit — everything to date, including the live-Testnet transactions, uses a local single-contributor dev ceremony
-- Indexer production hardening: horizontal scaling, multi-operator support, operational runbook
+- Indexer production hardening: horizontal scaling, multi-operator support
 - review and improvement of all existing PoC contracts, SDK modules, and circuit integrations before any production deployment
 - an external, independent security review — the audit pass documented in `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, not a third party
 
@@ -51,9 +51,9 @@ See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol de
 ## Status highlights
 
 - **Budget viability**: real `shield()` transactions with on-chain Groth16 verification have run on live Stellar Testnet, multiple times, within Soroban's instruction budget — see `docs/POC_IMPLEMENTATION.md` for transaction hashes and contract addresses.
-- **Originality**: the shielded swap primitive's full commit-reveal lifecycle — not just a shield/transfer/unshield clone of other confidential-token designs — has run end-to-end on live Stellar Testnet with genuine circuit proofs and real value moving at every step; a senior-auditor pass over the contract found and fixed three real issues along the way, one of which only a real Testnet transaction (not the unit test suite) could surface. See `docs/POC_IMPLEMENTATION.md` for the findings, fixes, and transaction hashes.
+- **Originality**: commit-reveal swaps and shielded DeFi interactions exist elsewhere (Railgun's Relay Adapt on Ethereum unshields, calls a public DEX, and re-shields atomically; Penumbra runs a fully protocol-native batched private DEX; Aztec Connect used a similar private-note/public-DeFi bridge pattern before its 2024 shutdown) — none of that is native to Stellar/Soroban today. ZKELLA's shielded swap primitive is, to our knowledge, the first such mechanism on Stellar, and its specific mechanism differs from each of those precedents: it reuses `ShieldedToken`'s own shield/unshield circuits directly rather than a separate bridge/adapter contract, and it does not call any DEX at all — the relayer fronts liquidity directly (see `docs/TECHNICAL_SPEC.md` §9). The full commit-reveal lifecycle has run end-to-end on live Stellar Testnet with genuine circuit proofs and real value moving at every step; a senior-auditor pass over the contract found and fixed three real issues along the way, one of which only a real Testnet transaction (not the unit test suite) could surface. See `docs/POC_IMPLEMENTATION.md` for the findings, fixes, and transaction hashes.
 - **Custom indexer**: purpose-built for note recovery, Merkle-path serving, and wallet state reconstruction beyond the short Stellar RPC retention window — `indexer/` is a real, running implementation of it, validated against live Stellar Testnet (see `docs/POC_IMPLEMENTATION.md`).
-- **Operational readiness**: still open — an operational runbook and incident-response framework (contract failures, indexer outages, key exposure, deployment misconfiguration) is planned but not yet written; see "Planned implementation scope" above.
+- **Operational readiness**: a first version of the operational runbook and incident-response framework (contract failures, indexer outages, key exposure, deployment misconfiguration) now exists — see `docs/RUNBOOK.md`. It has not yet been exercised in a real incident or a drill; treat it as a baseline, not a proven process.
 - **Compliance positioning**: the docs frame ZKELLA as compliance-aware selective disclosure infrastructure (viewing keys, verified sanctions non-membership proofs) rather than a generic confidential-token clone.
 - **Ecosystem engagement**: open development, public testnet milestones, and sustained participation in the Stellar ecosystem.
 
@@ -95,10 +95,11 @@ Solves the 7-day Stellar RPC event retention problem, which otherwise blocks new
 
 A Stellar-native private swap interface.
 
-- Users swap Token A for Token B through the Stellar DEX without revealing amounts on-chain
-- Commit-reveal scheme: user commits to an encrypted swap intent; a relayer executes it; a ZK proof confirms the execution was fair (correct price, no front-running)
-- Wraps the existing Stellar DEX — no new AMM required, usable immediately
-- Scope is the primitive; a full private AMM is the next phase
+- Users swap Token A for Token B without revealing amounts on-chain
+- Commit-reveal scheme: user commits to an encrypted swap intent; a relayer fronts the output asset as real SEP-41 liquidity; a ZK proof confirms afterward that the execution was fair (correct price, no front-running) against the terms committed to up front
+- No new AMM required to use it today: the relayer supplies the output asset directly from their own balance, and is free to source it however they choose off-chain, including routing through the existing Stellar DEX themselves — the contract doesn't call the DEX and has no visibility into how the relayer sourced the liquidity (see `docs/TECHNICAL_SPEC.md` §9)
+- Wiring an actual on-chain Stellar DEX execution into the flow itself is a planned, not yet built, next step (see `docs/ARCHITECTURE.md` §1.7.5 for the target design and its open questions)
+- Scope is the primitive; a full private AMM is a later phase
 
 ### Component 5: Developer SDK and Reference Application
 

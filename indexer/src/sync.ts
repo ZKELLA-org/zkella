@@ -54,20 +54,31 @@ export class Syncer {
   }
 
   private async syncOnce(): Promise<void> {
-    let cursor = this.config.db.getLastSyncedLedger(this.config.startLedger)
+    const ledgerCursor = this.config.db.getLastSyncedLedger(this.config.startLedger)
+    const filters = [
+      { type: 'contract' as const, contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NOTE]] },
+      { type: 'contract' as const, contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NF]] },
+    ]
+    // `getEvents`'s own cursor, distinct from the ledger-number cursor
+    // persisted to the db — see below for why both are needed.
+    let pagingToken: string | undefined
 
-    // Drain every page of events starting at `cursor` before sleeping again
-    // — `getEvents` pages by event count (`limit`), not ledger range, so a
-    // burst of activity needs multiple calls to fully catch up.
+    // Drain every page of events starting at `ledgerCursor` before sleeping
+    // again — `getEvents` pages by event count (`limit`), not ledger range,
+    // so a burst of activity needs multiple calls to fully catch up.
     for (;;) {
-      const response = await this.server.getEvents({
-        startLedger: cursor,
-        filters: [
-          { type: 'contract', contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NOTE]] },
-          { type: 'contract', contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NF]] },
-        ],
-        limit: 1000,
-      })
+      // Once this loop has paged at least once, resume via the last event's
+      // own `pagingToken` rather than recomputing `startLedger =
+      // lastEventLedger + 1`. Using a ledger-number cursor for *every* page
+      // (the original approach here) silently skips any events still
+      // remaining in that same ledger once a single ledger has more
+      // matching events than `limit` — unlikely at today's usage (ZKELLA
+      // emits at most a handful of these events per transaction), but a
+      // real, permanent, silent data-loss bug under sustained high load,
+      // since a skipped ledger's remaining events are never fetched again.
+      const response = pagingToken !== undefined
+        ? await this.server.getEvents({ cursor: pagingToken, filters, limit: 1000 })
+        : await this.server.getEvents({ startLedger: ledgerCursor, filters, limit: 1000 })
 
       for (const event of response.events) {
         const topic1 = event.topic[1] ? scValToNative(event.topic[1]) : undefined
@@ -87,16 +98,19 @@ export class Syncer {
       // response.latestLedger is the RPC node's own current tip — once our
       // cursor reaches it, we're caught up for this tick.
       if (response.events.length === 0) {
-        cursor = response.latestLedger + 1
-        this.config.db.setLastSyncedLedger(cursor)
+        this.config.db.setLastSyncedLedger(response.latestLedger + 1)
         break
       }
 
-      const lastEventLedger = response.events[response.events.length - 1].ledger
-      cursor = lastEventLedger + 1
-      this.config.db.setLastSyncedLedger(cursor)
+      const lastEvent = response.events[response.events.length - 1]
+      pagingToken = lastEvent.pagingToken
+      // The db's persisted cursor stays ledger-based (not the RPC paging
+      // token) — safe across a restart because re-fetching from the start
+      // of a ledger already partially processed just re-upserts the same
+      // rows (`upsertNote`/`markNullifierSpent` are idempotent).
+      this.config.db.setLastSyncedLedger(lastEvent.ledger + 1)
 
-      if (response.events.length < 1000 && cursor > response.latestLedger) break
+      if (response.events.length < 1000) break
     }
   }
 }

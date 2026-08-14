@@ -5,6 +5,18 @@ use crate::types::StorageKey;
 pub const TREE_DEPTH: u32 = 32;
 pub const MAX_LEAVES: u32 = u32::MAX; // 2^32 - 1 usable leaf slots
 
+/// How many of the most recent roots `is_known_root` accepts, besides the
+/// current one. The tree is shared across every asset this `ShieldedToken`
+/// instance wraps, so *any* shield/transfer/unshield call — on any asset —
+/// advances the root; without this window, a proof anchored to root R is
+/// invalidated by unrelated concurrent activity elsewhere in the contract,
+/// not just by a conflicting spend of the same note. A fixed-size window is
+/// the standard mitigation (the same approach Tornado Cash and Zcash-style
+/// pools use) — it doesn't remove the possibility of a proof going stale,
+/// it just makes it require `ROOT_HISTORY_SIZE` intervening insertions
+/// instead of exactly one.
+pub const ROOT_HISTORY_SIZE: u32 = 32;
+
 // Persistent storage TTL constants (Stellar ledger ≈ 5 s).
 // Threshold: bump only when remaining TTL falls below this.
 // Extend-to: keep alive for this many ledgers from now.
@@ -99,12 +111,24 @@ pub fn insert(env: &Env, commitment: BytesN<32>, hasher: &mut Poseidon2Hasher) -
     }
 
     // Update root and leaf counter in instance storage (bumped by caller via shield())
+    let new_root = BytesN::from_array(env, &current);
     env.storage()
         .instance()
-        .set(&StorageKey::MerkleRoot, &BytesN::from_array(env, &current));
+        .set(&StorageKey::MerkleRoot, &new_root);
     env.storage()
         .instance()
         .set(&StorageKey::NextLeafIndex, &(index + 1));
+
+    let mut history: Vec<BytesN<32>> = env
+        .storage()
+        .instance()
+        .get(&StorageKey::RootHistory)
+        .unwrap_or_else(|| Vec::new(env));
+    history.push_back(new_root);
+    if history.len() > ROOT_HISTORY_SIZE {
+        history.pop_front();
+    }
+    env.storage().instance().set(&StorageKey::RootHistory, &history);
 
     index
 }
@@ -118,6 +142,23 @@ pub fn root(env: &Env, hasher: &mut Poseidon2Hasher) -> BytesN<32> {
             let empty_root = empty_subtree_root(hasher, TREE_DEPTH);
             BytesN::from_array(env, &empty_root)
         })
+}
+
+/// Returns true if `candidate` is the current root, or was the current root
+/// at some point within the last `ROOT_HISTORY_SIZE` insertions (on any
+/// asset this contract instance wraps — see `ROOT_HISTORY_SIZE`'s doc
+/// comment). Before the tree's first insertion, `history` is empty and only
+/// the freshly-computed empty-tree root (from `root()`) is accepted.
+pub fn is_known_root(env: &Env, candidate: &BytesN<32>, hasher: &mut Poseidon2Hasher) -> bool {
+    if *candidate == root(env, hasher) {
+        return true;
+    }
+    let history: Vec<BytesN<32>> = env
+        .storage()
+        .instance()
+        .get(&StorageKey::RootHistory)
+        .unwrap_or_else(|| Vec::new(env));
+    history.contains(candidate)
 }
 
 /// Return the Merkle authentication path for `leaf_index`.

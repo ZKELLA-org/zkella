@@ -41,23 +41,22 @@ impl ZKELLAGovernance {
         env.storage().instance().set(&StorageKey::Verifier, &verifier);
     }
 
-    /// Registers a verifying key for the first time. No timelock: this
-    /// establishes initial state rather than replacing a key already relied
-    /// upon, so it doesn't carry the same soundness risk as `execute_vk_update`.
-    pub fn register_vk(env: Env, circuit: CircuitType, vk: Bytes) {
-        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
-        admin.require_auth();
-
-        let verifier: Address = env.storage().instance().get(&StorageKey::Verifier).unwrap();
-        VerifierClient::new(&env, &verifier).register_verifying_key(&circuit, &vk);
-
-        env.events().publish(
-            (symbol_short!("zkella"), symbol_short!("vkreg")),
-            circuit,
-        );
-    }
-
-    /// Queue a verifying key update — enforces 7-day timelock
+    /// Queue a verifying key for `circuit` — enforces the 7-day timelock
+    /// whether this is the circuit's first-ever key or a replacement of one
+    /// already relied upon. There used to be a separate `register_vk`
+    /// offering instant, untimelocked first-time activation, on the theory
+    /// that a brand-new circuit "doesn't carry the same soundness risk"
+    /// since nothing was relying on the old key. That reasoning breaks down
+    /// the moment *any* real value exists anywhere in the system: every
+    /// circuit's proofs are ultimately checked against the same
+    /// `ShieldedToken` Merkle tree and `shielded_supply` bookkeeping, so a
+    /// malicious VK activated instantly for *any* circuit — even one that
+    /// never had a key before — can forge output notes and drain value
+    /// already resting in the pool via an already-legitimate circuit like
+    /// `Unshield`. A compromised admin should never get an instant win
+    /// against funds it doesn't itself own; removing the fast path removes
+    /// that case entirely rather than trying to reason about which specific
+    /// circuit registrations are "safe" this time.
     pub fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
@@ -73,9 +72,12 @@ impl ZKELLAGovernance {
     }
 
     /// Execute a queued VK update after the timelock has passed. Actually
-    /// rotates the key in the verifier registry — this used to just return
-    /// the bytes without writing them anywhere, leaving governance and the
-    /// verifier disconnected.
+    /// rotates (or, for a circuit with no key yet, registers) the key in the
+    /// verifier registry — this used to just return the bytes without
+    /// writing them anywhere, leaving governance and the verifier
+    /// disconnected. Handles both first-time registration and replacement
+    /// through this same timelocked path — see `queue_vk_update`'s doc
+    /// comment for why there's no separate, faster path for the first case.
     pub fn execute_vk_update(env: Env, circuit: CircuitType) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
@@ -88,8 +90,12 @@ impl ZKELLAGovernance {
         env.storage().instance().remove(&StorageKey::PendingVkUpdate(circuit));
 
         let verifier: Address = env.storage().instance().get(&StorageKey::Verifier).unwrap();
-        VerifierClient::new(&env, &verifier)
-            .update_verifying_key(&circuit, &update.new_vk);
+        let verifier_client = VerifierClient::new(&env, &verifier);
+        if verifier_client.try_get_verifying_key(&circuit).is_ok() {
+            verifier_client.update_verifying_key(&circuit, &update.new_vk);
+        } else {
+            verifier_client.register_verifying_key(&circuit, &update.new_vk);
+        }
 
         env.events().publish(
             (symbol_short!("zkella"), symbol_short!("vkexec")),
@@ -148,15 +154,43 @@ mod tests {
         b
     }
 
+    /// Queues `vk` for `circuit` and immediately executes it, fast-forwarding
+    /// the ledger past the timelock first — the standard "just get a VK live"
+    /// path most tests below only care about as a precondition, not as the
+    /// thing under test.
+    fn queue_and_execute(env: &Env, gov: &ZKELLAGovernanceClient, circuit: CircuitType, vk: &Bytes) {
+        gov.queue_vk_update(&circuit, vk);
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_vk_update(&circuit);
+    }
+
+    /// Regression test for a critical audit finding: there used to be a
+    /// separate `register_vk` that activated a circuit's *first* VK
+    /// instantly, no timelock — reasoned to be safe since nothing was
+    /// relying on the old key yet. That's false once any real value exists
+    /// anywhere in the system (every circuit ultimately writes into the same
+    /// shared `ShieldedToken` pool), so first-time registration now goes
+    /// through the exact same timelocked `queue_vk_update`/`execute_vk_update`
+    /// path as a replacement — this test is the regression check that
+    /// `execute_vk_update` correctly performs a first-time *registration*
+    /// (not an update, which would fail against a circuit with no key yet).
     #[test]
-    fn register_vk_reaches_the_verifier_contract() {
+    fn execute_vk_update_performs_first_time_registration_through_the_timelock() {
         let (env, _admin, governance_id, verifier_id) = setup();
         let gov = ZKELLAGovernanceClient::new(&env, &governance_id);
         let verifier = VerifierContractClient::new(&env, &verifier_id);
 
         // VK_FIXED_LEN (448) + one IC point (64) = 512, valid shape for 0 public inputs.
         let vk = vk_bytes(&env, 512);
-        gov.register_vk(&CircuitType::Shield, &vk);
+
+        // Executing before the timelock elapses must fail — first-time
+        // registration is no longer exempt from the delay.
+        gov.queue_vk_update(&CircuitType::Shield, &vk);
+        let early = gov.try_execute_vk_update(&CircuitType::Shield);
+        assert!(early.is_err());
+
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_vk_update(&CircuitType::Shield);
 
         let stored = verifier.get_verifying_key(&CircuitType::Shield.into());
         assert_eq!(stored, vk);
@@ -169,7 +203,7 @@ mod tests {
         let verifier = VerifierContractClient::new(&env, &verifier_id);
 
         let original_vk = vk_bytes(&env, 512);
-        gov.register_vk(&CircuitType::Shield, &original_vk);
+        queue_and_execute(&env, &gov, CircuitType::Shield, &original_vk);
 
         let new_vk = vk_bytes(&env, 576); // different shape/content
         gov.queue_vk_update(&CircuitType::Shield, &new_vk);
@@ -199,7 +233,7 @@ mod tests {
         let verifier = VerifierContractClient::new(&env, &verifier_id);
 
         let original_vk = vk_bytes(&env, 512);
-        gov.register_vk(&CircuitType::Shield, &original_vk);
+        queue_and_execute(&env, &gov, CircuitType::Shield, &original_vk);
 
         let new_vk = vk_bytes(&env, 576);
         gov.queue_vk_update(&CircuitType::Shield, &new_vk);

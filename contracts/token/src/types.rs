@@ -9,6 +9,7 @@ pub enum StorageKey {
     Admin,
     PendingAdmin,   // Set by transfer_admin(); cleared by accept_admin()
     MerkleRoot,
+    RootHistory,    // Vec<BytesN<32>> ring buffer of the last ROOT_HISTORY_SIZE roots
     NextLeafIndex,
     Paused,
     Verifier, // address of the zkella-verifier registry contract

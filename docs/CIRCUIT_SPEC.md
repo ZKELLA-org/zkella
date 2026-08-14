@@ -73,6 +73,8 @@ template Range64() {
 }
 ```
 
+**Assumed range vs. contract-permitted range — an explicit design boundary, not an oversight.** Every value/amount constrained in these circuits is bounded to 64 bits (`0 ≤ value < 2^64`, ~1.8×10¹⁹). Soroban contracts pass amounts as `i128`, a much wider type (up to ~1.7×10³⁸). For any realistic Stellar SEP-41 asset amount (stroops, 7 decimal places — 64 bits covers roughly 1.8×10¹² XLM, far beyond total XLM supply, and equivalently oversized for any plausible token supply), 64 bits is not a practical limitation. It is, however, a real assumption boundary: a token with an unusually large raw integer amount (extreme decimal precision, or a deliberately adversarial `i128` value near its own maximum) is outside what these circuits can prove correct — the contract-level `i128` type permits values these circuits were never designed to constrain. This has not caused any known issue since every asset ZKELLA has wrapped to date fits comfortably within 64 bits, but it should be treated as a documented soundness precondition, not silently assumed.
+
 ### 1.4 Note Commitment
 
 ```circom

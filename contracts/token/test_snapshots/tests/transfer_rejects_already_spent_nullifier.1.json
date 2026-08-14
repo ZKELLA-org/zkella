@@ -1303,6 +1303,25 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "RootHistory"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "7b5e28ef0e1716cca2f4bb2cb4b7318e6cb1cc9f0adebd4abe938670c0326e29"
+                          },
+                          {
+                            "bytes": "60ed1fd2e371207b035ad2ada4220c5e012b22433c23f8b2156461ce939e7211"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Verifier"
                           }
                         ]

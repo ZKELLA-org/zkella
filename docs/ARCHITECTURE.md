@@ -352,6 +352,80 @@ Final design questions that must be resolved before production:
 - how reference prices and slippage constraints are encoded and verified,
 - how failed or partial public execution is handled without compromising private state.
 
+#### 1.7.5b Alternative target design: AMM-sourced execution as an explicit fallback path
+
+**Status: design reviewed and Router-vs-Aggregator decided (Router-only for v1) — implementation deliberately deferred, not started.** This is a documented, reviewed design ready to pick up later, not a rejected one. Do not implement from this section alone; the remaining open questions at the end must still be resolved first.
+
+A separate question from §1.7.5's classic-DEX target design: could `execute_swap` cross-call a Soroban-native AMM contract (as opposed to Stellar's classic ledger-level DEX/liquidity-pool operations, which remain unreachable — `docs/TECHNICAL_SPEC.md` §9)? A Soroban AMM is a normal contract with a public `swap()`-style entrypoint, reachable via the same cross-contract-call mechanism `swap` already uses for `ShieldedToken`. This is technically straightforward. The design work is in *how* to do it without silently degrading the primitive's core privacy property, and in surveying what actually exists on Stellar today rather than assuming a single generic "the AMM."
+
+##### What actually exists on Stellar today
+
+There is no single canonical Soroban AMM — several independent, differently-interfaced protocols operate concurrently: **Soroswap** (a Uniswap-v2-style AMM with its own `SoroswapRouter` contract), **Phoenix**, and **Aqua** (Aquarius). Building and maintaining a direct adapter to each independently would be real, ongoing integration debt with no natural end (new AMMs launch, existing ones change interfaces).
+
+Soroswap already solves this exact problem at the ecosystem level: the **Soroswap Aggregator** is a separate, real on-chain contract that routes across Soroswap, Phoenix, and Aqua through a `SoroswapAggregatorAdapterTrait` adapter pattern — a per-protocol adapter contract behind one stable caller-facing interface. `SoroswapRouter`'s own interface (confirmed from Soroswap's technical docs), which the Aggregator's caller-facing shape follows closely:
+
+```rust
+fn swap_exact_tokens_for_tokens(
+    e: Env,
+    amount_in: i128,
+    amount_out_min: i128,
+    path: Vec<Address>,
+    to: Address,
+    deadline: u64,
+) -> Result<Vec<i128>, CombinedRouterError>
+```
+
+**Decided (this session): target `SoroswapRouter` directly for v1, not the Aggregator.** Weighed against integrating the Aggregator immediately for multi-AMM (Soroswap + Phoenix + Aqua) reach — the smaller, simpler dependency wins for a first iteration: one external contract to audit and reason about (`SoroswapRouter`) instead of two layers (the Aggregator plus its per-protocol adapters). Multi-AMM reach via the Aggregator remains a deliberate, explicitly-deferred future widening, not a rejected idea — revisit once the Router-only path has real operational experience behind it (see `docs/DESIGN_EXPLORATION.md` §2.3 for the tracked status).
+
+Both options carry the same category of dependency, sized differently for the Router:
+
+- **Trust dependency.** Any bug, pause, or exploit in `SoroswapRouter` becomes ZKELLA's problem the moment escrowed user funds route through it. Its own audit status must be checked before this is implementable, not assumed.
+- **Interface stability dependency.** If the Router's interface changes, `contracts/swap` needs a corresponding update — an external dependency our own release cadence doesn't control.
+- **Fee/pricing transparency, not a new risk.** The Router's own protocol fees are already reflected in whatever `amount_out` it returns — this doesn't change the slippage-floor check `contracts/swap` already needs to do (§ below), it's just baked into the number.
+- **Exact deployed contract addresses (testnet/mainnet) are not yet confirmed** — this doc deliberately does not state one, to avoid a stale/wrong address propagating the way earlier deployment records in this repo have had to be corrected before. Sourcing and verifying the real address is a precondition for implementation, not an assumption to make now.
+
+##### The hybrid model: RFQ-first, AMM-sourced execution as an explicit, non-default fallback
+
+The recommended shape is **not** "replace the relayer with the AMM" — it's "use the AMM only when the private RFQ path (`sdk/src/relayer/quote.ts`, §2.7) doesn't produce a competitive result." The RFQ path stays the privacy-preserving default; AMM-sourced execution is a separate, clearly-labeled path a wallet opts into, not a silent substitution. This preserves the primitive's core value (private-by-default) while giving users a way to still get a swap done when no relayer is available — better usability without lowering the default privacy bar.
+
+##### Proposed contract surface (design only — not implemented)
+
+A **separate** entrypoint from `execute_swap`, not a modification of it — keeping the two execution paths structurally distinct makes the privacy trade-off visible in the contract's own interface, not just in documentation:
+
+```rust
+fn execute_swap_via_amm(
+    env:            Env,
+    swap_id:        BytesN<32>,
+    router:         Address,      // must be on an approved-router allowlist — see security review below
+    min_amount_out: i128,         // caller's own floor; independent of, and in addition to, the user's protocol-level floor checked later at reveal_and_claim
+    deadline:       u64,
+) -> Result<i128, Error>;
+
+fn set_approved_router(env: Env, router: Address, approved: bool) -> Result<(), Error>; // admin-gated, mirrors set_relayer
+```
+
+##### Security review of this proposal (senior-auditor pass, before any code is written)
+
+1. **Router must be allowlisted, not caller-supplied freely.** Without this, any caller could pass the address of a contract they control that accepts the escrowed `asset_in` and returns nothing — a direct theft path. `set_approved_router`, admin-gated, mirrors the existing `set_relayer` pattern exactly. This is not optional hardening, it's the difference between a real feature and a fund-drain vector.
+2. **Restrict `path` to a direct pair for v1 — no multi-hop.** A caller-supplied multi-hop `path` widens the attack surface (routing through a low-liquidity or manipulated intermediate pool) for no benefit the Aggregator itself doesn't already provide internally. Recommend constraining to `path == [asset_in, asset_out]` (validated on-chain, not just assumed) until the direct-pair path has real operational experience.
+3. **This should not be fully permissionless — require `refund_to.require_auth()`.** An earlier sketch of this idea (this session's prior conversation turn) assumed permissionless execution "anyone can trigger it." On review, that's worse than necessary: it lets a third party trigger execution against parameters they choose (a `min_amount_out` picked to make sandwiching worthwhile), with no economic stake in the outcome. Requiring the original committer's `refund_to` address to authorize this specific call keeps the "no dependency on a specific relayer being available" benefit (anyone can still *pay the transaction fee*, i.e. relay the call) while removing the "anyone can pick unfavorable execution parameters" risk. This is a meaningful improvement over the earlier framing, not a restatement of it.
+4. **`SwapState`/`reclaim_expired_swap` need a real design decision, not an assumption.** The current state machine's unclaimed-execution unwind path (`reclaim_expired_swap`) assumes `state.relayer` is always `Some` once `status == Executed`, and refunds the fronted `asset_out` to that relayer. An AMM-sourced execution has no relayer to refund — the `asset_out` came from the AMM, paid for (indirectly) with the user's own escrowed `asset_in`. If never claimed, that `asset_out` should return to `refund_to` (the original committer), not a relayer. This means `SwapState` needs an explicit `ExecutionKind::RelayerFronted | AmmSourced` (not an overloaded `Option<Address>`), and `reclaim_expired_swap` needs a real branch for each — this is a genuine data-model change to `contracts/swap`, not a cosmetic addition, and must be designed carefully enough to keep both paths' existing regression tests passing.
+
+##### What this does not solve — unchanged from the earlier analysis
+
+Everything §1.7.5b previously documented about `amount_out` losing its "hidden until reveal" property, and about MEV exposure from a public, snipeable trade, still applies exactly the same way when routing through `SoroswapRouter` — using the Router instead of a raw pool changes *pricing quality*, not the privacy/MEV trade-off itself. This remains explicitly a "less private, more liquid, opt-in fallback" path, not a resolution of the underlying tension.
+
+##### Open questions still to resolve — implementation deliberately deferred
+
+Router-vs-Aggregator is decided (Router-only for v1); these remain open before any code is written:
+
+- Confirm `SoroswapRouter`'s actual audit status and real deployed contract address per network.
+- Decide the exact `ExecutionKind` state-machine change and re-verify every existing `contracts/swap` regression test against it.
+- Decide the SDK-side UX for surfacing "RFQ found nothing competitive, offer the AMM-fallback path" to a wallet/user in a way that makes the privacy trade-off legible at the moment of choice, not buried in documentation only.
+- Multi-AMM reach via the Aggregator (Phoenix, Aqua) remains a deliberately deferred future widening once the Router-only path has real operational experience — not scoped for the same implementation pass as the items above.
+
+Sources for the landscape research above: [SoroswapRouter technical reference](https://docs.soroswap.finance/01-protocol-overview/03-technical-reference/03-smart-contracts/04-soroswaprouter), [Soroswap Aggregator overview](https://docs.soroswap.finance/01-concepts/aggregator), [soroswap/aggregator repository](https://github.com/soroswap/aggregator/) (confirms Phoenix and Aqua adapters alongside Soroswap's own).
+
 #### 1.7.6 Ledger ordering, events, and finality
 
 ZKELLA depends on Stellar ledger ordering for deterministic note history.
@@ -458,12 +532,21 @@ Key contract interfaces (real, current):
 - `initialize(admin, verifier)`
 - `shield(from, asset, amount, rho, rcm, commitment, encrypted_note, shield_proof, shield_pub)`
 - `transfer(nullifiers, out_commitments, encrypted_notes, proof, pub_inputs)` / `transfer4(...)` (4-in/4-out variant)
-- `unshield(nullifier, to, proof, pub_inputs)`
+- `unshield(nullifier, to, binding_tag, proof, pub_inputs)` — `binding_tag` folds into `recipient_hash` alongside `to`; a direct unshield passes `[0u8; 32]`. See `docs/TECHNICAL_SPEC.md`'s interface listing for why this parameter exists — added to close a real proof-replay finding in `contracts/swap` (`docs/POC_IMPLEMENTATION.md`'s "Update: external audit")
 - `merkle_root()`, `merkle_path(leaf_index)`, `leaf_count()`
 - `is_spent(nullifier)`, `shielded_supply(asset)`
 - `pause()`, `unpause()`, `transfer_admin(new_admin)`, `accept_admin()`
 
 The contract stores a persistent Merkle root and incremental tree state for note commitments.
+
+**Why transfer's input/output count is fixed, not variable.** `transfer()` takes exactly 2 input notes and produces exactly 2 outputs (`circuits/transfer_2in2out/transfer.circom` hard-codes `N_IN = N_OUT = 2`); `transfer4()` is a separate, similarly fixed 4-in/4-out circuit. This is a deliberate shielded-pool design pattern (the same one Zcash Sapling uses), not an arbitrary limitation of the current PoC, for two reasons:
+
+- **Uniform transaction shape.** Every `transfer()` call looks identical on-chain regardless of how many notes the sender actually holds or is consolidating. A variable-arity circuit would make transaction structure itself leak information — an observer could infer how fragmented a user's holdings are just from the shape of their calls, which a note-based privacy design is specifically trying to avoid.
+- **Circuit cost.** A variable number of inputs requires padding/dummy notes and conditional in-circuit logic for "was this slot used," which adds constraints and complexity beyond what a fixed shape needs.
+
+The two fixed shapes are the answer to "what if I have more than 2 notes to spend or more than 2 recipients": `transfer4()` exists specifically for **dust consolidation and multi-recipient payments** (see `docs/CIRCUIT_SPEC.md` §5), not as an arbitrary second option. A sender with more inputs/outputs than either shape supports uses multiple transfers, at the cost of revealing more transaction-graph structure across those calls — an accepted tradeoff of this design, not an oversight.
+
+On the live Testnet deployment described in `docs/TESTNET_DEPLOYMENT.md`, only the Shield, Unshield, and SwapFairness verifying keys have been registered so far — `Transfer` (2-in/2-out) and `Transfer4x4` are exercised by real-circuit proofs in `contracts/verifier`'s own test suite, but have not yet been run through a live on-chain call the way shield and the swap lifecycle have.
 
 ### 2.2 Verifier registry contract
 
@@ -486,8 +569,7 @@ Key methods:
 Key methods:
 
 - `initialize(admin, verifier)`
-- `register_vk(circuit, vk)` — initial registration, no timelock (nothing is being replaced yet)
-- `queue_vk_update(circuit, new_vk)` / `execute_vk_update(circuit)` / `cancel_vk_update(circuit)` — 7-day-timelocked rotation of an already-registered key
+- `queue_vk_update(circuit, new_vk)` / `execute_vk_update(circuit)` / `cancel_vk_update(circuit)` — 7-day-timelocked, for *both* first-time registration and replacement of an already-registered key. There used to be a separate `register_vk` offering instant, untimelocked first-time activation; removed after an external review found it let a malicious VK for *any* circuit — even a brand-new one — immediately forge proofs against value already resting in `ShieldedToken`'s shared pool via an already-legitimate circuit. `execute_vk_update` now picks `register_verifying_key` or `update_verifying_key` on the verifier depending on whether the circuit already has a key (`docs/POC_IMPLEMENTATION.md`'s "Update: external audit").
 - `transfer_admin(new_admin)` / `accept_admin()` — two-step admin handover
 
 ### 2.4 Viewing key registry contract
@@ -515,9 +597,17 @@ Key methods:
 - `publish_compliance_proof(owner, proof, pub_inputs: CompliancePublicInputs { sanctions_root, tk_commitment })`
 - `get_compliance_proof(owner)`
 
+**Design note — extension hook points (open, not yet implemented; see `docs/DESIGN_EXPLORATION.md` §1.3).** `contracts/token`'s current compliance integration is, at most, a single optional hook address, no-op if unset — deliberately not a generic extension-point trait, judged disproportionate to today's needs (compare against OpenZeppelin's confidential-token `Hooks` trait, which exposes eight lifecycle points). If ZKELLA's compliance needs grow beyond what a single hook can express, the proposed middle ground is three targeted hooks rather than one or eight:
+
+- `on_shield(from, asset, amount)` — called after auth/validation, before the Groth16 proof check, so a compliance policy can block a deposit from an unapproved source before it ever reaches proof verification,
+- `on_transfer(nullifiers, out_commitments, asset_id)` — called after arity/anchor checks, before proof verification, mirroring `on_shield`'s placement,
+- `on_unshield(nullifier, to, asset, amount)` — called after the recipient-hash binding check, before proof verification.
+
+Each hook would receive only decoded, already-validated call parameters — never the proof itself, matching OpenZeppelin's own rationale for that boundary (a hook that could see the proof could be tempted to make decisions based on unverified data). A no-op default (no hook configured) would preserve today's behavior exactly. This is a proposal to evaluate, not a committed design — it has not been reviewed against `contracts/token`'s actual call-site structure for feasibility, and doing so is the real next step before writing any code.
+
 ### 2.6 Shielded swap contract
 
-The shielded swap contract (`contracts/swap`) implements a commit-reveal swap over shielded notes. It reuses `ShieldedToken`'s own already-audited shield/unshield paths for the value-moving steps rather than inventing separate custody logic, and has been through a senior-auditor pass plus a full live-Testnet run of its lifecycle (see `docs/POC_IMPLEMENTATION.md`).
+The shielded swap contract (`contracts/swap`) implements a commit-reveal swap over shielded notes. It reuses `ShieldedToken`'s own already-audited shield/unshield paths for the value-moving steps rather than inventing separate custody logic, and has been through both a senior-auditor pass and a separate external technical review — the latter finding and fixing three real critical vulnerabilities (a missing `intent_commitment` binding at claim time, a proof-replay path via the reused ownership proof, and a missing re-initialization guard) plus a fund-lock overflow bug, all closed with dedicated regression tests — alongside a full live-Testnet run of its lifecycle (see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit").
 
 It:
 
@@ -546,12 +636,14 @@ Primary functions, and their current status:
 - Groth16 proof generation for shield, transfer, transfer4, unshield, and swap fairness — real, via `snarkjs` against the compiled circuits (`sdk/src/prover`),
 - transaction assembly and submission to Soroban RPC for `shield()`/`transfer()`/`unshield()` — real (`sdk/src/wallet/wallet.ts`),
 - wallet sync via the indexer — real (`sdk/src/indexer`),
+- off-chain relayer price discovery for shielded swaps (RFQ) — real (`sdk/src/relayer/quote.ts`): `SwapQuoteClient.requestQuote()` and the `RelayerQuoteHandler` type specify the wire protocol closing `docs/TECHNICAL_SPEC.md` §12.4's Known Limitation 1; `quoteRespectsSlippage()` enforces the same floor `circuits/swap/swap_fairness.circom` checks on-chain, so a wallet acting only on quotes this module validates cannot be misled into a swap that would fail its own fairness proof later — see the module's own doc comment for the full security model, including what it deliberately does not guarantee (no execution reservation for the quoting relayer),
 - higher-level swap (`ZKELLASwap`), auditor (`ZKELLAAuditor`), and compliance (`ZKELLACompliance`) wrapper classes — **still stubs**: their methods exist and type-check but return placeholder values rather than calling the real, already-working contracts and provers underneath them.
 
 Primary SDK modules:
 
 - `sdk/src/keys`, `sdk/src/notes`, `sdk/src/crypto`, `sdk/src/prover`
 - `sdk/src/wallet` (`wallet.ts` real; `swap.ts`/`auditor.ts` stubs)
+- `sdk/src/relayer` (`quote.ts` real — RFQ client/handler shape, not a full relayer service)
 - `sdk/src/compliance` (stub)
 - `sdk/src/indexer`
 
@@ -572,6 +664,7 @@ Indexer trust boundaries:
 - Wallet clients must independently verify decrypted notes and Merkle paths against on-chain ShieldedToken roots.
 - If the indexer is unavailable, clients can still use on-chain data for critical state checks, but note reconstruction will be degraded.
 - Multiple indexers can coexist to reduce single-point-of-failure risk.
+- **Indexer operator and wallet are distinct roles, not yet formally separated in ZKELLA's own docs.** OpenZeppelin's confidential-token indexer spec makes this distinction explicit — an indexer operator archiving event history is a different role, with potentially different compliance obligations, from a wallet operator who only reads that history for its own users. ZKELLA's indexer today is self-hosted per deployment (`indexer/README.md`), so the distinction hasn't mattered operationally yet, but it's worth stating explicitly once third-party or multi-operator indexing (already on the roadmap — see `docs/DESIGN_EXPLORATION.md` §1.4) becomes real: an indexer operator who is not the wallet provider is a new trust/compliance surface that hasn't been analyzed here.
 
 This is now a real, running reference implementation (`indexer/`, Node/TypeScript, `node:sqlite` for storage), validated against live Stellar Testnet event data — not a design sketch. Real API endpoints:
 
@@ -582,7 +675,7 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 - `POST /nullifiers/batch`
 - `GET /health`
 
-Not yet covered: horizontal scaling, multiple independent operators, and an operational runbook — see `indexer/README.md` for the current status in detail.
+Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail. An operational runbook now exists (`docs/RUNBOOK.md`, first version, not yet exercised in a real incident) and covers the indexer alongside every other component.
 
 ### 2.9 Soft PoC implementation versus target architecture
 
@@ -595,7 +688,7 @@ The repository intentionally separates implemented material from the full target
 | Viewing keys / compliance | Real, split contracts (§2.4–2.5): viewing-key commitment registry plus verified sanctions non-membership proofs | Indexer-mediated viewing-key access workflow, richer disclosure tooling |
 | Shielded swaps | Real value movement throughout the lifecycle, audited (three fixed issues) and run end-to-end on live Testnet with real circuit proofs (see `docs/POC_IMPLEMENTATION.md`) | Any actual Stellar DEX execution integration — the current relayer model requires the relayer to front liquidity directly, with no on-chain DEX call; wiring a real DEX trade into the flow is still roadmap work |
 | SDK | Real key/note/crypto/prover modules and a real base wallet (`shield`/`transfer`/`unshield`); `ZKELLASwap`/`ZKELLAAuditor`/`ZKELLACompliance` wrapper classes are still stubs | Wire the swap/auditor/compliance wrapper classes to the real contracts and provers they're meant to call; stable public API; generated bindings |
-| Indexer | Real, running reference implementation, validated on live Testnet | Horizontal scaling, multiple independent operators, operational runbook |
+| Indexer | Real, running reference implementation, validated on live Testnet; a first-version operational runbook exists (`docs/RUNBOOK.md`) | Horizontal scaling, multiple independent operators, a runbook proven through real incident use rather than only written |
 
 Every existing contract and code module should still be treated as reviewable material, not finished production infrastructure, until it satisfies the target requirement column — in particular, none of it has been through an *external* security review yet.
 
@@ -640,7 +733,7 @@ The ShieldedToken contract uses an incremental binary Merkle tree with depth 32.
 - empty leaf = `Poseidon2(0, 0)`,
 - internal node = `Poseidon2(left, right)`.
 
-The current root is stored in contract instance storage and used as a public anchor for proofs.
+The current root is stored in contract instance storage and used as a public anchor for proofs. A proof's anchor doesn't have to match the current root exactly: `merkle::is_known_root` also accepts any of the last `ROOT_HISTORY_SIZE` (32) roots the tree actually had, tracked as a ring buffer alongside the current root. This matters because one `ShieldedToken` instance shares this single tree across every asset it wraps — without a history window, a proof anchored to root R would be invalidated by *any* other shield/transfer/unshield call landing first, even on a completely different asset. The window doesn't eliminate that risk, it only widens it from "one intervening insertion" to "32 intervening insertions" — see `docs/TECHNICAL_SPEC.md` §12.1 for the full threat-model treatment of this tradeoff.
 
 ### 3.5 Encrypted note bundle
 
@@ -798,7 +891,7 @@ What's still needed to reach "Production-ready":
 - an *external*, independent security review of every contract and circuit — everything to date, including the audit pass described in §1.4, was done by the team building the protocol, not a third party,
 - a real (non-dev), multi-party trusted-setup ceremony per circuit — every proof and verifying key in this repository so far comes from a local, single-contributor dev ceremony,
 - wiring the SDK's higher-level `ZKELLASwap`/`ZKELLAAuditor`/`ZKELLACompliance` wrapper classes to the real contracts and provers underneath them (still stubs — see §2.7),
-- indexer production hardening: horizontal scaling, multiple independent operators, and an operational runbook (still open — see §2.8),
+- indexer production hardening: horizontal scaling and multiple independent operators (still open — see §2.8); a first-version operational runbook now exists (`docs/RUNBOOK.md`) but is still unproven by real incident use,
 - resource profiling at production scale (current measurements are from a single local host environment plus a handful of live-Testnet transactions, not sustained load),
 - finalized operational controls for verifier-key rotation, pause/unpause, relayer authorization, and deployment monitoring beyond what's already implemented.
 

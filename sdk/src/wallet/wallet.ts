@@ -109,18 +109,26 @@ export class ZKELLAWallet {
    *
    * @param opts.asset   SEP-41 contract address of the asset being shielded.
    * @param opts.amount  Amount in base units (u64).
-   * @param opts.to      Optional recipient shielded address (defaults to self).
+   * @param opts.to      Optional recipient — a raw hex-encoded transmission
+   *                     key (32-byte compressed point), same format as
+   *                     `transfer()`'s `opts.to` (defaults to this wallet's
+   *                     own `transmissionKey`, i.e. shielding for yourself).
    */
   async shield(opts: {
     asset:  string
     amount: bigint
     to?:    string
   }): Promise<{ note: Note; submit: () => Promise<{ leafIndex: number }> }> {
-    const { asset, amount } = opts
+    const { asset, amount, to } = opts
     requireCircuit(this.config.shieldCircuit, 'shieldCircuit', 'shield()')
 
     const note = await buildNote(amount, asset)
-    const transmissionKey = this.config.keys.transmissionKey
+    // `to`, when given, is the *recipient's* transmission key — encrypting
+    // to `this.config.keys.transmissionKey` regardless (the previous bug
+    // here) would silently deposit "for a recipient" but leave the note
+    // decryptable/spendable only by the sender's own wallet, not the
+    // intended recipient.
+    const transmissionKey = to !== undefined ? hexToBytes(to) : this.config.keys.transmissionKey
     const encryptedBundle = await encryptNote(note, transmissionKey)
 
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset, amount }
@@ -293,9 +301,16 @@ export class ZKELLAWallet {
         recipient_hash: result.recipientHash,
       }
       await this.submitContractCall(this.config.tokenAddress, 'unshield', [
-        nativeToScVal(result.nullifier, { type: 'bytes' }),
-        nativeToScVal(opts.to,          { type: 'address' }),
-        nativeToScVal(result.proof,     { type: 'bytes' }),
+        nativeToScVal(result.nullifier,      { type: 'bytes' }),
+        nativeToScVal(opts.to,               { type: 'address' }),
+        // Direct (non-swap) unshields don't need any extra binding beyond
+        // `to` itself — a zero binding_tag reproduces the original
+        // `Poseidon2(address_field(to), 0)` recipient_hash formula exactly.
+        // See `contracts/token::unshield`'s doc comment for why this
+        // parameter exists (it's load-bearing for `contracts/swap`, not
+        // meaningful here).
+        nativeToScVal(new Uint8Array(32),    { type: 'bytes' }),
+        nativeToScVal(result.proof,          { type: 'bytes' }),
         structScVal(pubInputs, {
           anchor: 'bytes', nullifier: 'bytes', pub_value: 'i128',
           pub_asset_id: 'address', recipient_hash: 'bytes',

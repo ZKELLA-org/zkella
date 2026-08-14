@@ -549,13 +549,22 @@ pub trait ShieldedTokenInterface {
         encrypted_notes: Vec<Bytes>, proof: Bytes, pub_inputs: TransferPublicInputs,
     ) -> Result<Vec<u32>, Error>;
 
-    /// Reveal a note and withdraw to a public address.
+    /// Reveal a note and withdraw to a public address. `binding_tag` folds
+    /// into `recipient_hash` (`Poseidon2(address_field(to), binding_tag)`) —
+    /// a direct unshield passes `[0u8; 32]`, reproducing the original
+    /// `Poseidon2(address_field(to), 0)` formula exactly; `contracts/swap`'s
+    /// `commit_swap` passes `Poseidon2(intent_commitment, refund_to)` to
+    /// cryptographically bind its reused ownership proof to that specific
+    /// swap, closing a real proof-replay vulnerability an external review
+    /// found — see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit"
+    /// for the finding and fix in full.
     fn unshield(
-        env:        Env,
-        nullifier:  BytesN<32>,
-        to:         Address,
-        proof:      Bytes,
-        pub_inputs: UnshieldPublicInputs,
+        env:         Env,
+        nullifier:   BytesN<32>,
+        to:          Address,
+        binding_tag: BytesN<32>,
+        proof:       Bytes,
+        pub_inputs:  UnshieldPublicInputs,
     ) -> Result<(), Error>;
 
     fn merkle_root(env: Env) -> BytesN<32>;
@@ -695,13 +704,18 @@ Owns timelocked verifying-key rotation on top of `contracts/verifier`, and its o
 ```rust
 pub trait ZKELLAGovernance {
     fn initialize(env: Env, admin: Address, verifier: Address);
-    fn register_vk(env: Env, circuit: CircuitType, vk: Bytes);        // first-time registration, no timelock
-    fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes); // starts the 7-day timelock
-    fn execute_vk_update(env: Env, circuit: CircuitType);              // after the timelock elapses
+    fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes); // starts the 7-day timelock — first-time registration AND replacement both go through this
+    fn execute_vk_update(env: Env, circuit: CircuitType);              // after the timelock elapses; registers if the circuit has no key yet, else rotates
     fn cancel_vk_update(env: Env, circuit: CircuitType);
     fn transfer_admin(env: Env, new_admin: Address);                  // two-step handover
     fn accept_admin(env: Env);
 }
+// A separate `register_vk` used to offer instant, untimelocked first-time
+// activation. Removed: an external review found it let a malicious VK for
+// *any* circuit — even a brand-new one — immediately forge proofs against
+// value already resting in ShieldedToken's shared pool via an
+// already-legitimate circuit (docs/POC_IMPLEMENTATION.md's "Update: external
+// audit").
 ```
 
 Relayer authorization (`set_relayer`) lives on `contracts/swap` itself (§6.5), not on governance — an earlier draft of this spec placed it here; the repository implementation scopes relayer approval to the contract that actually uses it.
@@ -916,7 +930,7 @@ Payload encrypted with AES-256-GCM using a key derived from the spending key:
 
 ## 9. Shielded Swap Primitive
 
-**This section describes the real, implemented, audited design** (`contracts/swap`). An earlier draft of this spec described a Stellar-DEX-execution model (relayers calling `PathPaymentStrictReceive`/`ManageSellOffer`, an off-chain P2P relay server) that was never built this way — nothing in the current contract calls the Stellar DEX. What's implemented instead is simpler and already real: the relayer directly fronts the output asset as SEP-41 liquidity, and the contract's own escrow/payout logic (reusing `ShieldedToken`'s shield/unshield paths) does the rest. Routing that liquidity through the actual DEX, if the relayer chooses to, is an off-chain concern the contract doesn't need to know about — wiring an on-chain DEX call into the flow itself remains roadmap work, not something this section should describe as already specified in detail.
+**This section describes the real, implemented, audited design** (`contracts/swap`). An earlier draft of this spec described a Stellar-DEX-execution model (relayers calling `PathPaymentStrictReceive`/`ManageSellOffer`, an off-chain P2P relay server) that was never built this way — nothing in the current contract calls the Stellar DEX. What's implemented instead is simpler and already real: the relayer directly fronts the output asset as SEP-41 liquidity, and the contract's own escrow/payout logic (reusing `ShieldedToken`'s shield/unshield paths) does the rest. Routing that liquidity through the actual DEX, if the relayer chooses to, is an off-chain concern the contract doesn't need to know about — wiring an on-chain AMM call into the flow itself is no longer undesigned roadmap work (see `docs/ARCHITECTURE.md` §1.7.5b for the reviewed hybrid design — an explicit, non-default fallback path, not a replacement of the relayer model described here), but it remains unimplemented, gated on the open questions that design review lists.
 
 ### 9.1 Trust Model
 
@@ -1186,7 +1200,9 @@ function selectNotes(
 | Front-running of unshield | Unshield binds to specific recipient address in circuit public inputs |
 | Relayer censorship (swap) | Multiple competing relayers; expiry + cancel path for user recovery |
 | Note theft by compromised vk | Viewing key cannot derive spending key or nullifier key |
-| Grinding attack on Merkle root | Not applicable to the current design the way this row originally framed it — the real contract requires `pub_inputs.anchor` to exactly equal the *current* `merkle_root()` (`contracts/token/src/lib.rs`'s `transfer`/`unshield`, strict equality, not a tolerance window), which closes any grinding concern but creates a real, separate reliability gap instead: a proof built against a root that changes before the transaction lands (e.g. a concurrent `shield()` from someone else) fails and must be rebuilt against the fresh anchor. A historical-root tolerance window, as this row originally described, is not implemented. |
+| ECDH shared-secret collision via point negation | Not applicable: `sdk/src/notes/encrypt.ts`'s shared secret is `blake2b` over the full compressed BN254 point (`sdk/src/crypto/bn254.ts`'s `toRprCompressed`), which encodes y-parity — `ECDH(r, P)` and `ECDH(r, -P)` produce different byte strings, unlike a scheme that binds only the x-coordinate. Checked explicitly against this exact collision class after seeing OpenZeppelin's confidential-token design document it as a fix they needed to make (`P` and `-P` share an x-coordinate); ZKELLA's compressed-point encoding was not vulnerable to begin with. |
+| Grinding attack on Merkle root | Not applicable: `pub_inputs.anchor` must be a root the tree actually had at some point — `contracts/token/src/merkle.rs`'s `is_known_root` accepts only the current root or one of the last `ROOT_HISTORY_SIZE` (32) genuine past roots, an append-only ring buffer a prover can't influence. A prover cannot choose an arbitrary anchor value, so grinding doesn't apply. |
+| Proof invalidated by concurrent state changes | **Real, mitigated but not eliminated.** Earlier versions of this contract required `pub_inputs.anchor` to exactly equal the *current* `merkle_root()`, so *any* other shield/transfer/unshield call — on any asset, since one `ShieldedToken` instance shares one tree across all assets it wraps — invalidated every proof built against the previous root. `is_known_root` now accepts the last 32 roots, not only the newest one, so a proof survives up to 32 intervening insertions instead of exactly zero. This narrows the reliability gap; it does not close it — under sustained concurrent activity (more than 32 insertions between proof generation and submission) a proof can still go stale and must be rebuilt against a fresh anchor. A larger window trades off more instance-storage state for a wider margin; per-asset trees would only reduce collisions from other assets specifically, not from same-asset activity, and were not adopted for that reason. |
 
 ### 12.2 Soundness Dependencies
 
@@ -1207,7 +1223,7 @@ If users do not trust the ceremony, they should wait for a PLONK-based circuit (
 
 ### 12.4 Known Limitations (v1)
 
-1. The shielded swap relayer learns swap parameters off-chain
+1. ~~The shielded swap relayer learns swap parameters off-chain~~ — **the off-chain channel is now specified**: `sdk/src/relayer/quote.ts`'s RFQ protocol (`SwapQuoteClient.requestQuote` / `RelayerQuoteHandler`). The protocol carries no trust requirement of its own — `intent_commitment` never depends on a quoted `amount_out`, and `quoteRespectsSlippage` enforces the same floor the on-chain `swap_fairness` circuit does before a wallet ever acts on a quote — but it does not reserve execution rights for the quoting relayer (`commit_swap` takes no relayer parameter; any approved relayer can execute first) and provides no delivery guarantee. See the module's own doc comment for the full security model, and `docs/DESIGN_EXPLORATION.md` §2.2 for the execution-reservation gap this leaves open.
 2. A global passive adversary observing the Stellar network can correlate shield/unshield timing with external activity
 3. Note set size is limited to 2^32 (~4 billion) by the 32-level Merkle tree
 4. Circuit support is limited to homogeneous asset transfers (all inputs and outputs must share the same asset_id in one proof)
@@ -1265,7 +1281,7 @@ To address the main review concerns directly, the roadmap now includes explicit 
 
 - a real testnet shield transaction that completes with on-chain proof verification within Soroban budget,
 - a documented custom-indexer deployment model with replay support, health monitoring, and independent operator compatibility,
-- an operational runbook and incident-response plan for contract failures, indexer outages, and key handling,
+- an operational runbook and incident-response plan for contract failures, indexer outages, and key handling — **done, first version**: see `docs/RUNBOOK.md`, not yet exercised in a real incident,
 - a clear compliance narrative around viewing keys and selective disclosure,
 - public testnet evidence and a visible milestone cadence for Stellar ecosystem engagement.
 

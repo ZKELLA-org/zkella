@@ -1462,6 +1462,31 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "RootHistory"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "8aad8b6a4c6c8142a5e8a57ef9590d69ce81964cb7c329719fba2de5be5b491a"
+                          },
+                          {
+                            "bytes": "57f36d8bbed20108d1d2a1cd641a6127cd50dc2785f2ac14bad3ac40c0895814"
+                          },
+                          {
+                            "bytes": "07763f634853d29c2823fc1c8197256e307c977a4bcf904f2cf3f6dc915b9f25"
+                          },
+                          {
+                            "bytes": "25b0f9c0b50b435d6bb10a1c641fd30b57f75d9aef8d886173f0c46c0ef47329"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Verifier"
                           }
                         ]
