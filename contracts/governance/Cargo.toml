@@ -8,6 +8,13 @@ crate-type = ["cdylib"]
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+# Shortens VK_TIMELOCK_LEDGERS from 7 real days to a few minutes. Exists
+# solely so a Testnet demo deployment can exercise the full
+# queue_vk_update -> execute_vk_update path (including a real, non-zero
+# wait) without a multi-day pause. NEVER build a production/mainnet
+# artifact with this feature enabled -- see docs/TESTNET_DEPLOYMENT.md for
+# the deployment this was used for and why.
+testnet-fast-timelock = []
 
 [dependencies]
 soroban-sdk = { workspace = true }

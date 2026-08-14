@@ -268,15 +268,15 @@ The current live Stellar Testnet addresses (redeployed whenever a contract/circu
 
 | Network | Contract | Address |
 |---|---|---|
-| Testnet | verifier | `CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG` |
-| Testnet | governance | `CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD` |
-| Testnet | compliance | `CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q` |
-| Testnet | ShieldedToken | `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE` |
-| Testnet | swap | `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3` |
+| Testnet | verifier | `CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER` |
+| Testnet | governance | `CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS` |
+| Testnet | compliance | `CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS` |
+| Testnet | ShieldedToken | `CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ` |
+| Testnet | swap | `CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN` |
 | Testnet | viewing_keys | not currently deployed alongside the rest — deploy separately if needed |
 | Mainnet | (all) | not deployed — mainnet deployment requires an external security review and a real multi-party trusted-setup ceremony first |
 
-These are evidence of a working implementation, not permanent infrastructure — treat any specific address as likely to be redeployed. See `docs/POC_IMPLEMENTATION.md` for the full deployment history and the transactions run against the current set.
+These are evidence of a working implementation, not permanent infrastructure — treat any specific address as likely to be redeployed. This Testnet `governance` instance was built with the `testnet-fast-timelock` feature (5-minute VK timelock instead of the real 7-day production value — see `contracts/governance/Cargo.toml`'s doc comment) so the full timelock path could be demonstrated live; never assume this about a production deployment. See `docs/TESTNET_DEPLOYMENT.md` for the full deployment history and every transaction run against the current set, and `docs/POC_IMPLEMENTATION.md` for the narrative account.
 
 ---
 

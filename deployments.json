@@ -1,12 +1,12 @@
 {
   "testnet": {
-    "verifier":     "CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG",
-    "governance":   "CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD",
-    "compliance":   "CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q",
-    "token":        "CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE",
-    "swap":         "CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3",
+    "verifier":     "CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER",
+    "governance":   "CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS",
+    "compliance":   "CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS",
+    "token":        "CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ",
+    "swap":         "CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN",
     "viewing_keys": null,
-    "_note":        "Redeployed 2026-08-03 after a senior audit of contracts/swap; see docs/POC_IMPLEMENTATION.md's 'Update: senior audit, contract-stack redeployment, and a real live-Testnet swap lifecycle'. swap CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH is a superseded pre-fix instance with funds recoverable via reclaim_expired_swap."
+    "_note":        "Redeployed 2026-08-14 to close 7 findings from an external technical review (three Critical in contracts/swap, one High in contracts/governance, plus three lower-severity fixes) — see docs/POC_IMPLEMENTATION.md's 'Update: external audit' and 'Update: live redeployment with the fast-timelock testnet build'. The `governance` binary for this deployment was built with the testnet-fast-timelock feature (VK_TIMELOCK_LEDGERS=60, ~5 minutes, vs the real 7-day production value) — see contracts/governance/Cargo.toml's doc comment on that feature; never build a production artifact with it enabled. Prior addresses (verifier CCRLI4EAT62..., governance CDCSHTT3R75M..., compliance CA2EU46YYEBJ..., token CDE7U6HTLMDF..., swap CDPPRPAVKUJG...) predate all seven fixes and are superseded."
   },
   "mainnet": {
     "verifier":     null,

@@ -29,6 +29,8 @@ template Poseidon2() {
 
 ### 1.2 Merkle Path Verifier
 
+**Update (critical finding, since fixed):** a fix to make this circuit compile at all (the unfactored two-product select form below couldn't pass circom's `<==` quadratic-constraint check) exposed that `index[i]` was never constrained to be boolean. Unconstrained, a prover can choose any field value for it, turning the intended left/right select into a full linear interpolation that lets a prover force the computed `root` to equal *any* value from *any* starting `leaf` — a complete Merkle-membership forgery, letting an attacker fabricate a note that was never actually shielded and spend it as if real. This was dormant only because the circuit didn't compile until the factoring fix landed; both fixes shipped together. See `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" and `circuits/common/merkle.circom` for the full account. The snippet below matches the current, fixed circuit exactly.
+
 ```circom
 // Verifies a leaf exists in a binary Merkle tree of depth D
 // using D sibling nodes and D direction bits (0=left, 1=right)
@@ -43,12 +45,21 @@ template MerkleProof(D) {
     nodes[0] <== leaf;
 
     for (var i = 0; i < D; i++) {
+        // index[i] MUST be boolean, or the select below becomes a full
+        // linear interpolation a prover can force to any root/leaf pair.
+        index[i] * (index[i] - 1) === 0;
+
         hashers[i] = Poseidon2();
-        // Select left/right based on index bit
+        // Written as a single product term (index[i]*(a-b)) plus a linear
+        // term, not "(1-index[i])*a + index[i]*b" — circom's `<==` requires
+        // the whole RHS to reduce to one linear-combination-times-linear-
+        // combination, and the unfactored two-product form fails to compile
+        // ("Non quadratic constraints are not allowed") even though it's
+        // mathematically equivalent.
         // index[i] = 0 → (nodes[i], path[i])
         // index[i] = 1 → (path[i], nodes[i])
-        hashers[i].in[0] <== (1 - index[i]) * nodes[i] + index[i] * path[i];
-        hashers[i].in[1] <== (1 - index[i]) * path[i] + index[i] * nodes[i];
+        hashers[i].in[0] <== nodes[i] + index[i] * (path[i] - nodes[i]);
+        hashers[i].in[1] <== path[i] + index[i] * (nodes[i] - path[i]);
         nodes[i+1] <== hashers[i].out;
     }
 
@@ -214,6 +225,8 @@ pub_asset_id    : F_p  — asset (revealed)
 **Constraints:** 18,773 (real, measured — the 32-level Merkle proof dominates; an earlier design-time estimate of ~6,200 undercounted this substantially)  
 **Proving time:** ~600ms (unmeasured estimate)
 
+**Note on `recipient_hash`:** it is a public input, but the circuit itself places no constraint on it — it doesn't tie it to `value`, `asset_id`, or anything else proven above. The binding is enforced at the contract layer instead: `contracts/token::unshield()` recomputes `recipient_hash` itself from the actual recipient address (plus, for swap-originated calls, a `binding_tag` — see `docs/TECHNICAL_SPEC.md`'s `unshield()` interface listing) and rejects the call if the submitted proof's public input doesn't match. Because this value is circuit-unconstrained, adding `binding_tag` to close the swap proof-replay finding (`docs/POC_IMPLEMENTATION.md`'s "Update: external audit") needed no circuit or trusted-setup change — only a contract-and-SDK-level convention change.
+
 ```circom
 pragma circom 2.0.0;
 
@@ -268,6 +281,11 @@ template Unshield(D) {  // D = 32 (Merkle depth)
     // Range check
     component range = Range64();
     range.value <== value;
+
+    // recipient_hash is a public binding — not used in constraints
+    // but included as public input so the contract can verify destination
+    signal recipient_hash_check;
+    recipient_hash_check <== recipient_hash;
 }
 
 component main {public [anchor, nullifier, pub_value, pub_asset_id, recipient_hash]}
@@ -292,9 +310,12 @@ recipient_hash  : F_p  — Poseidon2(recipient Stellar address bytes)
 **Constraints:** 42,853 (real, measured — two full 32-level Merkle proofs plus commitment/nullifier/value-commit checks; an earlier design-time estimate of ~15,450 undercounted this substantially)  
 **Proving time:** ~2.0s (unmeasured estimate)
 
+**Update (security-review finding, since fixed):** each input/output slot above is constrained independently (its own Merkle proof, its own nullifier/commitment derivation), with nothing originally linking the slots together — so a prover could supply the *same* real note as both `in_value[0]` and `in_value[1]` (same `rho` ⇒ same nullifier in both positions), making `sum_in` double-count one note's value and letting a holder of value `V` mint `2V - fee` in fresh output notes. Fixed at the contract boundary (a same-call pairwise distinctness check on nullifiers and output commitments, before proof verification, in `contracts/token/src/lib.rs`) and, for defense-in-depth, in-circuit with explicit non-equality constraints on `nullifiers[0]`/`nullifiers[1]` and `out_commitments[0]`/`out_commitments[1]`, shown below. See `docs/POC_IMPLEMENTATION.md`'s "Tests and vectors" section for the finding.
+
 ```circom
 pragma circom 2.0.0;
 
+include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../common/commitment.circom";
 include "../common/nullifier.circom";
 include "../common/merkle.circom";
@@ -410,6 +431,21 @@ template Transfer2x2(D) {
     sum_in  <== in_value[0]  + in_value[1];
     sum_out <== out_value[0] + out_value[1];
     sum_in  === sum_out + fee;
+
+    // Each input slot above is constrained independently (its own Merkle
+    // proof, its own nullifier derivation) with nothing linking the two
+    // slots together — so without this, a prover could supply the SAME real
+    // note as both in_value[0] and in_value[1] (same rho => same nullifier
+    // in both positions), making sum_in double-count one note's value and
+    // letting a holder of value V mint 2V-fee in fresh output notes.
+    component nf_distinct = IsZero();
+    nf_distinct.in <== nullifiers[0] - nullifiers[1];
+    nf_distinct.out === 0;
+
+    // Same reasoning for the two output commitments.
+    component cm_distinct = IsZero();
+    cm_distinct.in <== out_commitments[0] - out_commitments[1];
+    cm_distinct.out === 0;
 }
 
 component main {
@@ -462,10 +498,15 @@ Balance check: `Σ in_value[0..4] === Σ out_value[0..4] + fee`
 **Constraints:** 927 (real, measured — no Merkle proof in this circuit, unlike shield/unshield/transfer, so it's much smaller than an earlier design-time estimate of ~3,500 assumed)  
 **Proving time:** ~400ms (unmeasured estimate)
 
+**Update (external technical review):** `min_amount_out` was originally a free public input, unconstrained relative to `amount_in`/`max_slippage_bps` — the values actually bound into `intent_commitment` — so a prover could supply an arbitrarily low `min_amount_out` (e.g. `0`) at reveal time regardless of the slippage tolerance actually committed to, defeating the circuit's entire front-running/price-protection guarantee. Fixed by deriving `min_amount_out` in-circuit as `floor(amount_in * (10000 - max_slippage_bps) / 10000)` and constraining the public input to equal that derivation, plus a `max_slippage_bps <= 10000` bound so the subtraction can't wrap the field, and an explicit 32-bit range check on `max_slippage_bps` itself (needed so the `amount_in * 2^32 + max_slippage_bps` packing used to bind `intent_commitment` stays injective). See `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the finding and `contracts/verifier`'s `verify_accepts_real_swap_fairness_circuit_proof` / `verify_rejects_real_swap_fairness_circuit_proof_with_forged_min_amount_out` tests. The circuit below is the current, fixed version — matches `circuits/swap/swap_fairness.circom` exactly.
+
 ```circom
 pragma circom 2.0.0;
 
-include "../common/commitment.circom";
+include "../../node_modules/circomlib/circuits/bitify.circom";
+include "../../node_modules/circomlib/circuits/comparators.circom";
+include "../common/poseidon2.circom";
+include "../common/range.circom";
 
 template SwapFairness() {
     // Private inputs
@@ -478,16 +519,30 @@ template SwapFairness() {
     signal input asset_in;           // revealed at execution
     signal input asset_out;          // revealed at execution
     signal input amount_out;         // actual received (revealed)
-    signal input min_amount_out;     // = amount_in * (10000 - slippage) / 10000
+    signal input min_amount_out;     // must equal floor(amount_in*(10000-max_slippage_bps)/10000)
 
     // Reconstruct intent commitment
     component h1 = Poseidon2();
     h1.in[0] <== asset_in;
     h1.in[1] <== asset_out;
 
+    // amount_in and max_slippage_bps must be range-bounded before packing,
+    // or a prover could find a different (amount_in, max_slippage_bps) pair
+    // that packs to the same field element and the same intent_commitment.
+    component amount_in_range = Range64();
+    amount_in_range.value <== amount_in;
+    component slippage_range = Num2Bits(32);
+    slippage_range.in <== max_slippage_bps;
+
+    // max_slippage_bps <= 10000 (100%), or `10000 - max_slippage_bps` below
+    // wraps the field instead of going negative, corrupting the derivation.
+    component slippage_bound = LessThan(32);
+    slippage_bound.in[0] <== max_slippage_bps;
+    slippage_bound.in[1] <== 10001;
+    slippage_bound.out === 1;
+
     // Pack amount_in and max_slippage_bps into one field element
-    signal packed;
-    packed <== amount_in * (2**32) + max_slippage_bps;
+    signal packed <== amount_in * (2**32) + max_slippage_bps;
 
     component h2 = Poseidon2();
     h2.in[0] <== packed;
@@ -499,10 +554,19 @@ template SwapFairness() {
 
     h3.out === intent_commitment;
 
+    // min_amount_out must equal floor(amount_in*(10000-max_slippage_bps)/10000)
+    // — the standard circom quotient/remainder pattern.
+    signal scaled <== amount_in * (10000 - max_slippage_bps);
+    signal remainder <-- scaled % 10000;
+    min_amount_out * 10000 + remainder === scaled;
+    component remainder_range = LessThan(14); // 10000 < 2^14
+    remainder_range.in[0] <== remainder;
+    remainder_range.in[1] <== 10000;
+    remainder_range.out === 1;
+
     // Fairness check: amount_out >= min_amount_out
     // Enforced as: amount_out - min_amount_out >= 0
-    signal diff;
-    diff <== amount_out - min_amount_out;
+    signal diff <== amount_out - min_amount_out;
     component range = Range64();
     range.value <== diff;
 }

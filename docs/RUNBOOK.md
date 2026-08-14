@@ -12,11 +12,11 @@ Every admin-gated action below refers to the real contract entrypoints in this r
 
 | Component | Address | Admin model | Has `pause()` |
 |---|---|---|---|
-| `token` (`ShieldedToken`) | `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE` | single admin key, two-step transfer | **yes** |
-| `verifier` | `CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG` | admin = `governance` contract address (cross-call auth) | no |
-| `governance` | `CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD` | single admin key, two-step transfer; VK updates additionally timelocked 7 days (`VK_TIMELOCK_LEDGERS = 120_960`) | no |
-| `compliance` | `CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q` | single admin key | no |
-| `swap` | `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3` | single admin key; per-relayer allowlist via `set_relayer` | no |
+| `token` (`ShieldedToken`) | `CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ` | single admin key, two-step transfer | **yes** |
+| `verifier` | `CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER` | admin = `governance` contract address (cross-call auth) | no |
+| `governance` | `CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS` | single admin key, two-step transfer; VK updates additionally timelocked — production value is 7 days (`VK_TIMELOCK_LEDGERS = 120_960`), **but this specific Testnet instance was built with the `testnet-fast-timelock` feature (~5 minutes) so the full timelock path could be demonstrated live — never assume a 5-minute timelock for a production deployment** | no |
+| `compliance` | `CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS` | single admin key | no |
+| `swap` | `CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN` | single admin key; per-relayer allowlist via `set_relayer` | no |
 | `indexer/` | self-hosted, `http://localhost:8787` by default | single process, single SQLite file | n/a (`/health` endpoint) |
 
 **Only `token` has a pause switch today.** Calling `token.pause()` stops `shield()`/`transfer()`/`transfer4()`/`unshield()` directly, and *indirectly* blocks `swap.commit_swap()` and `swap.reveal_and_claim()` (both cross-call into `token`'s `unshield`/`shield`, which check `assert_not_paused()` on entry). It does **not** stop `swap.execute_swap()` (a plain SEP-41 transfer, no call into `token`) or `swap.cancel_swap()`/`reclaim_expired_swap()` (refund paths, also plain transfers). `verifier`, `governance`, and `compliance` have no pause mechanism at all — see "Known limitations."
@@ -70,7 +70,7 @@ Procedure:
 
 `verifier.update_verifying_key()` requires `verifier`'s admin, which is `governance`'s own contract address — so a VK rotation is always initiated through `governance`, never by calling `verifier` directly:
 
-1. `governance.queue_vk_update(circuit, new_vk)` — starts the 7-day timelock (`VK_TIMELOCK_LEDGERS = 120_960` ledgers at ~5s/ledger).
+1. `governance.queue_vk_update(circuit, new_vk)` — starts the timelock: 7 days (`VK_TIMELOCK_LEDGERS = 120_960` ledgers at ~5s/ledger) for a real production build. **The `governance` instance currently live on Testnet (§1's table) uses the `testnet-fast-timelock` build instead — ~5 minutes — so check which binary is actually deployed before relying on either number operationally.**
 2. Wait for `eta` (the queued ledger sequence) to pass. This window exists specifically so users can exit before an untrusted or malicious VK takes effect — do not shorten it operationally even under incident pressure; if a VK is actively being exploited, `token.pause()` is the correct immediate lever, not rushing a VK swap.
 3. `governance.execute_vk_update(circuit)` — cross-calls `verifier.update_verifying_key()`.
 4. If the update should be aborted before `eta`, `governance.cancel_vk_update(circuit)`.

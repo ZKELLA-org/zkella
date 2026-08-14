@@ -4,77 +4,91 @@ Network: Stellar Testnet (`Test SDF Network ; September 2015`)
 Deployer account: `GD76DVHMUR5GTTOKAD54LRBUQKHSENJYLFODIGF45YOU7XXN36FXTSAW`
 Native XLM Stellar Asset Contract (used as `asset_in`/`asset_out` throughout): `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`
 
-This document lists the current live contract addresses and every on-chain transaction run against them. See `deployments.json` at the repository root for the machine-readable current address set — addresses here are redeployed whenever a contract or circuit change requires it, so treat this file as a point-in-time record, not a permanent reference.
+This document lists the current live contract addresses and every on-chain transaction run against them. See `deployments.json` at the repository root for the machine-readable current address set — addresses here are redeployed whenever a contract or circuit change requires it, so treat this file as a point-in-time record, not a permanent reference. For the full transaction history across every past deployment, including superseded ones, see `docs/POC_TESTNET_VALIDATION.md`.
 
-## Current live contracts (as of August 3, 2026)
+## Current live contracts (as of August 14, 2026)
 
 | Contract | Address |
 | --- | --- |
-| verifier | `CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG` |
-| governance | `CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD` |
-| compliance | `CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q` |
-| token | `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE` |
-| swap | `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3` |
+| verifier | `CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER` |
+| governance | `CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS` |
+| compliance | `CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS` |
+| token | `CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ` |
+| swap | `CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN` |
 
 `verifier`'s admin is `governance`'s own contract address (a self-authorizing pattern: cross-contract calls from `governance` satisfy `verifier`'s `admin.require_auth()` without a separate signature). `ShieldedToken`, `governance`, and `compliance` all point at this same `verifier` instance; `swap` points at this `verifier` and `token`.
 
-**Known drift as of this writing: the contracts above predate several real fixes that exist in source only.** Nothing below this line is affected by any of them — every transaction on this page happened before these source changes — but don't assume any deployed contract here has a fix just because the source repository does:
+**This deployment includes all seven fixes from the external technical review** — see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the findings, and "Update: live redeployment closes all seven findings on real Testnet" below for what running each fix live actually looked like. No known drift between this deployment and the current source as of this writing.
 
-- `token`'s Merkle root-history tolerance window (`contracts/token/src/merkle.rs`, see `docs/POC_IMPLEMENTATION.md`'s "Update: Merkle root-history window") — this instance still enforces exact-root-equality on `transfer()`/`unshield()`, not the widened 32-root window.
-- `token`'s `unshield()` new `binding_tag` parameter, and everything that depends on it — `swap`'s `commit_swap` proof-replay fix, and `unshield()`'s updated signature generally (see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the full account). The deployed `token`/`swap` pair still has the exploitable version.
-- `swap`'s `initialize` re-initialization guard, `reveal_and_claim`'s `intent_commitment` binding check, and `reclaim_expired_swap`'s overflow guard — none of these exist in the deployed `swap` instance above.
-- `governance`'s `register_vk` removal (first-time VK registration is no longer a fast, untimelocked path) — the deployed `governance` instance above still has the old, faster (and less safe) behavior. This is directly relevant here: this page's own setup transactions used the now-removed `register_vk` for `Shield`/`Unshield`/`SwapFairness` — an accurate historical record of what was actually called, not something to retroactively rewrite, but a future re-registration (e.g. for `Transfer`/`Transfer4x4`, still unregistered as of this writing) against a redeployed `governance` would need to go through `queue_vk_update`/`execute_vk_update` instead.
+**One deliberate, explicitly-flagged exception: this `governance` binary was built with the `testnet-fast-timelock` feature** (`contracts/governance/Cargo.toml`), shortening `VK_TIMELOCK_LEDGERS` from the real 7-day production value to ~5 minutes (60 ledgers) — purely so the full `queue_vk_update` → wait → `execute_vk_update` path could be exercised live in one sitting, including a real, non-zero wait, rather than skipped or faked. **Never build a production/mainnet artifact with this feature enabled.** The setup transactions below show the real queue → wait → execute sequence, timestamps included.
 
-Redeploying the full contract stack (and updating `deployments.json` and this file accordingly) remains open before any of this can be described as live-validated rather than locally-validated.
-
-A prior `swap` instance, `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`, is superseded — see "Swap redeployment" below.
+A prior contract stack (`verifier` `CCRLI4EAT62QVMTJR62NNJUZCERCGSYGNM534Z5R6RYSFRKELUZIG2MG`, `governance` `CDCSHTT3R75M3BEOEDPETB3RDB4BFXI5Q2KDI2KFT3O6M73WBVUBSZWD`, `compliance` `CA2EU46YYEBJW5C3JCRD3IAGTUD7UBPFBPYTT3I7UTESBK7FYXFCVG7Q`, `token` `CDE7U6HTLMDFAEQOT5BIZ3W7VJKAQN2MFQKYVV5E3W5YIPUBSRBHAXCE`, `swap` `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3`) is superseded — it predates all seven fixes below. An earlier `swap` instance before that, `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`, is also superseded — see "Prior swap redeployment (nested-auth fix)" below.
 
 ## Setup transactions
 
 | Step | Tx hash |
 | --- | --- |
-| `verifier.initialize(admin=governance)` | `5c3f32910b15676cc4c3c7bdd2f026618d0842dbaf9774b935a59dd1d3bc1f32` |
-| `governance.initialize(admin=deployer, verifier)` | `2fc9f667dbcb9ec48f4789938ddc768762951dc1b29fd7238461e20b0b81f06c` |
-| `compliance.initialize(verifier)` | `5430a9c94e73d46f58712e0bb7fef790943adce71b7ddeeb26c915a7eaa9b956` |
-| `token.initialize(admin=deployer, verifier)` | `f6148816cff77b1faa9ecd36b9839debd79e5aa32a43fe7683fc5bd12fb4f8b8` |
-| `swap.initialize(admin=deployer, verifier, token)` | `336ee8b43a57b8e40051c0b44223230792176903a0ce5ce7c9ef1f4445097a30` |
-| `governance.register_vk(circuit=Shield)` — real `shield.circom` VK | `bf0481057d685acfc591df3c6d3ee6205b8204d11f802d22e4b917732422f2ea` |
-| `governance.register_vk(circuit=Unshield)` — real `unshield.circom` VK | `ef453931b6e7a7d43ad6e313fcb990e0baa2ef9b83252ea93e1cd50d5dea2680` |
-| `governance.register_vk(circuit=SwapFairness)` — real `swap_fairness.circom` VK | `dfa30dd42a07a3f3802b353023bac9e76f307b335eabff88c04d1ff7115955cb` |
-| `swap.set_relayer(deployer, true)` | `2af826e06e4fb1e284c4dc958ec9baf88975d579e62c575aecbd184d04792c0b` |
+| `verifier.initialize(admin=governance)` | `339199d67efccc223279173e5e8db37a0daba65ffa7bd5927ec055081c0d36b4` |
+| `governance.initialize(admin=deployer, verifier)` | `3f2624e797a5d0e64de2078e4e2865e16d5e0e45807f32603eca084fa4020cda` |
+| `compliance.initialize(verifier)` | `62521977b17c60b46be3d02640d5470b9fb93cf9e1235d787b678761ae898ac8` |
+| `token.initialize(admin=deployer, verifier)` | `ab70903c9f0527f6df2c071b186194bfe8fdb4cd8a5a37a80b55a894a5a38d15` |
+| `swap.initialize(admin=deployer, verifier, token)` | `48dc7e433762a427cf91a45bc33125892654a4c40bd01837f493c3991edc1a96` |
+| `swap.set_relayer(deployer, true)` | `bc51948abfe16875502f8af6292573f2338072f3caf488ebefd8aafd6a0ef9c9` |
 
 (`https://stellar.expert/explorer/testnet/tx/<hash>` for each.)
 
-## Real shield transactions
+## Update: live redeployment closes all seven findings on real Testnet
 
-Each is a genuine `circom`/`snarkjs`-generated Groth16 proof against the real compiled `shield.circom` circuit, independently verified with `snarkjs groth16 verify` before submission, moving real native-XLM SEP-41 value into the shielded pool.
+Every fix from the external technical review — three Critical in `contracts/swap`, one High in `contracts/governance`, three lower-severity — was exercised for real on this deployment, not just re-tested locally. This section is the live evidence for `docs/POC_IMPLEMENTATION.md`'s "Update: external audit."
+
+### The governance timelock, exercised end to end (High finding)
+
+`register_vk`'s old untimelocked fast path is gone; every VK registration — including a circuit's very first key — now goes through the same 7-day-timelocked `queue_vk_update`/`execute_vk_update` path as a rotation. Real consequence for this session: getting any circuit live required actually queuing and waiting, not just calling one function. Using the `testnet-fast-timelock` build (~5 minutes instead of 7 days — see above) so the full path could run in one sitting:
+
+| Step | Tx hash | Ledger |
+| --- | --- | --- |
+| `queue_vk_update(circuit=Shield)` | `cc4809befb3742c283f612cc061e9006722968e3ec8005ae8375fe1074af3201` | eta 4141735 |
+| `queue_vk_update(circuit=Unshield)` | `1c6f4870fa52218c760e7581e0f71be985f3eabe7dc1a94e3f56b852b448290d` | eta 4141748 |
+| `queue_vk_update(circuit=SwapFairness)` | `f253fad14be8f7c1797840c45fa07eede32321a4bb204d77311812e4bacf9c8d` | eta 4141749 |
+| *(real wait for the ledger to reach the eta above — no fast-forwarding on public Testnet)* | | |
+| `execute_vk_update(circuit=Shield)` | `0131928d88132a34d1e79f8ad262389e5e83095fe61b281d64517a24ff990d42` | |
+| `execute_vk_update(circuit=Unshield)` | `41449cbea7e8bd32a17c6cf97d18ffa320b38b58310bfae088ed5a0b26bee20f` | |
+| `execute_vk_update(circuit=SwapFairness)` | `a2ca1fbf2d8b2a3d5b3a0747fbc4a85fc9457f618d3d341dfbaab78aee3ad372` | |
+
+Each `execute_vk_update` correctly took the *registration* branch (the circuit had no prior key), not the rotation branch — the real regression case `execute_vk_update_performs_first_time_registration_through_the_timelock` covers locally, now also demonstrated live.
+
+### Real shield transactions (two notes, leaves 0 and 1)
+
+Each is a genuine `circom`/`snarkjs`-generated Groth16 proof against the real compiled `shield.circom` circuit, independently verified with `snarkjs groth16 verify` before submission, moving real native-XLM SEP-41 value into the shielded pool of the newly-registered `Shield` VK.
 
 | # | Amount (stroops) | Leaf index | Tx hash |
 | --- | --- | --- | --- |
-| 1 | `5000000` (0.5 XLM) | 0 | `99aabc85fd3b3abc7a437dd2330b6bc9b12a646e9b696a53633248891eacc117` |
-| 2 | `5000000` (0.5 XLM) | 1 | `09337d4f15c659dcc45d004caa7c423b0984b501168b97482b2abc0bd4f91944` |
+| A | `5000000` (0.5 XLM) | 0 | `0722df0e01bd81ee256fb317c44a97a4e713c19fe019e27460216887fb7cacee` |
+| B | `5000000` (0.5 XLM) | 1 | `bbeecaeaba30517bd3a2cbc4c2f7512fd9f57b3e3b0e28b9f3bcb2998a55e945` |
 
-Post-run state confirmed via `merkle_root()`/`leaf_count()`/`shielded_supply()` reads after each call.
+### Shielded swap — full commit-reveal lifecycle, exercising the proof-replay fix and the intent_commitment binding fix live
 
-## Shielded swap — full commit-reveal lifecycle, live
-
-The complete real value-moving lifecycle of `contracts/swap` — `commit_swap` → `execute_swap` → `reveal_and_claim` — run twice: once against the swap contract as it existed before a fix (which failed at the last step, described below), and once against the fixed, currently-live contract (which succeeded end to end).
-
-### Live run (current `swap` contract, succeeded end to end)
+Uses note B (leaf 1) as the input note. `commit_swap`'s ownership proof was generated with the *new* `binding_tag = Poseidon2(intent_commitment, refund_to)` folded into `recipient_hash` — the real fix for the proof-replay Critical finding — and `reveal_and_claim`'s fairness proof carries the *same* `intent_commitment` committed at `commit_swap` time, exercising the second Critical fix (the previously-missing binding check).
 
 | Step | What happened | Tx hash |
 | --- | --- | --- |
-| `commit_swap` | Real `unshield.circom` ownership proof for the leaf-1 note above; cross-call into `ShieldedToken::unshield` verified it on-chain and escrowed 5,000,000 stroops into `swap`'s own balance | `0bfb955de61f19564d793ce62dd21d12c5fc5b95b0a58bd81aa63128bbe2a971` |
-| `execute_swap` | Relayer (the deployer, self-approved via `set_relayer`) fronted 4,955,000 stroops into escrow | `0fe6c726448e874005306bb9e8c637f958f5773205c0136f245c001336504574` |
-| `reveal_and_claim` | Real `swap_fairness.circom` proof verified on-chain (binding the revealed `amount_out`/`min_amount_out` back to the `intent_commitment` from `commit_swap`, without either having been revealed at commit time); relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof verified the new output note, re-shielded into `token` as leaf 2 | `cc3d8a0bacfe1e70092fffba68fc81aca28d05c5aee185cea2cff337f0e60c4e` |
+| `commit_swap` | Real `unshield.circom` ownership proof for the leaf-1 note, bound via the new `binding_tag` mechanism; cross-call into `ShieldedToken::unshield` verified it on-chain and escrowed 5,000,000 stroops into `swap`'s own balance | `21c4380b39685c9674edabb2f2830d931e8ead0d557adcff1a4aecdf66bc8038` |
+| `execute_swap` | Relayer (the deployer, self-approved via `set_relayer`) fronted 4,950,000 stroops into escrow | `5bfef119f8503f66782f0a22a4942fa43fc83c497ae71b7031ffc0025fa9fb75` |
+| `reveal_and_claim` | Real `swap_fairness.circom` proof verified on-chain, checked against `state.intent_commitment` (the fixed binding); relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof verified the new output note, re-shielded into `token` as leaf 2 | `88aebe0e9cb0239d74a746facf2af18cdbe2921d1e7d9dbdaa12c6862a91648d` |
 
-`swap_id` for this run: `4a850d42c2d42171884f836e9576c40d218c39f57fa0f073cff356fc10f099c3`.
+`swap_id` for this run: `64c3f9d46aa1ccb1d9ed0dc7e83a780194b67f477c53495838d5542df4e18cef`.
 
-### Swap redeployment
+Post-run state, confirmed via real view calls: `leaf_count() = 3`, `merkle_root() = 7dac71b56ca54ea2f74c4694f89617c3446d3c7c5d95c280dfa07e66a0199208`, `shielded_supply(native XLM) = 9950000` — exactly note A's 5,000,000 (still shielded, untouched) plus the swap's 4,950,000 output note; note B's 5,000,000 correctly dropped out of the shielded pool when it was spent into escrow.
 
-An earlier attempt at this same lifecycle, against `swap` at `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`, completed `commit_swap` and `execute_swap` successfully (tx `7c1f7fe60120902a8062b756dfe674e7148c4552cef6a0e97eb0e018a3b790f8` and `b701041942470e91b91ae2c4bb276cd97a9e05e8b43410505dc0757538a0482e`) but failed at `reveal_and_claim` with `HostError: Error(Auth, InvalidAction)`. Root cause and fix are described in `contracts/swap/src/lib.rs`'s `reveal_and_claim` (a nested cross-contract authorization gap: `ShieldedToken::shield`'s own inner `token::transfer` call needed an explicit `authorize_as_current_contract` entry two call-stack levels deep, which Soroban doesn't grant automatically). The fix was applied, the workspace test suite re-verified, and `swap` was redeployed to its current address, where the full lifecycle above completed successfully.
+### `swap.initialize`'s re-initialization guard and `reveal_and_claim`'s overflow guard
 
-That superseded instance's escrowed funds (5,000,000 stroops of `asset_in`, 4,955,000 stroops of `asset_out` — both the deployer's own testnet funds, since the deployer is both shielder and relayer in this demonstration) are not lost: they become recoverable via that contract's own `reclaim_expired_swap` once its claim window passes.
+Both fixes are structural (they change what's rejected, not what a successful call looks like), so they don't have their own on-chain transaction here the way the findings above do — they're covered by the dedicated regression tests (`initialize_cannot_be_called_twice`, `commit_swap_rejects_expiry_ledger_that_would_overflow_the_claim_window`) rather than a live demonstration, consistent with how `docs/POC_IMPLEMENTATION.md` already frames these as verified-in-source, not requiring a live transaction to prove a rejection path works.
+
+## Prior swap redeployment (nested-auth fix)
+
+An earlier attempt at the swap lifecycle, against `swap` at `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`, completed `commit_swap` and `execute_swap` successfully (tx `7c1f7fe60120902a8062b756dfe674e7148c4552cef6a0e97eb0e018a3b790f8` and `b701041942470e91b91ae2c4bb276cd97a9e05e8b43410505dc0757538a0482e`) but failed at `reveal_and_claim` with `HostError: Error(Auth, InvalidAction)`. Root cause: a nested cross-contract authorization gap (`ShieldedToken::shield`'s own inner `token::transfer` call needed an explicit `authorize_as_current_contract` entry two call-stack levels deep, which Soroban doesn't grant automatically). The fix, and its later regression test (`reveal_and_claim_authorize_as_current_contract_satisfies_real_non_mocked_auth`, built on a testing pattern confirmed directly with an OpenZeppelin engineer), are described in `contracts/swap/src/lib.rs`'s `reveal_and_claim`.
+
+That superseded instance's escrowed funds are not lost: they remain recoverable via that contract's own `reclaim_expired_swap`.
 
 ## Circuit trusted setup
 

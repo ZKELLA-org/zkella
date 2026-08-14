@@ -6,7 +6,14 @@ use soroban_sdk::{
 };
 use zkella_verifier_interface::{CircuitType, VerifierClient};
 
-const VK_TIMELOCK_LEDGERS: u32 = 120_960; // 7 days at 5s/ledger
+// TESTNET-ONLY OVERRIDE — see the `testnet-fast-timelock` feature's doc
+// comment in Cargo.toml. A production/mainnet build must never enable this
+// feature; the real, intended value is the 7-day one in the `#[cfg(not(...))]`
+// arm below.
+#[cfg(feature = "testnet-fast-timelock")]
+const VK_TIMELOCK_LEDGERS: u32 = 60; // ~5 minutes at 5s/ledger — demo only
+#[cfg(not(feature = "testnet-fast-timelock"))]
+const VK_TIMELOCK_LEDGERS: u32 = 120_960; // 7 days at 5s/ledger — real, intended value
 
 #[contracttype]
 pub enum StorageKey {
