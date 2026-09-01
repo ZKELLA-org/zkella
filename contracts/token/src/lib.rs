@@ -1202,6 +1202,69 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Regression test for a vulnerability class found in review: shield's
+    /// public inputs (commitment, value_commit, pub_value, pub_asset_id)
+    /// contain nothing recipient- or caller-specific, unlike transfer/unshield
+    /// which bind a nullifier to a specific spent note. That shape alone is
+    /// what let an unrelated party replay another operation's public inputs
+    /// elsewhere in a different confidential-token design this project
+    /// compared notes with. Here, a second, unrelated address observes user
+    /// A's already-submitted (rho, rcm, commitment, proof) and tries to
+    /// replay the exact same tuple under its own authorization and its own
+    /// funds. It must be rejected by the duplicate-commitment check — keyed
+    /// on the commitment itself, not on the caller — regardless of who
+    /// submits it or whose funds back it.
+    #[test]
+    fn shield_replay_by_different_caller_rejected_at_duplicate_check() {
+        let (env, admin, token, verifier) = setup();
+        env.mock_all_auths();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+
+        use soroban_sdk::testutils::Ledger;
+        env.ledger().with_mut(|li| { li.sequence_number = 100; });
+
+        let user_a = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&user_a, &1_000_000_000);
+        stellar_asset.mint(&attacker, &1_000_000_000);
+
+        let rho = BytesN::from_array(&env, &[3u8; 32]);
+        let rcm = BytesN::from_array(&env, &[4u8; 32]);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let enc        = Bytes::from_array(&env, &[0u8; 176]);
+        let pub_inputs = ShieldPublicInputs {
+            commitment:   commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value:    1_000,
+            pub_asset_id: token_addr.clone(),
+        };
+
+        let proof = prove_and_register_shield(
+            &env, &verifier, &commitment, &value_commit, 1_000, &token_addr,
+        );
+
+        // User A's genuine shield succeeds and funds come from user A.
+        client.shield(&user_a, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        assert_eq!(client.leaf_count(), 1u32);
+
+        // The attacker, a wholly unrelated address, replays the exact same
+        // (rho, rcm, commitment, proof) tuple under its own authorization,
+        // funded by its own balance. Knowledge of the public tuple confers
+        // no ability to claim or duplicate the note.
+        let result = client.try_shield(&attacker, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        assert!(result.is_err(), "a different caller replaying another user's shield tuple must be rejected");
+        assert_eq!(client.leaf_count(), 1u32, "no second note may be inserted from the replayed tuple");
+    }
+
     #[test]
     fn shield_rejects_wrong_encrypted_note_length() {
         let (env, admin, token, verifier) = setup();
