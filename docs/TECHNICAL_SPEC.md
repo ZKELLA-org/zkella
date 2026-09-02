@@ -238,6 +238,14 @@ struct TransferPublicInputs {
 }
 ```
 
+**Fee design decision (planned, not yet implemented):** `fee` is fully constrained today (`Σ in_value === Σ out_value + fee`, enforced in-circuit) but the contract has no code that actually pays it to anyone — it is proven, not collected. Real-world precedent for what a shielded transfer's fee is for is consistent across privacy-pool designs generally: Tornado Cash's withdrawal relayer, and Railgun's and Aztec's relayer/fee-payer models, all pay a proof-declared fee to whichever third party actually submits the transaction, letting the real party in interest avoid ever exposing a funded public account just to pay the network's normal transaction fee. That is the real problem this `fee` field exists to solve here too: submitting `transfer()` from the sender's own public account would link a specific, identifiable Stellar address to the exact moment of an otherwise-private operation, undermining the privacy the note model is built to provide.
+
+The planned design reuses `contracts/swap`'s existing `set_relayer`/`ApprovedRelayer` mechanism rather than building a second, separate relayer system: an approved relayer submits `transfer()`, pays the real Stellar network fee from its own account, and is paid the proof-declared `fee` out of the shielded value in return. This is a deliberate consistency choice, not a default, since ZKELLA already has one audited relayer-authorization pattern in the codebase and a second, differently-shaped one would be new attack surface for no real benefit.
+
+Why this problem does not apply the same way to OpenZeppelin's Confidential Tokens on Stellar (built with Nethermind's verifier): their account model keeps sender and recipient addresses visible by design, so paying a normal transaction fee from a visible account leaks nothing new. ZKELLA's fee-abstraction need exists specifically because addresses are hidden here and are not there — a real, structural consequence of the note-based model, not an oversight either implementation should be expected to share.
+
+Known tradeoff, stated plainly: a relayer-fee model introduces a liveness dependency (some relayer has to be online and willing to submit the transaction) and a pricing question (`fee` has to cover the relayer's real cost plus margin, or nobody relays it). A flat protocol-treasury fee would avoid both, but would not solve the actual privacy problem, so it is not the better choice despite being simpler.
+
 ### 3.6 Ledger Storage Layout (Soroban)
 
 Illustrative/simplified — the real per-contract `StorageKey` enums differ in naming and are split across `contracts/token`, `contracts/verifier`, and `contracts/swap` rather than living in one combined key space (e.g. verifying keys live in `contracts/verifier`'s own storage, keyed by `CircuitType`, not inline in the token contract):
