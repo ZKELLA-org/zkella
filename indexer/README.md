@@ -32,6 +32,10 @@ through every HTTP endpoint, including `merkle_root`/`merkle_path` proxying
 to the real deployed `token` contract. Not yet covered: horizontal scaling
 and multiple independent operators (see `docs/POC_IMPLEMENTATION.md` for the
 full status) — this is a correct, working reference implementation of the
-API surface, not a production deployment. An operational runbook covering
-this service alongside the rest of the stack now exists at
-`docs/RUNBOOK.md` (first version, not yet exercised in a real incident).
+API surface, not a production deployment. The planned production deployment
+(dual-provider RPC failover, containerized on AWS ECS Fargate, RDS PostgreSQL
+with Multi-AZ, and a second operator in a different region or cloud provider)
+is described in `docs/TECHNICAL_SPEC.md` §13.3 — grant-funded work, not yet
+built. An operational runbook covering this service alongside the rest of
+the stack now exists at `docs/RUNBOOK.md` (first version, not yet exercised
+in a real incident).

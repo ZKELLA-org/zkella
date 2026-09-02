@@ -1269,6 +1269,14 @@ The real reference implementation (`indexer/`) uses Node's built-in `node:sqlite
 | CPU / RAM | Single core / low RAM sufficient for reference-scale testnet use | 2–4 cores, 2–8 GB RAM depending on load |
 | Operators | One (this repo's reference deployment) | Multiple independent operators for resilience |
 
+**Planned production deployment target** (Tranche 2 Deliverables 4–5 of the grant roadmap; not yet built — the reference implementation above remains SQLite/single-operator until this lands):
+
+- **RPC ingestion, dual-provider failover:** the indexer polls two independent providers from Stellar's own [Ecosystem RPC Providers list](https://developers.stellar.org/docs/data/apis/rpc/providers) rather than one — Validation Cloud as primary, QuickNode as automatic fallback — so a single RPC provider outage doesn't stall event sync.
+- **Compute:** containerized (Docker) service on AWS ECS Fargate — serverless containers with autoscaling, avoiding both raw-EC2 patching overhead and Kubernetes-scale complexity this project doesn't need yet.
+- **Storage:** AWS RDS for PostgreSQL with Multi-AZ enabled — automatic failover to a standby replica in a different availability zone, plus automated backups and point-in-time recovery, replacing the reference implementation's single SQLite file.
+- **Multi-operator resilience:** the second independent operator instance (this table's "Operators" row) runs in a different region, or a different cloud provider entirely, so a whole-provider outage can't take down every operator at once.
+- **Why this doesn't put user funds at risk even if it fails:** the indexer is not a trust authority and holds no funds. Wallets independently recompute note commitments and fetch Merkle proofs directly from the contract rather than trusting indexer output (see `sdk/src/wallet/wallet.ts`) — so an indexer outage is a liveness/sync-delay problem, not a fund-safety problem.
+
 ---
 
 ## 14. Deployment Plan

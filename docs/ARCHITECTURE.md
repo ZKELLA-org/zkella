@@ -675,7 +675,7 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 - `POST /nullifiers/batch`
 - `GET /health`
 
-Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail. An operational runbook now exists (`docs/RUNBOOK.md`, first version, not yet exercised in a real incident) and covers the indexer alongside every other component.
+Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail, and `docs/TECHNICAL_SPEC.md` §13.3 for the planned production deployment target (dual-provider RPC failover, AWS ECS Fargate, RDS PostgreSQL Multi-AZ, and a second operator in a different region or cloud provider). An operational runbook now exists (`docs/RUNBOOK.md`, first version, not yet exercised in a real incident) and covers the indexer alongside every other component.
 
 ### 2.9 Soft PoC implementation versus target architecture
 

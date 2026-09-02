@@ -2055,6 +2055,167 @@ mod tests {
         );
     }
 
+    /// Regression test for the reviewers' follow-up "budget viability" concern:
+    /// shield() is measured above, but the heavier transfer path (Merkle-anchor
+    /// check, two nullifier-spent checks, and a genuine on-chain Groth16
+    /// verification with an 11-signal public input vs shield's 4) had never
+    /// been measured against the real network limit. See
+    /// `transfer4_fits_within_mainnet_instruction_budget` below for the
+    /// heavier 4-in/4-out case.
+    ///
+    /// Measured at the time this test was written: ~211M instructions for
+    /// the full 2-in/2-out call — about 53% of the 400M budget.
+    #[test]
+    fn transfer_fits_within_mainnet_instruction_budget() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[111u8; 32]),
+            BytesN::from_array(&env, &[112u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[113u8; 32]),
+            BytesN::from_array(&env, &[114u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "transfer() used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
+    /// Same measurement for the heaviest entrypoint on the token contract:
+    /// 4-in/4-out transfer, with a 19-signal public input (vs 2-in/2-out's
+    /// 11), four nullifier-spent checks, and four Merkle inserts. If any
+    /// entrypoint were going to threaten the mainnet budget, this is it.
+    ///
+    /// Measured at the time this test was written: ~358M instructions for
+    /// the full 4-in/4-out call — about 89% of the 400M budget, well inside
+    /// the limit but with materially less headroom than shield() (26%) or
+    /// 2-in/2-out transfer (53%). This is a real, honest constraint worth
+    /// tracking: any future circuit change, additional public input, or
+    /// added on-chain check to this specific path has little room left
+    /// before it would need a corresponding optimization.
+    #[test]
+    fn transfer4_fits_within_mainnet_instruction_budget() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[151u8; 32]),
+            BytesN::from_array(&env, &[152u8; 32]),
+            BytesN::from_array(&env, &[153u8; 32]),
+            BytesN::from_array(&env, &[154u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[155u8; 32]),
+            BytesN::from_array(&env, &[156u8; 32]),
+            BytesN::from_array(&env, &[157u8; 32]),
+            BytesN::from_array(&env, &[158u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 19] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            nullifiers.get(2).unwrap().into(),
+            nullifiers.get(3).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            out_commitments.get(2).unwrap().into(),
+            out_commitments.get(3).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer4x4.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "transfer4() used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
     /// Regression test for a real bug caught while deploying to Stellar Testnet:
     /// `address_to_field_bytes` assumed `addr.to_xdr(env)` was a bare `ScAddress`
     /// (discriminant + 32-byte hash), but it's actually the full `ScVal` wrapper
