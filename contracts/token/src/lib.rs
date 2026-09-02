@@ -2055,6 +2055,68 @@ mod tests {
         );
     }
 
+    /// Real-WASM cross-check for the measurement above. `cpu_instruction_cost()`'s
+    /// own doc comment warns that "CPU instructions are likely to be
+    /// underestimated when running Rust code compared to running the WASM
+    /// equivalent" — every budget test above registers the contract as a
+    /// native Rust struct (`env.register(ShieldedToken, ())`), not compiled
+    /// WASM, so that gap was never actually measured. This test instantiates
+    /// both `token` and `verifier` from their real, freshly-built
+    /// `wasm32v1-none` release binaries instead, to get an honest answer to
+    /// "how much does the Rust-vs-WASM gap actually matter here."
+    ///
+    /// Measured at the time this test was written: 113,170,011 instructions —
+    /// about 9% higher than the native-Rust estimate (~104M) above, and still
+    /// 28% of the 400M mainnet budget. The gap is real but modest for this
+    /// specific call; see `transfer4_real_wasm_instruction_cost` below for
+    /// why this same gap matters far more for the heaviest entrypoint.
+    const TOKEN_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_token.wasm");
+    const VERIFIER_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_verifier.wasm");
+
+    #[test]
+    fn shield_real_wasm_instruction_cost_versus_native_rust_estimate() {
+        let env = Env::default();
+        env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token = env.register(TOKEN_WASM, ());
+        let verifier = env.register(VERIFIER_WASM, ());
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        let token_addr  = token_id.address();
+        let user        = Address::generate(&env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&user, &1_000_000_000);
+
+        let rho = BytesN::from_array(&env, &[9u8; 32]);
+        let rcm = BytesN::from_array(&env, &[10u8; 32]);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let commitment = BytesN::from_array(&env, &computed);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let enc = Bytes::from_array(&env, &[0u8; 176]);
+        let pub_inputs = ShieldPublicInputs {
+            commitment: commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value: 1_000,
+            pub_asset_id: token_addr.clone(),
+        };
+
+        let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, 1_000, &token_addr);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "shield() (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
     /// Regression test for the reviewers' follow-up "budget viability" concern:
     /// shield() is measured above, but the heavier transfer path (Merkle-anchor
     /// check, two nullifier-spent checks, and a genuine on-chain Groth16
@@ -2125,6 +2187,81 @@ mod tests {
         assert!(
             used < 400_000_000,
             "transfer() used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
+    /// Real-WASM cross-check for 2-in/2-out transfer, closing the one gap
+    /// left after shield's and transfer4's real-WASM measurements above.
+    ///
+    /// Measured at the time this test was written: 228,219,960 instructions —
+    /// 57% of the 400M mainnet budget, with real headroom (consistent with
+    /// shield's ~9% Rust-to-WASM gap applied to the ~211M Rust estimate).
+    #[test]
+    fn transfer_real_wasm_instruction_cost() {
+        let env = Env::default();
+        env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token = env.register(TOKEN_WASM, ());
+        let verifier = env.register(VERIFIER_WASM, ());
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[211u8; 32]),
+            BytesN::from_array(&env, &[212u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[213u8; 32]),
+            BytesN::from_array(&env, &[214u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 11] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "transfer() (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
         );
     }
 
@@ -2213,6 +2350,102 @@ mod tests {
         assert!(
             used < 400_000_000,
             "transfer4() used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
+    /// Real-WASM cross-check for transfer4, for the same reason as
+    /// `shield_real_wasm_instruction_cost_versus_native_rust_estimate` above.
+    /// This is the one that actually matters: the native-Rust estimate
+    /// already put transfer4 at 89% of the mainnet budget with only ~11%
+    /// headroom, and shield's real-WASM run came in ~9% higher than its
+    /// Rust estimate — applying a similar gap to transfer4's 358M Rust
+    /// figure would land close to or over the 400M limit. Measuring the
+    /// real number directly here rather than extrapolating.
+    ///
+    /// Measured at the time this test was written: 388,076,971 instructions —
+    /// **97% of the 400M mainnet budget**, with only ~3% headroom. The
+    /// native-Rust estimate (89%) materially understated the real risk here;
+    /// this is the number that should be quoted anywhere this deliverable's
+    /// budget viability is discussed, not the Rust-only figure.
+    #[test]
+    fn transfer4_real_wasm_instruction_cost() {
+        let env = Env::default();
+        env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token = env.register(TOKEN_WASM, ());
+        let verifier = env.register(VERIFIER_WASM, ());
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let asset = Address::generate(&env);
+        let anchor = client.merkle_root();
+
+        let nullifiers = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[181u8; 32]),
+            BytesN::from_array(&env, &[182u8; 32]),
+            BytesN::from_array(&env, &[183u8; 32]),
+            BytesN::from_array(&env, &[184u8; 32]),
+        ]);
+        let out_commitments = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[185u8; 32]),
+            BytesN::from_array(&env, &[186u8; 32]),
+            BytesN::from_array(&env, &[187u8; 32]),
+            BytesN::from_array(&env, &[188u8; 32]),
+        ]);
+        let zero_commits = Vec::from_array(&env, [
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+        ]);
+        let fee = 0i128;
+
+        let pub_inputs = TransferPublicInputs {
+            anchor: anchor.clone(),
+            nullifiers: nullifiers.clone(),
+            out_commitments: out_commitments.clone(),
+            in_value_commits: zero_commits.clone(),
+            out_value_commits: zero_commits.clone(),
+            fee,
+            asset_id: asset.clone(),
+        };
+
+        let mut fee_bytes = [0u8; 32];
+        fee_bytes[..16].copy_from_slice(&(fee as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 19] = [
+            anchor.clone().into(),
+            nullifiers.get(0).unwrap().into(),
+            nullifiers.get(1).unwrap().into(),
+            nullifiers.get(2).unwrap().into(),
+            nullifiers.get(3).unwrap().into(),
+            out_commitments.get(0).unwrap().into(),
+            out_commitments.get(1).unwrap().into(),
+            out_commitments.get(2).unwrap().into(),
+            out_commitments.get(3).unwrap().into(),
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            [0u8; 32], [0u8; 32], [0u8; 32], [0u8; 32],
+            fee_bytes,
+            address_to_field_bytes(&env, &asset),
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Transfer4x4.into(), &vk_bytes);
+
+        let encrypted_notes = Vec::from_array(&env, [
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+            Bytes::from_array(&env, &[0u8; 176]),
+        ]);
+
+        env.cost_estimate().budget().reset_tracker();
+        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "transfer4() (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
         );
     }
 
