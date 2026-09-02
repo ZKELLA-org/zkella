@@ -234,6 +234,25 @@ Swap fairness values: `amount_in = 5000000`, `max_slippage_bps = 1000`, `min_amo
 
 ---
 
+## Epoch 5 — Transfer VK registration and a real, live transfer() transaction (September 2, 2026)
+
+Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer feedback asking for the heavier transfer path to be proven live, not just measured locally.
+
+| Step | Tx hash |
+| --- | --- |
+| `queue_vk_update(circuit=Transfer)` | `bd1e03efcb9f496790ae782acd36b1101869cf7367209be3357d8881917f696f` |
+| `queue_vk_update(circuit=Transfer4x4)` | `3c8fb0c8bcff1a8e6fbe99be14f4b6af9cb0473280858a6be3d8999621ac5fa8` |
+| *(real wait for the ledger to reach each eta)* | |
+| `execute_vk_update(circuit=Transfer)` | `4bd193f369c94b66145bba90697532f95fe9da41eb06cd87030a848220526bc8` |
+| `execute_vk_update(circuit=Transfer4x4)` | `320c4f2058df75acbd837b78dcaa5ede7bca1422aee708c53a9deea6bbc2ea59` |
+| `shield()` — note C, 0.3 XLM, leaf 3 | `23d681296467f36021b2adca87d8f648acec821d1db34d37950a23816b28a711` |
+| `shield()` — note D, 0.2 XLM, leaf 4 | `041460cf1932384a8ada14aa36801f314bcfbb1e1a27ce7582ce72c216f32f60` |
+| `transfer()` — notes C+D spent, two new output notes at leaves 5–6 | `90fe4d1996815f77c7c87b06a29141e01fab293dc44d01b56364be7c7e4fcf14` |
+
+Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specifically so their secret openings would be available to spend from — Epoch 1's notes had no persisted secret data. The `transfer()` proof was generated via the TypeScript SDK's own `generateTransferProof` (`sdk/src/prover/transfer.ts`), using Merkle paths fetched directly from the deployed contract's `merkle_path()` view function — the same SDK code path an application would use, not a CLI side-channel. Full narrative in `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction".
+
+`Transfer4x4`'s VK is now live-registered but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for its real-WASM instruction-budget measurement (97% of the mainnet limit) standing in for it today.
+
 ## What is not yet demonstrated live
 
 Being explicit about the gap between "regression-tested" and "shown on a real transaction," consistent with the rest of this documentation:

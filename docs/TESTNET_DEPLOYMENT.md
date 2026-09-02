@@ -90,6 +90,43 @@ An earlier attempt at the swap lifecycle, against `swap` at `CA4NYL2ZA67NSYOVPZM
 
 That superseded instance's escrowed funds are not lost: they remain recoverable via that contract's own `reclaim_expired_swap`.
 
+## Update: Transfer VK registration and a real, live transfer() transaction
+
+Direct response to reviewer feedback asking for the heavier transfer path to be proven, not just measured. `Transfer` and `Transfer4x4` had circuits, contract entrypoints, and local test coverage, but their verifying keys had never been registered on the live verifier and neither had ever been run as a live Testnet transaction. Both gaps are now closed for real.
+
+### VK registration, through the real timelock
+
+| Step | Tx hash |
+| --- | --- |
+| `queue_vk_update(circuit=Transfer)` | `bd1e03efcb9f496790ae782acd36b1101869cf7367209be3357d8881917f696f` |
+| `queue_vk_update(circuit=Transfer4x4)` | `3c8fb0c8bcff1a8e6fbe99be14f4b6af9cb0473280858a6be3d8999621ac5fa8` |
+| *(real wait for the ledger to reach each eta — no fast-forwarding on public Testnet)* | |
+| `execute_vk_update(circuit=Transfer)` | `4bd193f369c94b66145bba90697532f95fe9da41eb06cd87030a848220526bc8` |
+| `execute_vk_update(circuit=Transfer4x4)` | `320c4f2058df75acbd837b78dcaa5ede7bca1422aee708c53a9deea6bbc2ea59` |
+
+Confirmed live afterward via a direct `get_verifying_key` read against the deployed `verifier` contract for both circuits — no longer `VkNotRegistered`.
+
+### Two new real shielded notes, to serve as genuine transfer inputs
+
+The two notes already on the live tree (leaves 0–1) had no persisted secret opening to spend from, so two fresh notes were shielded — with their `rho`/`rcm` generated and retained this time — to serve as real, spendable inputs:
+
+| # | Amount (stroops) | Leaf index | Tx hash |
+| --- | --- | --- | --- |
+| C | `3000000` (0.3 XLM) | 3 | `23d681296467f36021b2adca87d8f648acec821d1db34d37950a23816b28a711` |
+| D | `2000000` (0.2 XLM) | 4 | `041460cf1932384a8ada14aa36801f314bcfbb1e1a27ce7582ce72c216f32f60` |
+
+### A real, live `transfer()` transaction
+
+Using the TypeScript SDK's `generateTransferProof` (`sdk/src/prover/transfer.ts`) end to end — real Merkle paths fetched directly from the deployed contract's own `merkle_path()` view function for leaves 3 and 4, the real live `merkle_root()` as anchor, real nullifier derivation, and a genuine `circom`/`snarkjs` Groth16 proof against `transfer_2in2out/transfer.circom` — notes C and D (0.5 XLM combined) were spent and re-split into two fresh output notes (0.35 XLM and 0.15 XLM):
+
+| Step | What happened | Tx hash |
+| --- | --- | --- |
+| `transfer` | Real 2-in/2-out proof verified on-chain; both input nullifiers marked spent; two new output notes inserted at leaves 5 and 6 | `90fe4d1996815f77c7c87b06a29141e01fab293dc44d01b56364be7c7e4fcf14` |
+
+Post-run state, confirmed via real view calls: `leaf_count() = 7`, both spent nullifiers confirmed via `is_spent()`. This is the first live-Testnet evidence for the standalone `transfer()` entrypoint specifically (as opposed to `unshield`'s proof type, previously exercised only indirectly via the swap's `commit_swap`).
+
+`Transfer4x4`'s VK is now also live-registered, but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for the real-WASM instruction-budget measurement (97% of the mainnet limit) that stands in for it today.
+
 ## Circuit trusted setup
 
 Every verifying key and proof referenced above comes from a local, single-contributor development Powers-of-Tau/Phase-2 ceremony (`circuits/*/build/`) — not a production, multi-party ceremony. This is appropriate for testnet validation but not for a deployment handling real user funds.

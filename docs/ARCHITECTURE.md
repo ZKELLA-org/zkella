@@ -546,7 +546,7 @@ The contract stores a persistent Merkle root and incremental tree state for note
 
 The two fixed shapes are the answer to "what if I have more than 2 notes to spend or more than 2 recipients": `transfer4()` exists specifically for **dust consolidation and multi-recipient payments** (see `docs/CIRCUIT_SPEC.md` §5), not as an arbitrary second option. A sender with more inputs/outputs than either shape supports uses multiple transfers, at the cost of revealing more transaction-graph structure across those calls — an accepted tradeoff of this design, not an oversight.
 
-On the live Testnet deployment described in `docs/TESTNET_DEPLOYMENT.md`, only the Shield, Unshield, and SwapFairness verifying keys have been registered so far — `Transfer` (2-in/2-out) and `Transfer4x4` are exercised by real-circuit proofs in `contracts/verifier`'s own test suite, but have not yet been run through a live on-chain call the way shield and the swap lifecycle have.
+On the live Testnet deployment described in `docs/TESTNET_DEPLOYMENT.md`, all five verifying keys — Shield, Unshield, SwapFairness, Transfer, and Transfer4x4 — are now registered. `Transfer` (2-in/2-out) has been run through a real, live on-chain `transfer()` call (see `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction"); `Transfer4x4`'s key is live-registered but a live 4-in/4-out transaction has not yet been run.
 
 ### 2.2 Verifier registry contract
 
