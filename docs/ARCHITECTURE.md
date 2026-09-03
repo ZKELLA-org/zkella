@@ -4,11 +4,73 @@ This document describes the full architecture of the ZKELLA protocol. It is inte
 
 The repository currently contains a PoC implementation only. Existing contracts and SDK code validate early design assumptions, but they are not final versions of the protocol contracts and must be reviewed, optimized, hardened, and improved before any production deployment.
 
+## Contents
+
+- [1. Product overview](#1-product-overview)
+  - [1.1 High-level product diagram](#11-high-level-product-diagram)
+  - [1.2 Layered architecture diagram](#12-layered-architecture-diagram)
+  - [1.3 Product positioning](#13-product-positioning)
+  - [1.4 Implementation maturity boundary](#14-implementation-maturity-boundary)
+  - [1.5 Technical stack detail](#15-technical-stack-detail)
+  - [1.6 Data and control-plane overview](#16-data-and-control-plane-overview)
+  - [1.7 Stellar integration](#17-stellar-integration)
+    - [1.7.1 SEP-41 asset custody model](#171-sep-41-asset-custody-model)
+    - [1.7.2 Soroban contract integration](#172-soroban-contract-integration)
+    - [1.7.3 Protocol 25 and native cryptography](#173-protocol-25-and-native-cryptography)
+    - [1.7.4 Soroban RPC and indexer integration](#174-soroban-rpc-and-indexer-integration)
+    - [1.7.5 Stellar DEX integration for shielded swaps](#175-stellar-dex-integration-for-shielded-swaps)
+    - [1.7.5b Alternative target design: AMM-sourced execution as an explicit fallback path](#175b-alternative-target-design-amm-sourced-execution-as-an-explicit-fallback-path)
+    - [1.7.6 Ledger ordering, events, and finality](#176-ledger-ordering-events-and-finality)
+    - [1.7.7 Deployment topology on Stellar](#177-deployment-topology-on-stellar)
+- [2. Core components](#2-core-components)
+  - [2.0 Component interaction map](#20-component-interaction-map)
+  - [2.1 ShieldedToken contract](#21-shieldedtoken-contract)
+  - [2.2 Verifier registry contract](#22-verifier-registry-contract)
+  - [2.3 Governance contract](#23-governance-contract)
+  - [2.4 Viewing key registry contract](#24-viewing-key-registry-contract)
+  - [2.5 Compliance contract](#25-compliance-contract)
+  - [2.6 Shielded swap contract](#26-shielded-swap-contract)
+  - [2.7 Off-chain prover and SDK](#27-off-chain-prover-and-sdk)
+  - [2.8 Persistent indexer and wallet sync](#28-persistent-indexer-and-wallet-sync)
+  - [2.9 PoC implementation versus target architecture](#29-poc-implementation-versus-target-architecture)
+- [3. Core data model](#3-core-data-model)
+  - [3.1 Shielded note](#31-shielded-note)
+  - [3.2 Note commitment](#32-note-commitment)
+  - [3.3 Nullifier](#33-nullifier)
+  - [3.4 Merkle tree](#34-merkle-tree)
+  - [3.5 Encrypted note bundle](#35-encrypted-note-bundle)
+- [4. Protocol flows](#4-protocol-flows)
+  - [4.1 Shield flow](#41-shield-flow)
+  - [4.2 Transfer flow](#42-transfer-flow)
+  - [4.3 Unshield flow](#43-unshield-flow)
+  - [4.4 Shielded swap flow](#44-shielded-swap-flow)
+  - [4.5 Compliance disclosure flow](#45-compliance-disclosure-flow)
+- [5. System topology](#5-system-topology)
+- [6. Implementation lifecycle and remaining roadmap](#6-implementation-lifecycle-and-remaining-roadmap)
+  - [6.1 Component-by-component: what is built and what remains](#61-component-by-component-what-is-built-and-what-remains)
+- [7. Trust and security model](#7-trust-and-security-model)
+  - [7.1 Proof and verifier lifecycle](#71-proof-and-verifier-lifecycle)
+  - [7.2 Contract state and minimal on-chain exposure](#72-contract-state-and-minimal-on-chain-exposure)
+  - [7.3 Indexer trust model](#73-indexer-trust-model)
+  - [7.4 Compliance and disclosure assumptions](#74-compliance-and-disclosure-assumptions)
+  - [7.5 Threat assumptions](#75-threat-assumptions)
+- [8. Future work: confidential DeFi integration on Stellar](#8-future-work-confidential-defi-integration-on-stellar)
+  - [8.1 Precedent: Zama's confidential vault on Morpho, via Steakhouse Financial](#81-precedent-zamas-confidential-vault-on-morpho-via-steakhouse-financial)
+  - [8.2 Generalizing the pattern for ZKELLA](#82-generalizing-the-pattern-for-zkella)
+  - [8.3 Concrete mechanics, at a sketch level](#83-concrete-mechanics-at-a-sketch-level)
+  - [8.4 Real open problems this would raise, not glossed over](#84-real-open-problems-this-would-raise-not-glossed-over)
+  - [8.5 Status](#85-status)
+- [9. Appendices](#9-appendices)
+  - [9.1 Document relationships](#91-document-relationships)
+  - [9.2 Documentation tooling note](#92-documentation-tooling-note)
+
 ## Summary
 
 ZKELLA implements a confidential-finance protocol on Stellar: shielded notes, private transfers, a shielded swap primitive, and compliance-aware disclosure, all backed by on-chain Groth16 verification. The core flows, shield, transfer, unshield, and swap, are real and working, and each has been exercised in an independently-verifiable transaction on live Stellar Testnet, not just locally. §6.1 gives a full, component-by-component account of what is built and proven today versus what remains, with the transaction evidence behind each claim.
 
 The most important open item right now: the 4-in/4-out transfer entrypoint's real, compiled-WASM instruction cost sits at essentially the mainnet instruction limit rather than comfortably under it, and closing that margin, via a concrete, already-identified verifier optimization (see §2.2 and §6.1), is a prerequisite for that path to ship on mainnet, not an optional improvement. See `docs/SCF_READINESS.md` for the full measurement history, including its sensitivity to the exact Rust compiler version used.
+
+Real improvement and optimization work remains on the contracts themselves, not just external review: the verifier registry's public-input aggregation still loops individual point operations instead of using Soroban's native batched multi-scalar-multiplication call, `MIN_SHIELD_AMOUNT` and similar constants are hardcoded rather than governance-settable, and a pause mechanism exists only on the token contract, not on verifier, governance, compliance, or swap. The SDK and indexer are not finished either: the SDK's higher-level wrapper classes are still stubs, its wallet has no retry logic for a transient RPC failure, and witness generation runs single-threaded with no Web Worker offloading; the indexer is a single-operator SQLite reference implementation with no request authentication and no production database migration yet. §6.1 has the full account, component by component.
 
 None of this has been through an independent, external security review yet, and no production, multi-party trusted-setup ceremony has been run; both remain required before any mainnet deployment. See §1.4 and §6 for the complete maturity boundary and remaining roadmap.
 
