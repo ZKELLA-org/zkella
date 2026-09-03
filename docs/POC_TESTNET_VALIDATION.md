@@ -36,13 +36,13 @@ Native XLM Stellar Asset Contract used throughout (unchanged in every epoch belo
 
 | Action | Tx hash |
 | --- | --- |
-| Upload optimized ShieldedToken WASM | `7f40aa87c515bc1364e22882dc82868a3043a4cdf05e8d7233ef54bb1beafbb6` |
-| Deploy optimized ShieldedToken contract | `ec8e90bc04b44a3cbcfbf8e61e266ffb7843cf66712d67cef5bfa2384792d50b` |
-| Initialize (deployer admin, placeholder verifying key) | `0d84883577da8aa562ed7bc9748751a48c923973b1c2960bdab1a482046c2382` |
-| Pause as admin | `9bfea719225beb0d597719ff10a90f497ec34243dacfaec6515ec26f1b5bce6a` |
-| Unpause as admin | `1e14e66fe2d790b93fcbc6fa029f30b2e8c3982f8db7db0a56b075664bff281d` |
+| Upload optimized ShieldedToken WASM | https://stellar.expert/explorer/testnet/tx/7f40aa87c515bc1364e22882dc82868a3043a4cdf05e8d7233ef54bb1beafbb6 |
+| Deploy optimized ShieldedToken contract | https://stellar.expert/explorer/testnet/tx/ec8e90bc04b44a3cbcfbf8e61e266ffb7843cf66712d67cef5bfa2384792d50b |
+| Initialize (deployer admin, placeholder verifying key) | https://stellar.expert/explorer/testnet/tx/0d84883577da8aa562ed7bc9748751a48c923973b1c2960bdab1a482046c2382 |
+| Pause as admin | https://stellar.expert/explorer/testnet/tx/9bfea719225beb0d597719ff10a90f497ec34243dacfaec6515ec26f1b5bce6a |
+| Unpause as admin | https://stellar.expert/explorer/testnet/tx/1e14e66fe2d790b93fcbc6fa029f30b2e8c3982f8db7db0a56b075664bff281d |
 
-A valid PoC note was generated from the repository SDK (amount `1000000` stroops, commitment `88680fcb3c35673634c252517288f4229cbd1d51c721f170fcab363df643eb0a`), but **`shield()` failed at simulation** with `HostError: Error(Budget, ExceededLimit)`, even with `--instruction-leeway 100000000 --resource-fee 1000000` — rejected before submission, so no transaction hash exists for it, and this note was never actually shielded. Verified live state at the time: `leaf_count() = 0`, `shielded_supply(native) = 0`.
+A valid PoC note was generated from the repository SDK (amount `1000000` stroops, commitment `88680fcb3c35673634c252517288f4229cbd1d51c721f170fcab363df643eb0a`, a note commitment value, not a transaction hash), but **`shield()` failed at simulation** with `HostError: Error(Budget, ExceededLimit)`, even with `--instruction-leeway 100000000 --resource-fee 1000000` — rejected before submission, so no transaction hash exists for it, and this note was never actually shielded. Verified live state at the time: `leaf_count() = 0`, `shielded_supply(native) = 0`.
 
 **Root cause (found later, see Epoch 1):** two independent issues — pure-Rust Poseidon field arithmetic instead of the native host function, and an O(depth²) empty-subtree lookup in the Merkle insert path — both fixed before the next real attempt.
 
@@ -74,9 +74,9 @@ With both fixed, three real `shield()` transactions succeeded — each a genuine
 
 | # | Amount (stroops) | Leaf index | Tx hash |
 | --- | --- | --- | --- |
-| 1 | `10000000` (1 XLM) | 0 | `7969b08549258d1f4f2431d8c9655ff9a4c351614276f51b195e7f69fc20e2cb` |
-| 2 | `20000000` (2 XLM) | 1 | `94d864f48ad104d8d9ed01ef10750def3261e09fa7719cd21bc7fe20f81a1dc5` |
-| 3 | `30000000` (3 XLM) | 2 | `1f4f719d53b802aca2cf481ea759ae0319f442c9cde869f4dcd447e28284158c` |
+| 1 | `10000000` (1 XLM) | 0 | https://stellar.expert/explorer/testnet/tx/7969b08549258d1f4f2431d8c9655ff9a4c351614276f51b195e7f69fc20e2cb |
+| 2 | `20000000` (2 XLM) | 1 | https://stellar.expert/explorer/testnet/tx/94d864f48ad104d8d9ed01ef10750def3261e09fa7719cd21bc7fe20f81a1dc5 |
+| 3 | `30000000` (3 XLM) | 2 | https://stellar.expert/explorer/testnet/tx/1f4f719d53b802aca2cf481ea759ae0319f442c9cde869f4dcd447e28284158c |
 
 Post-run state: `leaf_count() = 3`, `shielded_supply(native) = 60000000` (6 XLM). Each transaction's event log confirms the real token `transfer` event from the deployer to `ShieldedToken` for the exact shielded amount.
 
@@ -86,7 +86,7 @@ A fourth real `shield()` call was submitted specifically to validate the indexer
 
 | Amount (stroops) | Leaf index | Tx hash |
 | --- | --- | --- |
-| `50000000` (5 XLM) | 3 | `a82d7bd240d3bbf9b4caeb9f7c2737023e3dfafc8b55a469e3c44812a3c4c243` |
+| `50000000` (5 XLM) | 3 | https://stellar.expert/explorer/testnet/tx/a82d7bd240d3bbf9b4caeb9f7c2737023e3dfafc8b55a469e3c44812a3c4c243 |
 
 The indexer's sync loop correctly found and persisted the real `("zkella","note")` event (exact commitment/encrypted-note/leaf-index match), and every HTTP endpoint (`/health`, `/notes`, `/merkle/root`, `/merkle/path/:i`, `/commitment/:hex`, `/nullifiers/batch`) returned correct data, including `/merkle/root`/`/merkle/path`'s live proxy calls into this contract. This run also caught and fixed a real bug: the view-call simulation helper used a hand-typed placeholder address with an invalid StrKey checksum.
 
@@ -113,9 +113,9 @@ Against `swap` at `CA4NYL2ZA67NSYOVPZMDA3YC62ARWYD52JA5NHYXRBP4TGSX3UNHBRPH`:
 
 | Step | Result | Tx hash |
 | --- | --- | --- |
-| Shield (real proof, leaf 0) | succeeded | `99aabc85fd3b3abc7a437dd2330b6bc9b12a646e9b696a53633248891eacc117` |
-| `commit_swap` (real `unshield.circom` ownership proof) | succeeded | `7c1f7fe60120902a8062b756dfe674e7148c4552cef6a0e97eb0e018a3b790f8` |
-| `execute_swap` (relayer fronts liquidity) | succeeded | `b701041942470e91b91ae2c4bb276cd97a9e05e8b43410505dc0757538a0482e` |
+| Shield (real proof, leaf 0) | succeeded | https://stellar.expert/explorer/testnet/tx/99aabc85fd3b3abc7a437dd2330b6bc9b12a646e9b696a53633248891eacc117 |
+| `commit_swap` (real `unshield.circom` ownership proof) | succeeded | https://stellar.expert/explorer/testnet/tx/7c1f7fe60120902a8062b756dfe674e7148c4552cef6a0e97eb0e018a3b790f8 |
+| `execute_swap` (relayer fronts liquidity) | succeeded | https://stellar.expert/explorer/testnet/tx/b701041942470e91b91ae2c4bb276cd97a9e05e8b43410505dc0757538a0482e |
 | `reveal_and_claim` | **failed on-chain**: `HostError: Error(Auth, InvalidAction)` | *(rejected — no hash)* |
 
 Root cause: `reveal_and_claim` calls `ShieldedToken::shield`, which itself calls `token::Client::transfer` on the underlying SEP-41 asset — a call two hops deep in the stack from `swap`'s own authorization, and Soroban only auto-authorizes one hop. Fixed with an explicit `env.authorize_as_current_contract(...)` entry. That superseded contract's escrowed funds (5,000,000 stroops `asset_in`, 4,955,000 stroops `asset_out`) were not lost — recoverable via its own `reclaim_expired_swap`.
@@ -126,10 +126,10 @@ Against `swap` at `CDPPRPAVKUJGNYE3AVFIBSTV7LCEOUPMM7USL7XARS2L2QRLUIMC53K3`:
 
 | Step | What happened | Tx hash |
 | --- | --- | --- |
-| 1. Shield | Real `shield.circom` proof; 5,000,000 stroops native XLM shielded (leaf 1) | `09337d4f15c659dcc45d004caa7c423b0984b501168b97482b2abc0bd4f91944` |
-| 2. `commit_swap` | Real `unshield.circom` ownership proof; escrowed the 5,000,000 stroops into `swap` | `0bfb955de61f19564d793ce62dd21d12c5fc5b95b0a58bd81aa63128bbe2a971` |
-| 3. `execute_swap` | Relayer (deployer, self-approved via `set_relayer`) fronted 4,955,000 stroops | `0fe6c726448e874005306bb9e8c637f958f5773205c0136f245c001336504574` |
-| 4. `reveal_and_claim` | Real `swap_fairness.circom` proof verified; relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof re-shielded the output note (leaf 2) | `cc3d8a0bacfe1e70092fffba68fc81aca28d05c5aee185cea2cff337f0e60c4e` |
+| 1. Shield | Real `shield.circom` proof; 5,000,000 stroops native XLM shielded (leaf 1) | https://stellar.expert/explorer/testnet/tx/09337d4f15c659dcc45d004caa7c423b0984b501168b97482b2abc0bd4f91944 |
+| 2. `commit_swap` | Real `unshield.circom` ownership proof; escrowed the 5,000,000 stroops into `swap` | https://stellar.expert/explorer/testnet/tx/0bfb955de61f19564d793ce62dd21d12c5fc5b95b0a58bd81aa63128bbe2a971 |
+| 3. `execute_swap` | Relayer (deployer, self-approved via `set_relayer`) fronted 4,955,000 stroops | https://stellar.expert/explorer/testnet/tx/0fe6c726448e874005306bb9e8c637f958f5773205c0136f245c001336504574 |
+| 4. `reveal_and_claim` | Real `swap_fairness.circom` proof verified; relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof re-shielded the output note (leaf 2) | https://stellar.expert/explorer/testnet/tx/cc3d8a0bacfe1e70092fffba68fc81aca28d05c5aee185cea2cff337f0e60c4e |
 
 Every proof in this lifecycle (ownership, fairness, output-shield) is a genuine `circom`/`snarkjs` proof — this is the first time the complete commit-reveal cycle ran on-chain with real value at every step, closing the delivery-roadmap item for "a dedicated audit of the swap primitive and a live-Testnet run of its full lifecycle."
 
@@ -159,12 +159,12 @@ The root-history-window reliability fix (`ROOT_HISTORY_SIZE = 32`) was added and
 
 | Step | Tx hash |
 | --- | --- |
-| `verifier.initialize(admin=governance)` | `339199d67efccc223279173e5e8db37a0daba65ffa7bd5927ec055081c0d36b4` |
-| `governance.initialize(admin=deployer, verifier)` | `3f2624e797a5d0e64de2078e4e2865e16d5e0e45807f32603eca084fa4020cda` |
-| `compliance.initialize(verifier)` | `62521977b17c60b46be3d02640d5470b9fb93cf9e1235d787b678761ae898ac8` |
-| `token.initialize(admin=deployer, verifier)` | `ab70903c9f0527f6df2c071b186194bfe8fdb4cd8a5a37a80b55a894a5a38d15` |
-| `swap.initialize(admin=deployer, verifier, token)` | `48dc7e433762a427cf91a45bc33125892654a4c40bd01837f493c3991edc1a96` |
-| `swap.set_relayer(deployer, true)` | `bc51948abfe16875502f8af6292573f2338072f3caf488ebefd8aafd6a0ef9c9` |
+| `verifier.initialize(admin=governance)` | https://stellar.expert/explorer/testnet/tx/339199d67efccc223279173e5e8db37a0daba65ffa7bd5927ec055081c0d36b4 |
+| `governance.initialize(admin=deployer, verifier)` | https://stellar.expert/explorer/testnet/tx/3f2624e797a5d0e64de2078e4e2865e16d5e0e45807f32603eca084fa4020cda |
+| `compliance.initialize(verifier)` | https://stellar.expert/explorer/testnet/tx/62521977b17c60b46be3d02640d5470b9fb93cf9e1235d787b678761ae898ac8 |
+| `token.initialize(admin=deployer, verifier)` | https://stellar.expert/explorer/testnet/tx/ab70903c9f0527f6df2c071b186194bfe8fdb4cd8a5a37a80b55a894a5a38d15 |
+| `swap.initialize(admin=deployer, verifier, token)` | https://stellar.expert/explorer/testnet/tx/48dc7e433762a427cf91a45bc33125892654a4c40bd01837f493c3991edc1a96 |
+| `swap.set_relayer(deployer, true)` | https://stellar.expert/explorer/testnet/tx/bc51948abfe16875502f8af6292573f2338072f3caf488ebefd8aafd6a0ef9c9 |
 
 ### Governance timelock, exercised end to end (closes the High finding)
 
@@ -172,13 +172,13 @@ The root-history-window reliability fix (`ROOT_HISTORY_SIZE = 32`) was added and
 
 | Step | Tx hash | Ledger |
 | --- | --- | --- |
-| `queue_vk_update(circuit=Shield)` | `cc4809befb3742c283f612cc061e9006722968e3ec8005ae8375fe1074af3201` | eta 4141735 |
-| `queue_vk_update(circuit=Unshield)` | `1c6f4870fa52218c760e7581e0f71be985f3eabe7dc1a94e3f56b852b448290d` | eta 4141748 |
-| `queue_vk_update(circuit=SwapFairness)` | `f253fad14be8f7c1797840c45fa07eede32321a4bb204d77311812e4bacf9c8d` | eta 4141749 |
+| `queue_vk_update(circuit=Shield)` | https://stellar.expert/explorer/testnet/tx/cc4809befb3742c283f612cc061e9006722968e3ec8005ae8375fe1074af3201 | eta 4141735 |
+| `queue_vk_update(circuit=Unshield)` | https://stellar.expert/explorer/testnet/tx/1c6f4870fa52218c760e7581e0f71be985f3eabe7dc1a94e3f56b852b448290d | eta 4141748 |
+| `queue_vk_update(circuit=SwapFairness)` | https://stellar.expert/explorer/testnet/tx/f253fad14be8f7c1797840c45fa07eede32321a4bb204d77311812e4bacf9c8d | eta 4141749 |
 | *(real wait for the ledger to reach each eta — no fast-forwarding on public Testnet)* | | |
-| `execute_vk_update(circuit=Shield)` | `0131928d88132a34d1e79f8ad262389e5e83095fe61b281d64517a24ff990d42` | |
-| `execute_vk_update(circuit=Unshield)` | `41449cbea7e8bd32a17c6cf97d18ffa320b38b58310bfae088ed5a0b26bee20f` | |
-| `execute_vk_update(circuit=SwapFairness)` | `a2ca1fbf2d8b2a3d5b3a0747fbc4a85fc9457f618d3d341dfbaab78aee3ad372` | |
+| `execute_vk_update(circuit=Shield)` | https://stellar.expert/explorer/testnet/tx/0131928d88132a34d1e79f8ad262389e5e83095fe61b281d64517a24ff990d42 | |
+| `execute_vk_update(circuit=Unshield)` | https://stellar.expert/explorer/testnet/tx/41449cbea7e8bd32a17c6cf97d18ffa320b38b58310bfae088ed5a0b26bee20f | |
+| `execute_vk_update(circuit=SwapFairness)` | https://stellar.expert/explorer/testnet/tx/a2ca1fbf2d8b2a3d5b3a0747fbc4a85fc9457f618d3d341dfbaab78aee3ad372 | |
 
 Each `execute_vk_update` correctly took the registration branch (no prior key existed for that circuit), not the rotation branch.
 
@@ -188,8 +188,8 @@ Each is a genuine `circom`/`snarkjs` Groth16 proof against the real compiled `sh
 
 | # | Amount (stroops) | Leaf index | Tx hash |
 | --- | --- | --- | --- |
-| A | `5000000` (0.5 XLM) | 0 | `0722df0e01bd81ee256fb317c44a97a4e713c19fe019e27460216887fb7cacee` |
-| B | `5000000` (0.5 XLM) | 1 | `bbeecaeaba30517bd3a2cbc4c2f7512fd9f57b3e3b0e28b9f3bcb2998a55e945` |
+| A | `5000000` (0.5 XLM) | 0 | https://stellar.expert/explorer/testnet/tx/0722df0e01bd81ee256fb317c44a97a4e713c19fe019e27460216887fb7cacee |
+| B | `5000000` (0.5 XLM) | 1 | https://stellar.expert/explorer/testnet/tx/bbeecaeaba30517bd3a2cbc4c2f7512fd9f57b3e3b0e28b9f3bcb2998a55e945 |
 
 ### Shielded swap — full commit-reveal lifecycle, exercising both Critical proof-binding fixes live
 
@@ -197,11 +197,11 @@ Uses note B (leaf 1). `commit_swap`'s ownership proof was generated with the new
 
 | Step | What happened | Tx hash |
 | --- | --- | --- |
-| `commit_swap` | Real `unshield.circom` ownership proof, bound via `binding_tag`; escrowed 5,000,000 stroops into `swap` | `21c4380b39685c9674edabb2f2830d931e8ead0d557adcff1a4aecdf66bc8038` |
-| `execute_swap` | Relayer fronted 4,950,000 stroops into escrow | `5bfef119f8503f66782f0a22a4942fa43fc83c497ae71b7031ffc0025fa9fb75` |
-| `reveal_and_claim` | Real `swap_fairness.circom` proof, checked against `state.intent_commitment`; relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof re-shielded the output note as leaf 2 | `88aebe0e9cb0239d74a746facf2af18cdbe2921d1e7d9dbdaa12c6862a91648d` |
+| `commit_swap` | Real `unshield.circom` ownership proof, bound via `binding_tag`; escrowed 5,000,000 stroops into `swap` | https://stellar.expert/explorer/testnet/tx/21c4380b39685c9674edabb2f2830d931e8ead0d557adcff1a4aecdf66bc8038 |
+| `execute_swap` | Relayer fronted 4,950,000 stroops into escrow | https://stellar.expert/explorer/testnet/tx/5bfef119f8503f66782f0a22a4942fa43fc83c497ae71b7031ffc0025fa9fb75 |
+| `reveal_and_claim` | Real `swap_fairness.circom` proof, checked against `state.intent_commitment`; relayer paid 5,000,000 stroops; a second, separate real `shield.circom` proof re-shielded the output note as leaf 2 | https://stellar.expert/explorer/testnet/tx/88aebe0e9cb0239d74a746facf2af18cdbe2921d1e7d9dbdaa12c6862a91648d |
 
-`swap_id` for this run: `64c3f9d46aa1ccb1d9ed0dc7e83a780194b67f477c53495838d5542df4e18cef`.
+`swap_id` for this run (a contract state identifier, not a transaction hash): `64c3f9d46aa1ccb1d9ed0dc7e83a780194b67f477c53495838d5542df4e18cef`.
 
 **Final verified on-chain state:** `leaf_count() = 3`, `merkle_root() = 7dac71b56ca54ea2f74c4694f89617c3446d3c7c5d95c280dfa07e66a0199208`, `shielded_supply(native XLM) = 9950000` — note A's 5,000,000 (still shielded, untouched) plus the swap's 4,950,000 output note; note B's 5,000,000 correctly dropped out when spent into escrow.
 
@@ -240,14 +240,14 @@ Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer
 
 | Step | Tx hash |
 | --- | --- |
-| `queue_vk_update(circuit=Transfer)` | `bd1e03efcb9f496790ae782acd36b1101869cf7367209be3357d8881917f696f` |
-| `queue_vk_update(circuit=Transfer4x4)` | `3c8fb0c8bcff1a8e6fbe99be14f4b6af9cb0473280858a6be3d8999621ac5fa8` |
+| `queue_vk_update(circuit=Transfer)` | https://stellar.expert/explorer/testnet/tx/bd1e03efcb9f496790ae782acd36b1101869cf7367209be3357d8881917f696f |
+| `queue_vk_update(circuit=Transfer4x4)` | https://stellar.expert/explorer/testnet/tx/3c8fb0c8bcff1a8e6fbe99be14f4b6af9cb0473280858a6be3d8999621ac5fa8 |
 | *(real wait for the ledger to reach each eta)* | |
-| `execute_vk_update(circuit=Transfer)` | `4bd193f369c94b66145bba90697532f95fe9da41eb06cd87030a848220526bc8` |
-| `execute_vk_update(circuit=Transfer4x4)` | `320c4f2058df75acbd837b78dcaa5ede7bca1422aee708c53a9deea6bbc2ea59` |
-| `shield()` — note C, 0.3 XLM, leaf 3 | `23d681296467f36021b2adca87d8f648acec821d1db34d37950a23816b28a711` |
-| `shield()` — note D, 0.2 XLM, leaf 4 | `041460cf1932384a8ada14aa36801f314bcfbb1e1a27ce7582ce72c216f32f60` |
-| `transfer()` — notes C+D spent, two new output notes at leaves 5–6 | `90fe4d1996815f77c7c87b06a29141e01fab293dc44d01b56364be7c7e4fcf14` |
+| `execute_vk_update(circuit=Transfer)` | https://stellar.expert/explorer/testnet/tx/4bd193f369c94b66145bba90697532f95fe9da41eb06cd87030a848220526bc8 |
+| `execute_vk_update(circuit=Transfer4x4)` | https://stellar.expert/explorer/testnet/tx/320c4f2058df75acbd837b78dcaa5ede7bca1422aee708c53a9deea6bbc2ea59 |
+| `shield()` — note C, 0.3 XLM, leaf 3 | https://stellar.expert/explorer/testnet/tx/23d681296467f36021b2adca87d8f648acec821d1db34d37950a23816b28a711 |
+| `shield()` — note D, 0.2 XLM, leaf 4 | https://stellar.expert/explorer/testnet/tx/041460cf1932384a8ada14aa36801f314bcfbb1e1a27ce7582ce72c216f32f60 |
+| `transfer()` — notes C+D spent, two new output notes at leaves 5–6 | https://stellar.expert/explorer/testnet/tx/90fe4d1996815f77c7c87b06a29141e01fab293dc44d01b56364be7c7e4fcf14 |
 
 Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specifically so their secret openings would be available to spend from — Epoch 1's notes had no persisted secret data. The `transfer()` proof was generated via the TypeScript SDK's own `generateTransferProof` (`sdk/src/prover/transfer.ts`), using Merkle paths fetched directly from the deployed contract's `merkle_path()` view function — the same SDK code path an application would use, not a CLI side-channel. Full narrative in `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction".
 
