@@ -14,7 +14,7 @@
     "@noble/ciphers": "^0.5.0",
     "@noble/hashes": "^1.4.0",
     "circomlibjs": "^0.1.7",
-    "ffjavascript": "^0.2.63",
+    "ffjavascript": "^0.3.1",
     "snarkjs": "^0.7.6"
   },
   "devDependencies": {
