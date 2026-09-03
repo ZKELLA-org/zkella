@@ -11,7 +11,7 @@ jobs:
     name: Soroban contracts (cargo test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.93.0"
@@ -30,7 +30,7 @@ jobs:
     name: SDK and circuits (npm test + typecheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
