@@ -38,4 +38,4 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.test.json
       - name: Unit tests
-        run: npm test
+        run: npm test -- --maxWorkers=2
