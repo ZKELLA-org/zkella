@@ -2,7 +2,7 @@
 
 This document describes the full architecture of the ZKELLA protocol. It is intended as the single reference for the complete design of the system, including how on-chain contracts, off-chain proving, indexer infrastructure, client SDKs, and compliance capabilities fit together.
 
-The repository currently contains a soft PoC implementation only. Existing contracts and SDK code validate early design assumptions, but they are not final versions of the protocol contracts and must be reviewed, optimized, hardened, and improved before any production deployment.
+The repository currently contains a PoC implementation only. Existing contracts and SDK code validate early design assumptions, but they are not final versions of the protocol contracts and must be reviewed, optimized, hardened, and improved before any production deployment.
 
 ## Summary
 
@@ -687,7 +687,7 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 
 Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail, and `docs/TECHNICAL_SPEC.md` §13.3 for the planned production deployment target (dual-provider RPC failover, AWS ECS Fargate, RDS PostgreSQL Multi-AZ, and a second operator in a different region or cloud provider). An operational runbook now exists (`docs/RUNBOOK.md`, first version, not yet exercised in a real incident) and covers the indexer alongside every other component.
 
-### 2.9 Soft PoC implementation versus target architecture
+### 2.9 PoC implementation versus target architecture
 
 The repository intentionally separates implemented material from the full target architecture. Most of the gap this table used to describe has closed:
 
@@ -885,7 +885,7 @@ The target architecture is delivered through a staged lifecycle. The repository 
 
 ```
 +------------------+     +------------------+     +------------------+
-| Soft PoC         | --> | Reviewed testnet  | --> | Production-ready |
+| PoC              | --> | Reviewed testnet  | --> | Production-ready |
 | (fully passed)   |     | (repo is here)    |     | - final contracts|
 +------------------+     +------------------+     +------------------+
                                    |                         |
@@ -896,7 +896,7 @@ The target architecture is delivered through a staged lifecycle. The repository 
                           external review
 ```
 
-What moved the repository past "Soft PoC": real on-chain Groth16 verification for shield/transfer/unshield (not placeholders), a real, audited, live-Testnet-run shielded swap lifecycle, a real running indexer, and a real SDK cryptographic/proving core — all with live Stellar Testnet transaction evidence (`docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`).
+What moved the repository past "PoC": real on-chain Groth16 verification for shield/transfer/unshield (not placeholders), a real, audited, live-Testnet-run shielded swap lifecycle, a real running indexer, and a real SDK cryptographic/proving core — all with live Stellar Testnet transaction evidence (`docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`).
 
 What's still needed to reach "Production-ready", at a high level:
 
@@ -975,9 +975,48 @@ Trusted setup assumptions:
 - Production deployments assume an audited or MPC-based setup ceremony for the Groth16 circuit parameters.
 - If the trusted setup is not secure, proof soundness cannot be guaranteed, so the verifier key lifecycle must be strictly controlled.
 
-## 8. Appendices
+## 8. Future work: confidential DeFi integration on Stellar
 
-### 8.1 Document relationships
+This section is design thinking, not a commitment. Nothing here is funded, scheduled, or scoped into any current deliverable; it exists to show that ZKELLA's architecture already has a credible path into confidential lending and confidential vaults, the same direction the most advanced comparable project in this space is taking on Ethereum, and to name the real engineering problems that path would actually raise before any of it is built.
+
+### 8.1 Precedent: Zama's confidential vault on Morpho, via Steakhouse Financial
+
+On Ethereum, Zama, Morpho, and Steakhouse Financial launched a confidential USDC yield vault: user deposits are wrapped in Zama's FHE-based confidential token (cUSDC), and the vault itself deposits the real, aggregated USDC into Steakhouse's existing Prime v2 lending strategy on Morpho Blue, collateralized by cbBTC, WBTC, and wstETH. The design's key property is where the privacy boundary sits: individual wallet balances, deposit sizes, and transaction timing are encrypted on-chain, but the vault's own aggregate statistics stay visible, so the market can still verify the vault is solvent without seeing who holds what. Morpho and the underlying lending market operate exactly as they would for any other depositor; the confidentiality is entirely in front of them, at the wrapper layer, not inside the lending protocol itself.
+
+That structure is what makes it generalizable: it does not require the underlying DeFi protocol to know or care about privacy at all. The wrapper contract is just one more counterparty from the lending protocol's point of view, its own real, visible position, aggregating everyone confidential behind it.
+
+### 8.2 Generalizing the pattern for ZKELLA
+
+ZKELLA's note model is a materially different starting point from Zama's FHE-encrypted-balance model, there is no homomorphic computation here, privacy comes from Groth16 proofs over a Merkle tree of commitments and a nullifier set, but the same wrapper-layer structure applies directly, and it reuses primitives ZKELLA already has rather than requiring a new privacy mechanism:
+
+- A **Confidential Vault contract**, structurally similar to `contracts/swap` (a separate contract, not a modification of `contracts/token`), that holds one real, transparent position in an underlying Stellar DeFi protocol, a lending market or a liquidity vault, on behalf of every confidential depositor behind it.
+- **Vault-share notes**: a shielded deposit into the vault produces a note whose value represents a *share count* in the vault, not a raw asset amount, using the same commitment/nullifier/Merkle-tree machinery `contracts/token` already implements for ordinary shielded notes. No new note primitive is needed, only a new circuit that proves the deposit and share-count arithmetic correctly.
+- A **public exchange rate** as the privacy-preserving yield mechanism: the vault publishes a single, protocol-wide number, current asset value per share, safe to reveal because it says nothing about any individual depositor, the same way `shielded_supply` is already public per asset today. A user's real claim is `share_count × exchange_rate`, computed inside the withdrawal circuit itself, so yield accrues without ever revealing an individual balance or a distribution event tied to one user.
+- **Governance-controlled protocol allowlisting**, reusing the same pattern `contracts/swap`'s `set_relayer`/`ApprovedRelayer` mechanism already establishes: the vault should only ever deposit into a specific, governance-approved target contract, never an arbitrary address a caller supplies, for the same reason a relayer has to be approved before it can front liquidity.
+
+### 8.3 Concrete mechanics, at a sketch level
+
+Deposit: a user proves ownership of a spendable shielded note (the existing unshield-style ownership proof), the vault contract deposits the real, transparent asset into the underlying protocol, and a new vault-share note is minted for the user at the current exchange rate, all in one proof-gated call, structurally close to how `contracts/swap`'s `commit_swap` already escrows real value on the strength of a ZK proof.
+
+Withdrawal: the reverse, a user proves ownership of a vault-share note, the circuit computes the real amount owed at the current exchange rate, the vault redeems that amount from the underlying protocol, and the result becomes either a new ordinary shielded note (staying confidential) or an unshielded, public balance, the user's choice, the same way `unshield` already offers today.
+
+Solvency transparency: the vault's own aggregate state, total shares outstanding, total underlying position, mirrors `shielded_supply`'s existing role, a real, checkable number that lets anyone verify the vault isn't insolvent without learning anything about individual depositors.
+
+### 8.4 Real open problems this would raise, not glossed over
+
+- **Liquidity and redemption risk.** Unlike `contracts/token`'s own 1:1 custody, a lending-market position can have insufficient liquidity to redeem on demand if utilization is high elsewhere in that market. The vault has to fail a withdrawal proof-gated call gracefully under that condition, the same way the underlying protocol itself would, without that failure mode becoming a way to fingerprint which shielded note just tried to withdraw.
+- **Timing and flow metadata.** The vault's own deposit and withdrawal calls into the underlying protocol are, necessarily, real and visible on-chain, an outside observer can see that the ZKELLA vault moved a given amount at a given block, just not which shielded depositor caused it. This is the same inherent limitation every pooled-privacy design shares, not something specific to this proposal, and should be stated as a known limitation rather than implied away.
+- **New circuit, not a small extension.** Share-count arithmetic against a live, changing exchange rate is a genuinely new circuit, not a parameter change to shield, transfer, or unshield, real ZK engineering work comparable in scope to the swap-fairness circuit, not a configuration option.
+- **Reward-token-style yield is out of scope for a first version.** A share-price-appreciation model, like Morpho's, keeps the privacy-preserving accounting tractable because there is one public number to track. A protocol that instead distributes separate reward tokens per epoch would need its own per-user, proof-gated claiming mechanism, real additional scope, not assumed away here.
+- **Protocol selection is a real, ongoing governance responsibility.** Every protocol the vault is allowed to target has to be independently reviewed before being allowlisted; the allowlist mechanism controls *who* the vault can deposit into, it says nothing about whether that specific counterparty is actually safe.
+
+### 8.5 Status
+
+This is a credible architectural direction, grounded in a live precedent and reusing ZKELLA's existing primitives rather than inventing new ones, but it is unbuilt, uncosted, and unscheduled. It is documented here so the option is visible and understood, not because it is planned for any specific tranche or grant.
+
+## 9. Appendices
+
+### 9.1 Document relationships
 
 - `docs/TECHNICAL_SPEC.md` contains full protocol details and contract interfaces.
 - `docs/CIRCUIT_SPEC.md` contains circuit-level design and proof structure.
@@ -985,6 +1024,6 @@ Trusted setup assumptions:
 - `docs/POC_IMPLEMENTATION.md` describes the dedicated PoC/current implementation status separately from the full architecture.
 - `docs/TESTNET_DEPLOYMENT.md` is the current live-Testnet address and transaction record.
 
-### 8.2 Documentation tooling note
+### 9.2 Documentation tooling note
 
 AI-assisted tooling may be used to help format this document, structure its text, and design its diagrams.

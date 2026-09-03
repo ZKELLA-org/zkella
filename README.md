@@ -21,7 +21,7 @@ ZKELLA fills that gap. It is a suite of open-source contracts, circuits, and dev
 
 This repository contains the ZKELLA protocol specification, architecture, Soroban contracts, circuits, SDK modules, and tests that together define the confidential finance stack.
 
-**Current implementation status:** the contracts and SDK code in this repository are an initial implementation for a soft PoC. They are not final protocol contracts, not mainnet-ready release artifacts, and must be reviewed, profiled, hardened, and improved before they are used in production or relied on for real user funds.
+**Current implementation status:** the contracts and SDK code in this repository are an initial implementation for a PoC. They are not final protocol contracts, not mainnet-ready release artifacts, and must be reviewed, profiled, hardened, and improved before they are used in production or relied on for real user funds.
 
 Current implementation foundation:
 
@@ -193,7 +193,7 @@ See `CONTRIBUTING.md` for the development setup, repository layout, and PR expec
 
 ## Security
 
-This is a soft PoC — no external security audit has been performed and every trusted-setup ceremony behind the circuits so far is dev-only. See `SECURITY.md` for the vulnerability disclosure policy before reporting an issue publicly.
+This is a PoC — no external security audit has been performed and every trusted-setup ceremony behind the circuits so far is dev-only. See `SECURITY.md` for the vulnerability disclosure policy before reporting an issue publicly.
 
 ## License
 

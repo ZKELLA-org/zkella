@@ -2,7 +2,7 @@
 
 This document is the dedicated PoC/current-implementation status note for ZKELLA. It explains the code that exists today, the protocol components already present in the repository, and the areas scheduled for completion during the delivery roadmap.
 
-The existing contracts, SDK modules, tests, and deployment evidence represent only a soft PoC implementation. They are intentionally incomplete and must be reviewed, benchmarked, hardened, and improved before they can become final ZKELLA protocol contracts or production deployment artifacts.
+The existing contracts, SDK modules, tests, and deployment evidence represent only a PoC implementation. They are intentionally incomplete and must be reviewed, benchmarked, hardened, and improved before they can become final ZKELLA protocol contracts or production deployment artifacts.
 
 ## Full specification
 
@@ -336,7 +336,7 @@ Not yet covered: horizontal scaling, multiple independent operators, and alertin
 
 These capabilities are not yet implemented in the current repository and remain part of the delivery roadmap:
 
-- systematic review and improvement of all existing soft PoC contracts and SDK code before finalization
+- systematic review and improvement of all existing PoC contracts and SDK code before finalization
 - BN254 `verifying_key` structural validation beyond wire-format length checks (`contracts/verifier` validates shape, not that the bytes encode a VK from a specific audited circuit)
 - indexer horizontal scaling, multi-operator support, and alerting/backfill tooling — the indexer itself is real and live-Testnet-validated (see above), this is about running it at production scale
 - a *proven* operational runbook and incident-response plan — a first version now exists (`docs/RUNBOOK.md`, deployment, monitoring, rollback, key handling, and escalation paths for contract failures, indexer outages, key exposure, and misconfiguration), but it hasn't been exercised in a real incident or a drill; hardening it based on real use remains open
@@ -355,7 +355,7 @@ These capabilities are not yet implemented in the current repository and remain 
 This repository is best understood as:
 
 - a full technical specification and architecture for the ZKELLA protocol
-- a soft PoC implementation with a working core: shield/transfer/unshield with real on-chain Groth16 verification and real Soroban RPC submission, a shielded swap primitive that genuinely moves value (reusing `ShieldedToken`'s own shield/unshield paths), a real BN254 ECDH/hash-to-curve key and encryption layer including diversified addresses, and a real (if reference-scale) persistent indexer — all validated both locally and with real transactions on live Stellar Testnet
+- a PoC implementation with a working core: shield/transfer/unshield with real on-chain Groth16 verification and real Soroban RPC submission, a shielded swap primitive that genuinely moves value (reusing `ShieldedToken`'s own shield/unshield paths), a real BN254 ECDH/hash-to-curve key and encryption layer including diversified addresses, and a real (if reference-scale) persistent indexer — all validated both locally and with real transactions on live Stellar Testnet
 - a codebase that still schedules a real multi-party trusted-setup ceremony, an *external* security review, and indexer production-scale hardening for delivery-roadmap completion — the internal audit of the swap primitive's ownership↔intent binding is done (see "Update: senior audit..." above)
 
 It is not yet a complete implementation of the full ZKELLA specification, and none of this has been through a security review or a real (non-dev) trusted-setup ceremony. Existing contracts and code should be treated as reviewable PoC material only, not as final or production-ready protocol logic — the cryptographic core working correctly in tests is necessary, not sufficient, for that.

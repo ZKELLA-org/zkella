@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0
 
-**Implementation status:** this document specifies the intended circuit family for the protocol. The repository code and current circuit artifacts are soft PoC material only; they must be reviewed, tested against final contract semantics, optimized, and improved before production use.
+**Implementation status:** this document specifies the intended circuit family for the protocol. The repository code and current circuit artifacts are PoC material only; they must be reviewed, tested against final contract semantics, optimized, and improved before production use.
 
 All circuits are written in Circom 2.2 and compiled to Groth16 over BN254.
 Proof size: 256 bytes (fixed, all circuits) — the wire format `contracts/verifier` expects is *uncompressed* BN254 points (`A`: 64 bytes G1, `B`: 128 bytes G2, `C`: 64 bytes G1), matching Soroban's native `crypto::bn254` host types exactly; this is not the 192-byte compressed encoding some other Groth16 tooling defaults to. See `sdk/src/prover/encoding.ts` for the exact byte layout and `docs/POC_IMPLEMENTATION.md` for confirmation against a real submitted proof.
