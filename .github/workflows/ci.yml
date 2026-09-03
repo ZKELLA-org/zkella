@@ -12,18 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.93.0"
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: contracts
-      - name: cargo test --workspace
-        working-directory: contracts
-        run: cargo test --workspace
       - name: cargo build --workspace --target wasm32v1-none --release
         working-directory: contracts
         run: cargo build --workspace --target wasm32v1-none --release
+      - name: cargo test --workspace
+        working-directory: contracts
+        run: cargo test --workspace
 
   sdk:
     name: SDK and circuits (npm test + typecheck)

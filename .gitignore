@@ -17,6 +17,12 @@ dist/
 !circuits/**/*_test_vectors.json
 !contracts/**/test_snapshots/**/*.json
 build/
+!circuits/*/build/
+!circuits/*/build/proof.json
+!circuits/*/build/proof_testnet.json
+!circuits/*/build/public.json
+!circuits/*/build/public_testnet.json
+!circuits/*/build/verification_key.json
 .DS_Store
 Cargo.lock
 !contracts/Cargo.lock

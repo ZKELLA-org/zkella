@@ -251,7 +251,7 @@ Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer
 
 Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specifically so their secret openings would be available to spend from — Epoch 1's notes had no persisted secret data. The `transfer()` proof was generated via the TypeScript SDK's own `generateTransferProof` (`sdk/src/prover/transfer.ts`), using Merkle paths fetched directly from the deployed contract's `merkle_path()` view function — the same SDK code path an application would use, not a CLI side-channel. Full narrative in `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction".
 
-`Transfer4x4`'s VK is now live-registered but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for its real-WASM instruction-budget measurement (97% of the mainnet limit) standing in for it today.
+`Transfer4x4`'s VK is now live-registered but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for its real-WASM instruction-budget measurement (97% of the mainnet limit) standing in for it today, and for the update noting that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
 
 ## What is not yet demonstrated live
 

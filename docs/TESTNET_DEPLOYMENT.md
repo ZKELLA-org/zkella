@@ -123,7 +123,7 @@ Using the TypeScript SDK's `generateTransferProof` (`sdk/src/prover/transfer.ts`
 
 Post-run state, confirmed via real view calls: `leaf_count() = 7`, both spent nullifiers confirmed via `is_spent()`. This is the first live-Testnet evidence for the standalone `transfer()` entrypoint specifically (as opposed to `unshield`'s proof type, previously exercised only indirectly via the swap's `commit_swap`).
 
-`Transfer4x4`'s VK is now also live-registered, but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for the real-WASM instruction-budget measurement (97% of the mainnet limit) that stands in for it today.
+`Transfer4x4`'s VK is now also live-registered, but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for the real-WASM instruction-budget measurement (97% of the mainnet limit) that stands in for it today, and for the update noting that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
 
 ## Circuit trusted setup
 
