@@ -16,13 +16,36 @@ dist/
 !deployments.json
 !circuits/**/*_test_vectors.json
 !contracts/**/test_snapshots/**/*.json
-build/
+sdk/build/
 !circuits/*/build/
 !circuits/*/build/proof.json
 !circuits/*/build/proof_testnet.json
 !circuits/*/build/public.json
 !circuits/*/build/public_testnet.json
 !circuits/*/build/verification_key.json
+# The .wasm/.zkey witness generators and proving keys the test suite actually
+# loads (see tests/unit/*-e2e.test.ts) — a bare `build/` pattern above used to
+# match circuits/*/build/ before it could reach these more specific rules, so
+# a fresh clone (including CI) never had these files despite the exceptions
+# above. These are dev-ceremony artifacts (single local contributor,
+# /dev/urandom entropy — see docs/POC_IMPLEMENTATION.md), fine for
+# testnet/CI use and explicitly not suitable for production; committing them
+# is what makes the e2e proof tests runnable from a clean checkout at all.
+!circuits/shield/build/shield_js/
+!circuits/shield/build/shield_js/shield.wasm
+!circuits/shield/build/shield.zkey
+!circuits/swap/build/swap_fairness_js/
+!circuits/swap/build/swap_fairness_js/swap_fairness.wasm
+!circuits/swap/build/swap_fairness.zkey
+!circuits/transfer_2in2out/build/transfer_js/
+!circuits/transfer_2in2out/build/transfer_js/transfer.wasm
+!circuits/transfer_2in2out/build/transfer.zkey
+!circuits/transfer_4in4out/build/transfer_js/
+!circuits/transfer_4in4out/build/transfer_js/transfer.wasm
+!circuits/transfer_4in4out/build/transfer.zkey
+!circuits/unshield/build/unshield_js/
+!circuits/unshield/build/unshield_js/unshield.wasm
+!circuits/unshield/build/unshield.zkey
 .DS_Store
 Cargo.lock
 !contracts/Cargo.lock
