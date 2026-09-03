@@ -4,7 +4,7 @@
 **Status:** Draft  
 **Network:** Stellar Soroban (Protocol 25+)
 
-**Implementation maturity:** this specification describes the target ZKELLA protocol. The current repository contains only a soft PoC implementation foundation. Existing contracts and SDK code are not final versions and must be reviewed, profiled, hardened, and improved before they are considered production-ready.
+**Implementation maturity:** this specification describes the target ZKELLA protocol. The current repository contains only a PoC implementation foundation. Existing contracts and SDK code are not final versions and must be reviewed, profiled, hardened, and improved before they are considered production-ready.
 
 ---
 
@@ -1289,7 +1289,7 @@ The real reference implementation (`indexer/`) uses Node's built-in `node:sqlite
 
 ## 14. Deployment Plan
 
-The deployment plan starts from the current soft PoC baseline. Before any final release, all existing contracts and SDK modules must move through review, implementation completion, resource profiling, and hardening. The current PoC contracts should not be promoted directly to production.
+The deployment plan starts from the current PoC baseline. Before any final release, all existing contracts and SDK modules must move through review, implementation completion, resource profiling, and hardening. The current PoC contracts should not be promoted directly to production.
 
 ### 14.0 Reviewer-readiness milestones
 
@@ -1305,7 +1305,7 @@ To address the main review concerns directly, the roadmap now includes explicit 
 
 ### 14.1 Testnet Phase (Months 1–4)
 
-- Review and improve existing soft PoC contracts before expanding testnet coverage
+- Review and improve existing PoC contracts before expanding testnet coverage
 - Deploy completed testnet versions of all contracts to Stellar Testnet
 - Run trusted setup ceremony (testnet parameters — NOT for production)
 - Publish circuit artifacts and verifying keys to GitHub

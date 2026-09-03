@@ -4,7 +4,7 @@ ZKELLA is confidential-finance infrastructure for Stellar/Soroban. The contracts
 
 ## Current status
 
-This is a **soft PoC implementation**, not an audited, production release. It has been through an internal senior-review pass (see `docs/TESTNET_DEPLOYMENT.md` for what's been fixed and validated on live Stellar Testnet), but **no external, independent security audit has been performed yet**. Every trusted-setup ceremony behind the Groth16 verifying keys in this repository so far is a local, single-contributor development ceremony — not suitable for any deployment holding real user funds. Do not use any contract address in this repository to custody real value.
+This is a **PoC implementation**, not an audited, production release. It has been through an internal senior-review pass (see `docs/TESTNET_DEPLOYMENT.md` for what's been fixed and validated on live Stellar Testnet), but **no external, independent security audit has been performed yet**. Every trusted-setup ceremony behind the Groth16 verifying keys in this repository so far is a local, single-contributor development ceremony — not suitable for any deployment holding real user funds. Do not use any contract address in this repository to custody real value.
 
 ## Reporting a vulnerability
 

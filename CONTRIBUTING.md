@@ -1,6 +1,6 @@
 # Contributing to ZKELLA
 
-Thanks for your interest in ZKELLA — confidential finance infrastructure for Stellar/Soroban. This is a soft PoC implementation (see `README.md`'s "Repository Scope" and `docs/POC_IMPLEMENTATION.md`), so contributions that improve correctness, test coverage, and documentation accuracy are especially valuable right now.
+Thanks for your interest in ZKELLA — confidential finance infrastructure for Stellar/Soroban. This is a PoC implementation (see `README.md`'s "Repository Scope" and `docs/POC_IMPLEMENTATION.md`), so contributions that improve correctness, test coverage, and documentation accuracy are especially valuable right now.
 
 ## Before you start
 
