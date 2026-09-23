@@ -4,7 +4,11 @@
 //!
 //! Stores one verifying key per [`CircuitType`] and exposes [`VerifierContract::verify`],
 //! a generic Groth16 pairing check against Soroban's native BN254 host functions
-//! (`bn254_g1_add`, `bn254_g1_mul`, `bn254_multi_pairing_check`, protocol 25+).
+//! (`bn254_g1_add`, `bn254_g1_mul`, `bn254_g1_msm`, `bn254_multi_pairing_check`,
+//! protocol 25+). The public-input linear combination (`vk_x`) uses `bn254_g1_msm`,
+//! a single batched multi-scalar-multiplication call, rather than one `g1_mul` +
+//! `g1_add` pair per input — the dominant real-WASM cost in this function for any
+//! circuit with more than a couple of public inputs.
 //! Keeping this in its own contract — rather than embedding the VK in `token`'s
 //! instance storage — lets the verifying key be rotated (via `governance`'s
 //! timelock) without redeploying the token contract, and keeps VK-management
@@ -191,9 +195,18 @@ impl VerifierContract {
 
         let (a, b, c) = Self::parse_proof(&env, &proof);
         let bn254 = env.crypto().bn254();
+        let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
 
-        // vk_x = IC[0] + Σ x_i · IC[i+1]
-        let mut vk_x = ic.get(0).unwrap();
+        // vk_x = IC[0] + Σ x_i · IC[i+1], computed as a single batched
+        // multi-scalar-multiplication (one `bn254_g1_msm` host call for all
+        // N+1 terms, IC[0]'s implicit "· 1" included) rather than N separate
+        // g1_mul/g1_add pairs. This is the dominant cost in this function for
+        // any circuit with more than a couple of public inputs — transfer4x4's
+        // 19 inputs previously meant 19 g1_mul + 19 g1_add calls here alone.
+        let mut msm_points = Vec::new(&env);
+        let mut msm_scalars = Vec::new(&env);
+        msm_points.push_back(ic.get(0).unwrap());
+        msm_scalars.push_back(one.clone());
         for i in 0..public_inputs.len() {
             // Public inputs are little-endian (see module doc); the host's
             // U256/Bn254Fr are big-endian, so reverse before constructing.
@@ -201,13 +214,13 @@ impl VerifierContract {
             xi_be.reverse();
             let xi_bytes = Bytes::from_array(&env, &xi_be);
             let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(&env, &xi_bytes));
-            let term = bn254.g1_mul(&ic.get(i + 1).unwrap(), &xi_fr);
-            vk_x = bn254.g1_add(&vk_x, &term);
+            msm_points.push_back(ic.get(i + 1).unwrap());
+            msm_scalars.push_back(xi_fr);
         }
+        let vk_x = bn254.g1_msm(msm_points, msm_scalars);
 
         // -A = A · (r - 1), the group-order negation trick (no dedicated negate host call).
         let zero = Bn254Fr::from_u256(U256::from_u32(&env, 0));
-        let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
         let neg_one = bn254.fr_sub(&zero, &one);
         let neg_a = bn254.g1_mul(&a, &neg_one);
 

@@ -2371,21 +2371,33 @@ mod tests {
     /// **Update:** this margin turned out to be compiler-version sensitive.
     /// Re-measured on a clean build against every currently-available stable
     /// Rust compatible with this workspace's pinned `soroban-sdk` version
-    /// (1.92.0, 1.93.0, 1.94.1), this same call now measures marginally
-    /// *over* the 400M budget on all three (400,000,643 / 400,000,211 /
-    /// 400,001,136 respectively) — see `docs/SCF_READINESS.md` for the full
-    /// comparison. Source and `Cargo.lock` are unchanged from when the
-    /// 388,076,971 figure was recorded, so the swing is real but small
-    /// (a few hundred to ~1,100 instructions across compiler versions), not
-    /// large enough on its own to explain the full gap from the original
-    /// figure. Ignored rather than deleted: this is a known, already-tracked
-    /// gap (the verifier's batched multi-scalar-multiplication optimization
-    /// described above is the fix), not a flake, and hard-failing CI on it
-    /// repeatedly for a known, documented limitation isn't useful. Un-ignore
-    /// this once that optimization lands and re-verify it closes the gap
-    /// with real margin, not just back under the line.
+    /// (1.92.0, 1.93.0, 1.94.1), this same call measured marginally *over*
+    /// the 400M budget on all three (400,000,643 / 400,000,211 / 400,001,136
+    /// respectively) — see `docs/SCF_READINESS.md` for the full comparison.
+    /// Source and `Cargo.lock` were unchanged from when the 388,076,971
+    /// figure was recorded, so the swing was real but small (a few hundred
+    /// to ~1,100 instructions across compiler versions), not large enough on
+    /// its own to explain the full gap from the original figure. The test
+    /// was `#[ignore]`d rather than deleted at that point: a known,
+    /// already-tracked gap (the verifier's batched multi-scalar-
+    /// multiplication optimization, see `contracts/verifier/src/lib.rs`),
+    /// not a flake.
+    ///
+    /// **Update 2, after the verifier's `g1_msm` optimization landed:**
+    /// this call now measures **396,688,826 instructions, 99.17% of the
+    /// 400M mainnet budget**. Un-ignored and re-verified: this is back
+    /// under the line, and the optimization is real, correct (all 17
+    /// verifier tests, covering every real circuit's actual proof, still
+    /// pass unchanged), and worth roughly 3.3M instructions relative to the
+    /// over-budget, unoptimized measurement above. It is not, however, the
+    /// comfortable margin the note above was hoping to confirm: ~0.83%
+    /// headroom (3,311,174 instructions) is thin, not safe, and a further
+    /// contract change, a longer circuit, or another compiler-version shift
+    /// could push this back over the line. Shipping transfer4 to mainnet on
+    /// this margin alone is not recommended without either additional
+    /// optimization work or a deliberate, documented decision to accept a
+    /// sub-1%-headroom budget on this specific entrypoint.
     #[test]
-    #[ignore = "known over-budget by ~600-1,100 instructions on current stable Rust (1.92.0-1.94.1); tracked pending the verifier's batched-MSM optimization, see docs/SCF_READINESS.md"]
     fn transfer4_real_wasm_instruction_cost() {
         let env = Env::default();
         env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
