@@ -8,7 +8,7 @@ const { ZKELLAKeys } = require(sdk + '/keys/keys')
 const { ZKELLAWallet } = require(sdk + '/wallet/wallet')
 const { generateUnshieldProof } = require(sdk + '/prover/unshield')
 const { generateShieldProof } = require(sdk + '/prover/shield')
-const { generateSwapFairnessProof } = require(sdk + '/prover/swapFairness')
+const { generateSwapFairnessProof, computeSwapBindingTag } = require(sdk + '/prover/swapFairness')
 const { buildNote, computeNullifier } = require(sdk + '/notes/builder')
 const { poseidon2, addressToField, bigIntToBuffer } = require(sdk + '/crypto/poseidon')
 const { encryptNote } = require(sdk + '/notes/encrypt')
@@ -53,18 +53,19 @@ const struct = obj => xdr.ScVal.scvMap(
     b('swap/build/swap_fairness_js/swap_fairness.wasm'), b('swap/build/swap_fairness.zkey'))
 
   console.log('commit_swap (real unshield ownership proof, bound to this intent)')
-  const bindingTag = await poseidon2(fair.intentCommitment, addressToField(me))
+  const latest = (await new rpc.Server('https://soroban-testnet.stellar.org').getLatestLedger()).sequence
+  const expiry = latest + 300
+  const bindingTag = await computeSwapBindingTag(fair.intentCommitment, me, keys.spendingKey.ownerKey, ASSET_ID, expiry)
   const anchor = await wallet.getMerkleRoot()
   const merklePath = await wallet.getMerklePathBytes(note.leafIndex)
   const own = await generateUnshieldProof(
     { note, nk: keys.spendingKey.nullifierKey, merklePath },
     { anchor, recipient: SWAP_ID, bindingTag },
     b('unshield/build/unshield_js/unshield.wasm'), b('unshield/build/unshield.zkey'))
-  const latest = (await new rpc.Server('https://soroban-testnet.stellar.org').getLatestLedger()).sequence
   const swapId = scValToNative(await wallet.submitContractCall(SWAP_ID, 'commit_swap', [
     bytes(own.nullifier), bytes(fair.intentCommitment), addr(ASSET_ID), addr(ASSET_ID),
-    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(own.proof),
-    nativeToScVal(latest + 300, { type: 'u32' }),
+    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey), bytes(own.proof),
+    nativeToScVal(expiry, { type: 'u32' }),
   ]))
   console.log('   swap_id', Buffer.from(swapId).toString('hex'))
 

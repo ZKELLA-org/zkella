@@ -64,6 +64,29 @@ fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     le
 }
 
+/// Tag folded into the ownership proof's `recipient_hash`. Binds the proof to
+/// this exact swap: the intent, the refund address, the claimant's owner key,
+/// the output asset and the expiry. Anything left out could be swapped by
+/// whoever copies a pending `ownership_proof` from the mempool.
+fn binding_tag(
+    env: &Env,
+    hasher: &mut poseidon::Poseidon2Hasher,
+    intent_commitment: &[u8; 32],
+    refund_to_field: &[u8; 32],
+    out_owner_pk: &BytesN<32>,
+    asset_out: &Address,
+    expiry_ledger: u32,
+) -> [u8; 32] {
+    let mut expiry_field = [0u8; 32];
+    expiry_field[..4].copy_from_slice(&expiry_ledger.to_le_bytes());
+    let asset_out_field = address_to_field_bytes(env, asset_out);
+    let owner: [u8; 32] = out_owner_pk.clone().into();
+    let base = hasher.hash(intent_commitment, refund_to_field);
+    let asset_and_expiry = hasher.hash(&asset_out_field, &expiry_field);
+    let terms = hasher.hash(&owner, &asset_and_expiry);
+    hasher.hash(&base, &terms)
+}
+
 #[contracttype]
 #[derive(Clone, PartialEq)]
 pub enum SwapStatus {
@@ -89,6 +112,10 @@ pub struct SwapState {
     /// happy path's shielded output) — recovering escrowed value without
     /// the original note's secrets requires a real, addressable destination.
     pub refund_to:         Address,
+    /// Owner key the output note must be shielded to; fixed at commit time and
+    /// bound into the ownership proof, so a copied fairness proof cannot be
+    /// redirected to another claimant.
+    pub out_owner_pk:      BytesN<32>,
     /// Set at `execute_swap` time; the relayer who fronted `asset_out`
     /// liquidity and is owed `asset_in` once the claimant reveals a valid
     /// fairness proof (or who can reclaim their `asset_out` back after
@@ -103,6 +130,31 @@ pub struct SwapFairnessPublicInputs {
     pub asset_out:         Address,
     pub amount_out:        i128,
     pub min_amount_out:    i128,
+}
+
+const STATE_TTL_THRESHOLD: u32 = 17_280 * 30;  // bump when under 30 days
+const STATE_TTL_EXTEND_TO: u32 = 17_280 * 365; // extend to 1 year
+
+/// `SwapState` lives in persistent storage, one entry per swap, with its own
+/// TTL. Keeping every swap in the single instance entry (capped at ~128 KiB and
+/// loaded on every call) would let cheap spam brick the whole contract.
+fn load_state(env: &Env, swap_id: &BytesN<32>) -> Option<SwapState> {
+    let key = StorageKey::SwapState(swap_id.clone());
+    let state: Option<SwapState> = env.storage().persistent().get(&key);
+    if state.is_some() {
+        env.storage().persistent().extend_ttl(&key, STATE_TTL_THRESHOLD, STATE_TTL_EXTEND_TO);
+    }
+    state
+}
+
+fn has_state(env: &Env, swap_id: &BytesN<32>) -> bool {
+    env.storage().persistent().has(&StorageKey::SwapState(swap_id.clone()))
+}
+
+fn save_state(env: &Env, swap_id: &BytesN<32>, state: &SwapState) {
+    let key = StorageKey::SwapState(swap_id.clone());
+    env.storage().persistent().set(&key, state);
+    env.storage().persistent().extend_ttl(&key, STATE_TTL_THRESHOLD, STATE_TTL_EXTEND_TO);
 }
 
 #[contract]
@@ -141,6 +193,7 @@ impl ShieldedSwap {
         amount_in:         i128,
         anchor:            BytesN<32>,
         refund_to:         Address,
+        out_owner_pk:      BytesN<32>,
         ownership_proof:   Bytes,
         expiry_ledger:     u32,
     ) -> BytesN<32> {
@@ -167,7 +220,7 @@ impl ShieldedSwap {
         // note's nullifier is ever spent at all.
         let swap_id: BytesN<32> = env.crypto().sha256(&intent_commitment.clone().into()).into();
         assert!(
-            !env.storage().instance().has(&StorageKey::SwapState(swap_id.clone())),
+            !has_state(&env, &swap_id),
             "swap already committed for this intent_commitment"
         );
 
@@ -190,7 +243,9 @@ impl ShieldedSwap {
         let to_field = address_to_field_bytes(&env, &swap_addr);
         let intent_commitment_bytes: [u8; 32] = intent_commitment.clone().into();
         let refund_to_field = address_to_field_bytes(&env, &refund_to);
-        let binding_tag_bytes = hasher.hash(&intent_commitment_bytes, &refund_to_field);
+        let binding_tag_bytes = binding_tag(
+            &env, &mut hasher, &intent_commitment_bytes, &refund_to_field, &out_owner_pk, &asset_out, expiry_ledger,
+        );
         let binding_tag = BytesN::from_array(&env, &binding_tag_bytes);
         let recipient_hash_bytes = hasher.hash(&to_field, &binding_tag_bytes);
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
@@ -225,9 +280,10 @@ impl ShieldedSwap {
             asset_in,
             asset_out,
             refund_to,
+            out_owner_pk,
             relayer: None,
         };
-        env.storage().instance().set(&StorageKey::SwapState(swap_id.clone()), &state);
+        save_state(&env, &swap_id, &state);
 
         env.events().publish(
             (symbol_short!("zkella"), symbol_short!("commit")),
@@ -255,8 +311,7 @@ impl ShieldedSwap {
         );
         assert!(amount_out > 0, "amount_out must be positive");
 
-        let mut state: SwapState = env.storage().instance()
-            .get(&StorageKey::SwapState(swap_id.clone())).expect("swap not found");
+        let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(state.status == SwapStatus::Committed, "swap not in committed state");
         assert!(env.ledger().sequence() <= state.expiry_ledger, "swap expired");
 
@@ -272,7 +327,7 @@ impl ShieldedSwap {
         state.status = SwapStatus::Executed;
         state.amount_out = amount_out;
         state.relayer = Some(relayer.clone());
-        env.storage().instance().set(&StorageKey::SwapState(swap_id.clone()), &state);
+        save_state(&env, &swap_id, &state);
 
         token::Client::new(&env, &state.asset_out)
             .transfer(&relayer, &env.current_contract_address(), &amount_out);
@@ -313,8 +368,7 @@ impl ShieldedSwap {
         fairness_pub:     SwapFairnessPublicInputs,
         shield_proof:     Bytes,
     ) -> u32 {
-        let mut state: SwapState = env.storage().instance()
-            .get(&StorageKey::SwapState(swap_id.clone())).expect("swap not found");
+        let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(state.status == SwapStatus::Executed, "swap not executed");
         // Without this check, `fairness_pub.intent_commitment` was accepted
         // as whatever the caller supplied, completely disconnected from
@@ -326,6 +380,7 @@ impl ShieldedSwap {
         // a real, internally-valid fairness proof for it, and steal the
         // escrowed `asset_out` by supplying their own `out_commitment` — a
         // real fund-theft path, not just a soundness nicety.
+        assert!(out_owner_pk == state.out_owner_pk, "output owner key does not match the one committed");
         assert!(fairness_pub.intent_commitment == state.intent_commitment, "intent_commitment mismatch");
         assert!(fairness_pub.asset_in == state.asset_in, "asset_in mismatch");
         assert!(fairness_pub.asset_out == state.asset_out, "asset_out mismatch");
@@ -359,7 +414,7 @@ impl ShieldedSwap {
         assert!(proof_ok, "invalid fairness proof");
 
         state.status = SwapStatus::Claimed;
-        env.storage().instance().set(&StorageKey::SwapState(swap_id.clone()), &state);
+        save_state(&env, &swap_id, &state);
 
         // Pay the relayer with the escrowed asset_in — released only now
         // that the claimant has proven they got a fair price.
@@ -437,15 +492,14 @@ impl ShieldedSwap {
     /// funds only ever move to the address the original committer
     /// themselves specified, never to the caller.
     pub fn cancel_swap(env: Env, swap_id: BytesN<32>) {
-        let mut state: SwapState = env.storage().instance()
-            .get(&StorageKey::SwapState(swap_id.clone())).expect("swap not found");
+        let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(
             state.status == SwapStatus::Committed
             && env.ledger().sequence() > state.expiry_ledger,
             "cannot cancel"
         );
         state.status = SwapStatus::Cancelled;
-        env.storage().instance().set(&StorageKey::SwapState(swap_id.clone()), &state);
+        save_state(&env, &swap_id, &state);
 
         token::Client::new(&env, &state.asset_in)
             .transfer(&env.current_contract_address(), &state.refund_to, &state.amount_in);
@@ -465,8 +519,7 @@ impl ShieldedSwap {
     /// relayer) — like `cancel_swap`, safe because both transfers go only
     /// to addresses fixed at `commit_swap`/`execute_swap` time.
     pub fn reclaim_expired_swap(env: Env, swap_id: BytesN<32>) {
-        let mut state: SwapState = env.storage().instance()
-            .get(&StorageKey::SwapState(swap_id.clone())).expect("swap not found");
+        let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(state.status == SwapStatus::Executed, "swap not in executed state");
         // `checked_add` as defense-in-depth: `commit_swap` already rejects
         // any `expiry_ledger` that would overflow this addition, but a
@@ -482,7 +535,7 @@ impl ShieldedSwap {
         );
 
         state.status = SwapStatus::Cancelled;
-        env.storage().instance().set(&StorageKey::SwapState(swap_id.clone()), &state);
+        save_state(&env, &swap_id, &state);
 
         let relayer = state.relayer.clone().expect("executed swap always has a relayer");
         token::Client::new(&env, &state.asset_out)
@@ -674,12 +727,15 @@ mod tests {
         anchor: &BytesN<32>,
         intent_commitment: &BytesN<32>,
         refund_to: &Address,
+        expiry: u32,
     ) -> Bytes {
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let to_field = address_to_field_bytes(&s.env, &s.swap);
         let intent_commitment_bytes: [u8; 32] = intent_commitment.clone().into();
         let refund_to_field = address_to_field_bytes(&s.env, refund_to);
-        let binding_tag = hasher.hash(&intent_commitment_bytes, &refund_to_field);
+        let binding_tag = binding_tag(
+            &s.env, &mut hasher, &intent_commitment_bytes, &refund_to_field, &test_pk(&s.env), &s.asset_out, expiry,
+        );
         let recipient_hash = hasher.hash(&to_field, &binding_tag);
 
         let public_inputs_le: [[u8; 32]; 5] = [
@@ -753,13 +809,13 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(42));
         let refund_to = Address::generate(&s.env);
-        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
@@ -812,6 +868,74 @@ mod tests {
         assert!(leaf_index > in_leaf, "output note should land at a later leaf than the input note");
     }
 
+    /// A copied fairness proof must not let anyone redirect the escrowed output
+    /// to their own note: the claimant's owner key is fixed at `commit_swap`.
+    #[test]
+    #[should_panic(expected = "output owner key does not match")]
+    fn reveal_and_claim_rejects_an_output_owner_key_other_than_the_committed_one() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+
+        let amount_in = 1_000_000i128;
+        let (in_rho, in_rcm, _in_commitment, in_leaf) =
+            shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
+        let _ = (in_rho, in_rcm, in_leaf);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(99));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(42));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+        );
+
+        // commit_swap really pulled amount_in into swap's own balance via
+        // token::unshield — verify both sides.
+        let asset_in_client = token::Client::new(&s.env, &s.asset_in);
+        assert_eq!(asset_in_client.balance(&s.swap), amount_in);
+        assert_eq!(ShieldedTokenClient::new(&s.env, &s.token_contract).shielded_supply(&s.asset_in), 0);
+
+        let amount_out = 950_000i128;
+        let min_amount_out = 900_000i128;
+        let stellar_asset_out = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out);
+        stellar_asset_out.mint(&s.relayer, &amount_out);
+        swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
+
+        // Relayer really fronted amount_out into escrow.
+        let asset_out_client = token::Client::new(&s.env, &s.asset_out);
+        assert_eq!(asset_out_client.balance(&s.relayer), 0);
+        assert_eq!(asset_out_client.balance(&s.swap), amount_out);
+
+        let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
+
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
+        let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
+        let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
+
+        let fairness_pub = SwapFairnessPublicInputs {
+            intent_commitment,
+            asset_in: s.asset_in.clone(),
+            asset_out: s.asset_out.clone(),
+            amount_out,
+            min_amount_out,
+        };
+        let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
+
+        let leaf_index = swap_client.reveal_and_claim(
+            &swap_id, &out_rho, &out_rcm, &BytesN::from_array(&s.env, &canon(99)), &out_commitment, &out_value_commit,
+            &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
+        );
+
+    }
+
     /// Regression test for a real gap flagged in `docs/POC_IMPLEMENTATION.md`
     /// and `docs/RUNBOOK.md`'s "Known limitations": the nested
     /// `authorize_as_current_contract` call `reveal_and_claim` needs (so
@@ -847,15 +971,16 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(152));
         let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
+            expiry,
         );
-        let expiry = s.env.ledger().sequence() + 1000;
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         let amount_out = 380_000i128;
@@ -961,15 +1086,16 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(210));
         let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
+            expiry,
         );
-        let expiry = s.env.ledger().sequence() + 1000;
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         let amount_out = 950_000i128;
@@ -1036,10 +1162,11 @@ mod tests {
         let intent_commitment = BytesN::from_array(&s.env, &canon(231));
         let legit_refund_to = Address::generate(&s.env);
         // Proof generated (and its VK registered) for `legit_refund_to`.
+        let expiry = s.env.ledger().sequence() + 1000;
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &legit_refund_to,
+            expiry,
         );
-        let expiry = s.env.ledger().sequence() + 1000;
 
         // Attacker replays the *exact same proof bytes* with their own
         // refund_to instead — must fail, not silently succeed and let the
@@ -1048,7 +1175,7 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &attacker_refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &attacker_refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
     }
 
@@ -1073,13 +1200,13 @@ mod tests {
         let anchor_a = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(123));
         let refund_to = Address::generate(&s.env);
-        let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in, &anchor_a, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
+        let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in, &anchor_a, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         swap_client.commit_swap(
             &nullifier_a, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &proof_a, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &proof_a, &expiry,
         );
 
         // Same intent_commitment again — must be rejected before this
@@ -1088,7 +1215,7 @@ mod tests {
         let bogus_proof = Bytes::from_array(&s.env, &[0u8; 4]);
         swap_client.commit_swap(
             &nullifier_b, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &bogus_proof, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &bogus_proof, &expiry,
         );
     }
 
@@ -1100,6 +1227,33 @@ mod tests {
     /// `asset_out` and the claimant's escrowed `asset_in` with no recovery
     /// path. Fixed by rejecting such an `expiry_ledger` at `commit_swap`
     /// time, before any real funds are ever escrowed against it.
+    /// A pending `ownership_proof` copied by someone else must not be reusable
+    /// with a different expiry (or output asset / claimant key): all of them are
+    /// folded into the proof's binding tag, so any change breaks the recipient
+    /// hash check inside `token::unshield`.
+    #[test]
+    #[should_panic]
+    fn commit_swap_rejects_a_proof_bound_to_a_different_expiry() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+        let amount_in = 250_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 82, 83);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(243));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(244));
+        let refund_to = Address::generate(&s.env);
+        let bound_expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(
+            &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, bound_expiry,
+        );
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &(bound_expiry + 1),
+        );
+    }
+
     #[test]
     #[should_panic(expected = "expiry_ledger too close to u32::MAX")]
     fn commit_swap_rejects_expiry_ledger_that_would_overflow_the_claim_window() {
@@ -1112,18 +1266,18 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(242));
         let refund_to = Address::generate(&s.env);
+        let expiry = u32::MAX - 1;
         let ownership_proof = prove_and_register_ownership(
-            &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
+            &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry,
         );
 
         // Close enough to u32::MAX that `expiry_ledger + CLAIM_WINDOW_LEDGERS`
         // would overflow.
-        let expiry = u32::MAX - 1;
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
     }
 
@@ -1138,13 +1292,13 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(55));
         let refund_to = Address::generate(&s.env);
-        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 100;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         let asset_in_client = token::Client::new(&s.env, &s.asset_in);
@@ -1168,13 +1322,13 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(66));
         let refund_to = Address::generate(&s.env);
-        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 100;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         let amount_out = 650_000i128;
@@ -1205,13 +1359,13 @@ mod tests {
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
         let intent_commitment = BytesN::from_array(&s.env, &canon(22));
         let refund_to = Address::generate(&s.env);
-        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
         );
 
         let amount_out = 280_000i128;

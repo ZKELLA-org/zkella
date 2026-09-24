@@ -84,7 +84,7 @@ Two root causes were identified and fixed:
 
 **Locally measured** (Soroban's real host environment via `soroban-sdk`'s test harness, with `InvocationResourceLimits::mainnet()` explicitly enforced — the SDK's own snapshot of the current Testnet/Mainnet instruction limit, 400M, as of 2026-07-10 — rather than the SDK's more conservative built-in local-test default of 100M, which is what this document's original failure was actually hitting):
 
-- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **~104M instructions**, about 26% of the 400M budget.
+- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **113.2M instructions** on the real WASM, about 28% of the 400M budget (an earlier measurement of ~104M predates the owner-key commitment and the canonical-input check). Other real-WASM costs: transfer 2x2 ~228M (57%), transfer4 396,688,826 (99.17%), unshield 33,887,174 (8.5%), `shield_batch` of 3 items 347,231,269 (~116M per item, 87%).
 - The verifier's cross-contract Groth16 check alone: **~30M instructions** of that total.
 - Regression test: `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget`.
 
@@ -265,7 +265,7 @@ The next phase of the repository work is explicitly organized around the main re
 
 - `tests/e2e/shield.test.ts` is intended to demonstrate the shield flow end-to-end for the current implementation foundation
 
-- the Rust contracts workspace (`cargo test --workspace`) has 70 passing tests across `ShieldedToken` (35), `verifier` (17), `compliance` (3), `governance` (3), `swap` (10), and `viewing_keys` (2), including:
+- the Rust contracts workspace (`cargo test --workspace`) has 95 `#[test]` functions at the time of this edit (counted by attribute, not from a test run; run `cargo test --workspace` for the current pass count): `ShieldedToken` 54, `verifier` 22, `swap` 11, `compliance` 3, `governance` 3, `viewing_keys` 2. Earlier text in this document that quotes smaller counts is historical. They include:
   - native-vs-pure-Rust Poseidon equivalence (including a non-canonical-input regression case)
   - real Groth16 proofs from the compiled `shield.circom`, `unshield.circom`, `transfer_2in2out/transfer.circom`, and `transfer_4in4out/transfer.circom` circuits, each independently confirmed valid by `snarkjs groth16 verify` and then verified on-chain via the actual host pairing check
   - the `shield_fits_within_mainnet_instruction_budget` regression test described above
@@ -343,7 +343,7 @@ These capabilities are not yet implemented in the current repository and remain 
 - a real (non-dev) Groth16 trusted-setup ceremony for each circuit — the one used for every real-circuit test and every live-Testnet transaction in this repository is explicitly a local dev ceremony (single contributor, not a public multi-party computation), not suitable for any deployment handling real value
 - an external, independent security review — everything in this document, including the senior-audit pass described above, was performed by the same team building the protocol, not a third party
 - validation of `shield()` against real Stellar assets other than native XLM (different decimals, non-native issuers) — every live-Testnet shield transaction to date uses native XLM specifically
-- fuzz testing of `MIN_SHIELD_AMOUNT` and the 64-bit range check's boundary conditions, and of Merkle tree growth/cost at realistic scale (thousands of leaves) — the live runs so far are small, representative samples, not load tests
+- fuzz testing of `MIN_SHIELD_AMOUNT` and the 64-bit range check's boundary conditions, and of Merkle tree growth/cost at realistic scale. At-scale Merkle cost is measured only up to a few hundred leaves (`merkle_insert_cost_as_tree_depth_grows` uses 150 real `shield()` calls): the per-transaction 400-entry ledger footprint limit prevents building a tree of thousands of leaves inside a single test transaction, as that test's doc comment explains. The live runs so far are small samples, not load tests
 - a live-Testnet exercise of `swap`'s `reclaim_expired_swap` recovery path — it is unit-tested only; no expired swap has ever actually been reclaimed on live Testnet
 - a defined process for who maintains and publishes the `sanctions_root` that `compliance::publish_compliance_proof` checks proofs against, and how often it updates — an open operational and design question, not just a code gap
 - an actual second indexer operator instance run in parallel with the first, to confirm multiple independent operators stay consistent with each other — today's indexer is real but has only ever run as a single instance

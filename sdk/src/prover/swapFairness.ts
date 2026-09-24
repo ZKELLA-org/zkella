@@ -100,3 +100,27 @@ export async function generateSwapFairnessProof(
     publicInputsLE: publicSignals.map((s: string) => bigIntToBuffer(BigInt(s))),
   }
 }
+
+/**
+ * The tag `contracts/swap::commit_swap` folds into the ownership proof's
+ * `recipient_hash`: Poseidon2(Poseidon2(intent, refund_to), Poseidon2(owner_pk,
+ * Poseidon2(asset_out, expiry))). Binding the claimant's owner key, the output
+ * asset and the expiry (not just the intent and refund address) stops anyone who
+ * copies a pending ownership proof from redirecting the output or squatting the
+ * swap slot with different terms. Pass it as `bindingTag` to
+ * `generateUnshieldProof`.
+ */
+export async function computeSwapBindingTag(
+  intentCommitment: Uint8Array,
+  refundTo:         string,
+  outOwnerPk:       Uint8Array,
+  assetOut:         string,
+  expiryLedger:     number,
+): Promise<Uint8Array> {
+  const expiryField = new Uint8Array(32)
+  new DataView(expiryField.buffer).setUint32(0, expiryLedger, true)
+  const base = await poseidon2(intentCommitment, addressToField(refundTo))
+  const assetAndExpiry = await poseidon2(addressToField(assetOut), expiryField)
+  const terms = await poseidon2(outOwnerPk, assetAndExpiry)
+  return poseidon2(base, terms)
+}

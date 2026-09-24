@@ -6,7 +6,9 @@ Native XLM Stellar Asset Contract (used as `asset_in`/`asset_out` throughout): `
 
 This document lists the current live contract addresses and every on-chain transaction run against them. See `deployments.json` at the repository root for the machine-readable current address set — addresses here are redeployed whenever a contract or circuit change requires it, so treat this file as a point-in-time record, not a permanent reference. For the full transaction history across every past deployment, including superseded ones, see `docs/POC_TESTNET_VALIDATION.md`.
 
-## Current live contracts (as of August 14, 2026)
+## Legacy live contracts (August 14, 2026 stack)
+
+This stack is legacy. It was built before owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`, so it is not source-equivalent to the current code. The only stack built from current source is the "Tranche 1 live validation stack" at the end of this document (also recorded as `testnet_tranche1` in `deployments.json`).
 
 | Contract | Address |
 | --- | --- |
@@ -18,7 +20,7 @@ This document lists the current live contract addresses and every on-chain trans
 
 `verifier`'s admin is `governance`'s own contract address (a self-authorizing pattern: cross-contract calls from `governance` satisfy `verifier`'s `admin.require_auth()` without a separate signature). `ShieldedToken`, `governance`, and `compliance` all point at this same `verifier` instance; `swap` points at this `verifier` and `token`.
 
-**This deployment includes all seven fixes from the external technical review** — see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the findings, and "Update: live redeployment closes all seven findings on real Testnet" below for what running each fix live actually looked like. No known drift between this deployment and the current source as of this writing.
+**This deployment includes all seven fixes from the external technical review** — see `docs/POC_IMPLEMENTATION.md`'s "Update: external audit" for the findings, and "Update: live redeployment closes all seven findings on real Testnet" below for what running each fix live actually looked like. This deployment does not match the current source: it predates the owner-key note format, the non-canonical-input rejection, the batch transcript change and `revoke_previous_vk`, so its verifying keys and note commitments are incompatible with the current circuits.
 
 **One deliberate, explicitly-flagged exception: this `governance` binary was built with the `testnet-fast-timelock` feature** (`contracts/governance/Cargo.toml`), shortening `VK_TIMELOCK_LEDGERS` from the real 7-day production value to ~5 minutes (60 ledgers) — purely so the full `queue_vk_update` → wait → `execute_vk_update` path could be exercised live in one sitting, including a real, non-zero wait, rather than skipped or faked. **Never build a production/mainnet artifact with this feature enabled.** The setup transactions below show the real queue → wait → execute sequence, timestamps included.
 
@@ -123,7 +125,7 @@ Using the TypeScript SDK's `generateTransferProof` (`sdk/src/prover/transfer.ts`
 
 Post-run state, confirmed via real view calls: `leaf_count() = 7`, both spent nullifiers confirmed via `is_spent()`. This is the first live-Testnet evidence for the standalone `transfer()` entrypoint specifically (as opposed to `unshield`'s proof type, previously exercised only indirectly via the swap's `commit_swap`).
 
-`Transfer4x4`'s VK is now also live-registered, but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for the real-WASM instruction-budget measurement (97% of the mainnet limit) that stands in for it today, and for the update noting that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
+`Transfer4x4`'s VK is now also live-registered, and a live 4-in/4-out transaction has since been run on the Tranche 1 stack (see the last section: tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`). The measured real-WASM cost is 396,688,826 instructions (99.17% of the 400M limit); see `docs/SCF_READINESS.md`, which also notes that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
 
 ## Circuit trusted setup
 
@@ -131,7 +133,7 @@ Every verifying key and proof referenced above comes from a local, single-contri
 
 ## Update: Tranche 1 live validation stack (owner-key circuits, transfer4 and unshield)
 
-A fresh, isolated verifier + token pair built from the current source and the current circuits. The verifier's admin is the deployer directly, not `governance`, so this stack validates the proving and on-chain verification path, not the governance timelock (exercised on the stack above). It is a validation deployment; the contracts listed at the top of this document were built before the fixes below and are superseded by them.
+A fresh, isolated verifier + token pair (and a swap contract, see below) built from the current source and the current circuits. The verifier's admin is the deployer directly, not `governance`, so this stack validates the proving and on-chain verification path, not the governance timelock (exercised on the stack above). It is a validation deployment; the contracts listed at the top of this document were built before the fixes below and are superseded by them.
 
 Fixes this stack validates:
 - Every note now commits to an owner key, `pk = Poseidon2(nk, "zkella_pk")`, and the spend circuits derive `pk` from `nk`. Previously `nk` was a free private input, so one note could be spent repeatedly under fresh nullifiers.
@@ -154,11 +156,11 @@ Produced by `scripts/testnet_live_validation.cjs`, each proof generated by the S
 | `transfer4` (4-in/4-out, new leaves 4-7) | real 19-signal Groth16 verified on-chain within the network's instruction limit | https://stellar.expert/explorer/testnet/tx/a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf |
 | `unshield` | real Groth16 verified on-chain; shielded supply fell from 4,000,000 to 3,000,000 | https://stellar.expert/explorer/testnet/tx/668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334 |
 
-Swap contract on the same stack: `CCQH2YIZ4GKLVNHFFYIY4Z2H2RLPPAPFXGGAIIGAH5CXUDN2Q367JKGW`. Full commit-reveal lifecycle, produced by `scripts/testnet_swap_validation.cjs` with a real unshield ownership proof, a real swap-fairness proof and a real shield proof for the output note:
+Swap contract on the same stack: `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3`. This instance includes the claimant binding: `commit_swap` takes the claimant's owner key and folds it, the output asset and the expiry into the ownership proof's binding tag, and `reveal_and_claim` must use that key, so a copied proof cannot redirect the output. Full commit-reveal lifecycle, produced by `scripts/testnet_swap_validation.cjs` with a real unshield ownership proof, a real swap-fairness proof and a real shield proof for the output note:
 
 | Step | Result | Tx |
 | --- | --- | --- |
-| `shield` (input note) | | https://stellar.expert/explorer/testnet/tx/a45378b072569202510909dcaeae070af8ea5117f86965f7e4348a509084aa4e |
-| `commit_swap` | ownership proof bound to this intent verified on-chain | https://stellar.expert/explorer/testnet/tx/bdb127a5ae8a14f0956ddb5246e664812c4306fad444d0be7a8fd58d2afb85e6 |
-| `execute_swap` | relayer fronts `asset_out` | https://stellar.expert/explorer/testnet/tx/d25a676cc3e13cb1f86bad1251765a3ae5e6305f3b2add9354ceca3bd4506507 |
-| `reveal_and_claim` | swap-fairness proof and output-note shield proof verified on-chain; new note at leaf 9 | https://stellar.expert/explorer/testnet/tx/dbb10c1b3cc5bc2a0d8285337f40d2097f6b72dc609d33a2ad04441c97219892 |
+| `shield` (input note) | | https://stellar.expert/explorer/testnet/tx/1c59166421782440607593e017dfeffd363950f4d53b8485dbd950667fc2dba5 |
+| `commit_swap` | ownership proof bound to intent, claimant key, asset and expiry verified on-chain | https://stellar.expert/explorer/testnet/tx/a90cb7781521d428b74fdb1fc99b7120f0a583f07d97758b75d35d6492e4c5f7 |
+| `execute_swap` | relayer fronts `asset_out` | https://stellar.expert/explorer/testnet/tx/578cf698ce8c05d9e19fe003f5ec893615fdea1375fd535f84b0155e7f1781cf |
+| `reveal_and_claim` | swap-fairness proof and output-note shield proof verified on-chain; new note at leaf 11 | https://stellar.expert/explorer/testnet/tx/ddc950056a3eab63a7f87f78037e199a19a5862ed380113e57ec4e173ef4a6cc |

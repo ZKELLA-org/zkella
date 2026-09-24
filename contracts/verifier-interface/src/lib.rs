@@ -69,6 +69,7 @@ pub enum Error {
 pub trait Verifier {
     fn register_verifying_key(e: Env, circuit: CircuitType, vk: Bytes) -> Result<(), Error>;
     fn update_verifying_key(e: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error>;
+    fn revoke_previous_vk(e: Env, circuit: CircuitType) -> Result<(), Error>;
     fn get_verifying_key(e: Env, circuit: CircuitType) -> Result<Bytes, Error>;
     fn verify(e: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> Result<bool, Error>;
 }

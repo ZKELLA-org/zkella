@@ -23,6 +23,26 @@ function toHex(buf: Uint8Array): string {
   return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+const FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
+
+/**
+ * Parses a 32-byte little-endian field element from hex, rejecting anything
+ * that is not exactly 64 hex characters or is not below the field modulus. A
+ * mistyped recipient key would otherwise silently produce a note nobody can
+ * spend (no on-chain check can catch it), so it is validated before any
+ * expensive proving.
+ */
+function parseFieldHex(hex: string | undefined, name: string): Uint8Array {
+  if (typeof hex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(`${name} must be exactly 64 hex characters (32 bytes)`)
+  }
+  const bytes = hexToBytes(hex)
+  let value = 0n
+  for (let i = bytes.length - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[i])
+  if (value >= FIELD_MODULUS) throw new Error(`${name} is not a reduced field element`)
+  return bytes
+}
+
 function hexToBytes(hex: string): Uint8Array {
   const buf = new Uint8Array(hex.length / 2)
   for (let i = 0; i < buf.length; i++) buf[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
@@ -69,6 +89,8 @@ export class ZKELLAWallet {
         )
         const expectedHex = toHex(commitment)
         if (expectedHex !== raw.commitment) continue
+        // Re-syncing (or an indexer replaying a page) must not duplicate notes.
+        if (this.notes.some(n => toHex(n.commitment) === expectedHex)) continue
 
         this.notes.push({
           ...plaintext,
@@ -80,15 +102,22 @@ export class ZKELLAWallet {
       cursor = nextLedger
     }
 
-    // Filter spent notes
-    const nfMap: Record<string, number> = {}
+    // Nullifier = Poseidon2(nk, rho), so two notes with the same rho (a sender
+    // can reuse a rho they know) share one nullifier: only one of them can ever
+    // be spent. Keep the first (lowest leaf) and drop the rest, so balance()
+    // does not overstate and transfer() never selects both.
     const nullifiers: string[] = []
-    for (let i = 0; i < this.notes.length; i++) {
-      const nf = await computeNullifier(this.config.keys.nullifierKey, this.notes[i].rho)
+    const keep: Note[] = []
+    const seenNullifiers = new Set<string>()
+    for (const note of this.notes) {
+      const nf = await computeNullifier(this.config.keys.nullifierKey, note.rho)
       const hex = toHex(nf as unknown as Uint8Array)
+      if (seenNullifiers.has(hex)) continue
+      seenNullifiers.add(hex)
       nullifiers.push(hex)
-      nfMap[hex] = i
+      keep.push(note)
     }
+    this.notes = keep
 
     const spent = await this.indexer.batchCheckNullifiers(nullifiers)
     this.notes = this.notes.filter((_, i) => !spent[nullifiers[i]])
@@ -134,7 +163,7 @@ export class ZKELLAWallet {
     }
     requireCircuit(this.config.shieldCircuit, 'shieldCircuit', 'shield()')
 
-    const ownerPk = toOwnerKey !== undefined ? hexToBytes(toOwnerKey) : this.config.keys.ownerKey
+    const ownerPk = toOwnerKey !== undefined ? parseFieldHex(toOwnerKey, 'toOwnerKey') : this.config.keys.ownerKey
     const note = await buildNote(amount, asset, ownerPk)
     // `to`, when given, is the *recipient's* transmission key — encrypting
     // to `this.config.keys.transmissionKey` regardless (the previous bug
@@ -200,6 +229,7 @@ export class ZKELLAWallet {
    */
   async transfer(opts: TransferOptions): Promise<{ submit: () => Promise<{ leafIndices: number[] }> }> {
     const { to, asset, amount } = opts
+    const recipientOwnerPk = parseFieldHex(opts.toOwnerKey, 'toOwnerKey')
     requireCircuit(this.config.transferCircuit, 'transferCircuit', 'transfer()')
 
     const candidates = this.notes
@@ -238,7 +268,7 @@ export class ZKELLAWallet {
     const result = await generateTransferProof(
       { inputs, nk: this.config.keys.nullifierKey,
         outputs: [
-          { value: amount, assetId: asset, ownerPk: hexToBytes(opts.toOwnerKey) },
+          { value: amount, assetId: asset, ownerPk: recipientOwnerPk },
           { value: changeAmount, assetId: asset, ownerPk: this.config.keys.ownerKey },
         ],
         fee },

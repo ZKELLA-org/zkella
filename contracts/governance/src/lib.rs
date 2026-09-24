@@ -68,7 +68,7 @@ impl ZKELLAGovernance {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
 
-        let eta = env.ledger().sequence() + VK_TIMELOCK_LEDGERS;
+        let eta = env.ledger().sequence().checked_add(VK_TIMELOCK_LEDGERS).expect("eta overflow");
         let update = PendingVkUpdate { circuit, new_vk, eta_ledger: eta };
         env.storage().instance().set(&StorageKey::PendingVkUpdate(circuit), &update);
 
@@ -108,6 +108,25 @@ impl ZKELLAGovernance {
             (symbol_short!("zkella"), symbol_short!("vkexec")),
             circuit,
         );
+    }
+
+    /// Immediately drops the verifier's retained previous key for `circuit`.
+    /// The verifier keeps a rotated-out key valid for about a day so in-flight
+    /// proofs still verify; when the rotation itself was a security fix (the
+    /// old key or circuit is unsound), that grace period must be ended at
+    /// once. This is deliberately NOT timelocked: revoking only ever
+    /// *narrows* what the verifier accepts.
+    pub fn revoke_previous_vk(env: Env, circuit: CircuitType) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        let verifier: Address = env.storage().instance().get(&StorageKey::Verifier).unwrap();
+        VerifierClient::new(&env, &verifier).revoke_previous_vk(&circuit);
+    }
+
+    /// The timelock length this build enforces, in ledgers. Lets anyone check
+    /// on-chain that a deployment is not the short-timelock testnet build.
+    pub fn timelock_ledgers(_env: Env) -> u32 {
+        VK_TIMELOCK_LEDGERS
     }
 
     /// Cancel a queued VK update before it is executed
@@ -181,6 +200,24 @@ mod tests {
     /// path as a replacement — this test is the regression check that
     /// `execute_vk_update` correctly performs a first-time *registration*
     /// (not an update, which would fail against a circuit with no key yet).
+    #[test]
+    fn revoke_previous_vk_is_admin_gated_and_forwards_to_the_verifier() {
+        let (env, _admin, gov_id, verifier_id) = setup();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let vk_a = vk_bytes(&env, 64 + 384 + 64 * 2);
+        let vk_b = vk_bytes(&env, 64 + 384 + 64 * 3);
+        queue_and_execute(&env, &gov, CircuitType::Shield, &vk_a);
+        queue_and_execute(&env, &gov, CircuitType::Shield, &vk_b);
+        // Rotation retained vk_a; revoking must succeed through governance
+        // (which is the verifier's admin) and leave the current key intact.
+        gov.revoke_previous_vk(&CircuitType::Shield);
+        assert_eq!(
+            VerifierContractClient::new(&env, &verifier_id).get_verifying_key(&CircuitType::Shield.into()),
+            vk_b
+        );
+        assert_eq!(gov.timelock_ledgers(), VK_TIMELOCK_LEDGERS);
+    }
+
     #[test]
     fn execute_vk_update_performs_first_time_registration_through_the_timelock() {
         let (env, _admin, governance_id, verifier_id) = setup();

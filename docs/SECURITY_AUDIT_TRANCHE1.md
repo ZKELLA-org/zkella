@@ -20,3 +20,23 @@ An internal review of the verifier and token contracts, the circuits, and the SD
 - **Nullifier uniqueness relies on sender-chosen `rho`.** A sender who reuses a `rho` can create a note that cannot be spent. Deriving `rho` in-circuit (as Zcash does) is the long-term fix.
 - **Trusted setup.** All circuits use development keys from a single local contribution. A real multi-party ceremony is required before mainnet.
 - **Centralisation.** The pause switch also blocks withdrawals, and whoever administers the verifier can replace a verifying key.
+
+## Second review
+
+A second re-audit of the same code found further issues. Fixed items are described first, then the risks that were accepted.
+
+### Fixed
+
+- **Compliance circuit (High).** The sanctions non-membership circuit used non-strict bounds, had no adjacency check between the two bracketing leaves, and compared 64 bits of a 254-bit value. A sanctioned address could therefore produce a proof of non-membership, and honest addresses could fail to. The circuit was rewritten: strict `lower < address < upper`, adjacency enforced as `upper_idx = lower_idx + 1`, values truncated to 248 bits with `Num2Bits_strict`, and sentinel leaves `0` and `2^248 - 1`. It was rebuilt (17,533 constraints, public inputs `sanctions_root`, `tk_commitment`) and has 8 new circuit tests in `tests/unit/circuit-compliance.test.ts`. Its verifying key has not been registered on a live stack.
+- **Swap claimant front-running.** A third party could front-run `reveal_and_claim` and direct the output note to themselves. The claimant's owner key (`out_owner_pk`) is now committed at `commit_swap`, `reveal_and_claim` must use it, and `asset_out` and the expiry are bound into the ownership proof's binding tag. Swap state moved from instance storage to persistent storage with TTL bumps.
+- **Governance.** Gains a `revoke_previous_vk` entrypoint and a timelock getter.
+- **Wallet and indexer.** The wallet dedupes notes by commitment and by nullifier and strictly validates hex and field encoding of recipient keys. Indexer paging no longer skips events at ledger and page boundaries.
+
+### Accepted
+
+- **`reclaim_expired_swap` pays two transfers in one call.** A committer who chooses an unpayable `refund_to` can strand an asset fronted by a relayer. Relayers are admin-approved, which limits exposure.
+- **Faerie-gold `rho` reuse.** A sender can reuse a `rho`; the only notes harmed are ones that sender created.
+- **`unshield`'s `recipient_hash` has no R1CS constraint of its own.** Its binding relies on the Groth16 public-input (`IC`) term, which was checked to be non-zero in the built verifying key.
+- **`value_commit` is a Poseidon hash, not homomorphic.** Balance is enforced inside the circuit, not by a homomorphic check.
+- **Swap `min_amount_out` and `amount_out` are not range-bound in the circuit.** The contract passes `u128` values, so this is not exploitable through the contract.
+- **Transfer fee is proven but not collected.** The fee is constrained in the circuit; no contract code pays it to anyone.

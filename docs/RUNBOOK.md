@@ -8,7 +8,7 @@ This is the operational runbook referenced as an open item throughout `docs/POC_
 
 ## 1. System components at a glance
 
-Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. Current live addresses (Testnet, see `deployments.json` for the machine-readable, always-current version — addresses here are a point-in-time snapshot):
+Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. Testnet addresses below are the legacy August stack, which is not source-equivalent to current code (it predates owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`). The only stack built from current source is `testnet_tranche1` in `deployments.json`: verifier `CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22`, token `CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM`, swap `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3`. That verifier is administered directly by the deployer (no governance timelock), and its swap instance predates the `commit_swap` binding change. Legacy stack (see `deployments.json` `testnet` for the machine-readable version):
 
 | Component | Address | Admin model | Has `pause()` |
 |---|---|---|---|
@@ -47,7 +47,7 @@ No automated alerting exists yet (see "Known limitations") — this section defi
 
 Watch simulation/submission failures for these specific error shapes, each pointing at a different root cause:
 
-- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~104M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
+- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~113.2M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
 - `Error(Contract, #5)` on `token` (`Error::InvalidAnchor`) — the caller's proof anchor fell outside the 32-root history window (`contracts/token/src/merkle.rs`'s `ROOT_HISTORY_SIZE`). Expected occasionally under concurrent load; a sudden spike means proofs are being generated much slower than the tree is advancing, or the window needs re-tuning.
 - `Error(Auth, InvalidAction)` on any cross-contract call — a missing `authorize_as_current_contract` entry (see the real incident this exact error caused in `docs/POC_IMPLEMENTATION.md`'s swap audit). Treat as a code-level bug, not an operational issue, unless it appears on a code path that was previously working.
 - `Error(Contract, #3)` on `verifier` (`Error::VkAlreadyRegistered`) — an attempted `register_verifying_key` for a circuit that already has one; use `governance.queue_vk_update`/`execute_vk_update` instead (see §3).
@@ -74,6 +74,23 @@ Procedure:
 2. Wait for `eta` (the queued ledger sequence) to pass. This window exists specifically so users can exit before an untrusted or malicious VK takes effect — do not shorten it operationally even under incident pressure; if a VK is actively being exploited, `token.pause()` is the correct immediate lever, not rushing a VK swap.
 3. `governance.execute_vk_update(circuit)` — cross-calls `verifier.update_verifying_key()`.
 4. If the update should be aborted before `eta`, `governance.cancel_vk_update(circuit)`.
+
+**Retention window and revocation.** When `verifier.update_verifying_key` replaces a key, the outgoing key stays acceptable for `VK_RETENTION_WINDOW_LEDGERS = 17_280` ledgers (about one day) so proofs generated against it but not yet submitted still verify. If the outgoing key is compromised or known to be unsound, the verifier admin calls `verifier.revoke_previous_vk(circuit)` to end the window immediately (the verifier's admin is the `governance` contract, so use `governance.revoke_previous_vk(circuit)`, which forwards the call; `governance.timelock_ledgers()` returns the timelock the deployed binary was built with; on a deployer-administered verifier the deployer calls it directly). Expiry arithmetic saturates. Do not rely on the window to protect users from an unsound old key: revoke it in the same step as the rotation.
+
+### Deployment: initialize immediately
+
+`initialize` on every contract can be called by anyone between deploy and the first initialize call, so it can be front-run. Deploy and initialize in the same step (same script, back to back), then confirm the admin and the stored verifier/token addresses are the intended values before using the contract. If the admin is wrong, redeploy.
+
+### Merkle sibling TTL
+
+Sibling nodes read during an insert are not TTL-bumped. After roughly a year with no inserts, an insert can fail until the expired persistent entry is restored. Restoring an archived entry is permissionless (any account can submit the restore footprint), so this is a liveness risk, not a loss of funds. If shield/transfer starts failing with an archived-entry error after a long idle period, restore the entries named in the simulation footprint and retry.
+
+### Note format and shield limits
+
+- Notes are owner-key notes: `cm = H(H(H(value, asset), H(rho, rcm)), pk)` with `pk = H(nk, DOMAIN_PK)`, `DOMAIN_PK = int("zkella_pk") = 2258241487740017274987`. A note can only be spent with the `nk` that derives its `pk`. `shield` takes the recipient's `owner_pk` explicitly, and `ShieldBatchItem` carries an `owner_pk` after `rcm`.
+- `shield_batch` accepts at most `MAX_SHIELD_BATCH = 3` items (measured 347,231,269 instructions for 3, about 116M per item; a fourth would exceed the 400M limit).
+- Shielding an asset requires it to be approved: `set_asset_approved(asset, approved)` / `is_asset_approved(asset)`. `set_min_shield_amount` / `min_shield_amount` set the spam floor (default 1,000 base units).
+- Token errors added: `AssetNotApproved = 18`, `BatchLengthMismatch = 19`, `EmptyBatch = 20`, `BatchTooLarge = 21`. Verifier error `NonCanonicalInput = 9`: a public input at or above the BN254 scalar modulus was submitted (asset fields are reduced mod r before use as inputs). The token also rejects a negative transfer fee.
 
 ### Relayer key management (swap)
 

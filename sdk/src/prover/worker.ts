@@ -86,6 +86,10 @@ if (typeof globalSelf !== 'undefined') {
   const workerSelf = globalSelf
   workerSelf.onmessage = async (event) => {
     try {
+      const kinds = ['shield', 'transfer', 'transfer4', 'unshield', 'swapFairness']
+      if (!event.data || !kinds.includes(event.data.kind)) {
+        throw new Error('unknown prover request kind')
+      }
       const result = await handle(event.data)
       workerSelf.postMessage({ ok: true, result })
     } catch (err) {

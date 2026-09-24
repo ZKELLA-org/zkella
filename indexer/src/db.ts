@@ -83,6 +83,19 @@ export class IndexerDb {
       'WHERE ledger >= ? ORDER BY leaf_index ASC LIMIT ?'
     ).all(fromLedger, limit) as Array<{ leaf_index: number; commitment: string; encrypted_note: string; ledger: number }>
 
+    // A full page may end part-way through a ledger. Advancing the cursor past
+    // that ledger would silently drop its remaining notes, so pull in the rest
+    // of the boundary ledger before moving on (bounded by that ledger's real
+    // note count, and no infinite loop when one ledger fills a whole page).
+    if (rows.length === limit && rows.length > 0) {
+      const boundary = rows[rows.length - 1].ledger
+      const seen = new Set(rows.map(r => r.leaf_index))
+      const rest = this.db.prepare(
+        'SELECT leaf_index, commitment, encrypted_note, ledger FROM notes WHERE ledger = ? ORDER BY leaf_index ASC'
+      ).all(boundary) as typeof rows
+      for (const r of rest) if (!seen.has(r.leaf_index)) rows.push(r)
+    }
+
     const notes = rows.map(r => ({
       leafIndex: r.leaf_index, commitment: r.commitment, encryptedNote: r.encrypted_note, ledger: r.ledger,
     }))
