@@ -164,3 +164,13 @@ Swap contract on the same stack: `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7
 | `commit_swap` | ownership proof bound to intent, claimant key, asset and expiry verified on-chain | https://stellar.expert/explorer/testnet/tx/a90cb7781521d428b74fdb1fc99b7120f0a583f07d97758b75d35d6492e4c5f7 |
 | `execute_swap` | relayer fronts `asset_out` | https://stellar.expert/explorer/testnet/tx/578cf698ce8c05d9e19fe003f5ec893615fdea1375fd535f84b0155e7f1781cf |
 | `reveal_and_claim` | swap-fairness proof and output-note shield proof verified on-chain; new note at leaf 11 | https://stellar.expert/explorer/testnet/tx/ddc950056a3eab63a7f87f78037e199a19a5862ed380113e57ec4e173ef4a6cc |
+
+### Compliance contract (rewritten non-membership circuit, persistent records)
+
+Compliance contract on the same stack: `CC55I2ZEZRQLZ4VZN2OLCSAPBLPCI3XPYRTHKNI7QOIKWRU652GYNTUK`, with the new `NonMembership` verifying key registered on the verifier. Produced by `scripts/testnet_compliance_validation.cjs` against a sorted sanctions tree with sentinel leaves:
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| Sanctioned address (its own leaf as a neighbour) | cannot build a witness, so no proof exists | (local, no transaction) |
+| `publish_compliance_proof` | real non-membership proof verified on-chain; record stored in persistent storage and read back with `get_compliance_proof` | https://stellar.expert/explorer/testnet/tx/87f4a34619e03df9e228cf4790ef06961473e86664b6ce6d3c26194351d3f529 |
+
