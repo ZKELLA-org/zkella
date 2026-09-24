@@ -143,7 +143,7 @@ The root-history-window reliability fix (`ROOT_HISTORY_SIZE = 32`) was added and
 
 ## Epoch 4 — external technical review redeployment: all seven findings closed live (August 14, 2026)
 
-**This is the current live deployment** — cross-check addresses against `deployments.json` and `docs/TESTNET_DEPLOYMENT.md` before relying on anything below, since those two are the canonical current-state source and this section is a historical snapshot as of the date above.
+**This is the legacy August stack.** It was built before owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`, and is not source-equivalent to current code. The only stack built from current source is the Tranche 1 validation stack (`testnet_tranche1` in `deployments.json`; see `docs/TESTNET_DEPLOYMENT.md`). This section is a historical snapshot as of the date above.
 
 | Contract | Address |
 | --- | --- |
@@ -251,7 +251,7 @@ Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer
 
 Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specifically so their secret openings would be available to spend from — Epoch 1's notes had no persisted secret data. The `transfer()` proof was generated via the TypeScript SDK's own `generateTransferProof` (`sdk/src/prover/transfer.ts`), using Merkle paths fetched directly from the deployed contract's `merkle_path()` view function — the same SDK code path an application would use, not a CLI side-channel. Full narrative in `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction".
 
-`Transfer4x4`'s VK is now live-registered but a live 4-in/4-out transaction has not yet been run — see `docs/SCF_READINESS.md` for its real-WASM instruction-budget measurement (97% of the mainnet limit) standing in for it today, and for the update noting that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
+`Transfer4x4`'s VK was live-registered in this epoch. A live 4-in/4-out transaction was run afterwards on the Tranche 1 stack (tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`, see `docs/TESTNET_DEPLOYMENT.md`, last section), together with a standalone `unshield` (tx `668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334`) and a swap commit/execute/reveal lifecycle. That stack is the only one built from the current owner-key circuits. The measured real-WASM cost of `transfer4` is 396,688,826 instructions (99.17% of the 400M limit), so headroom is thin; see `docs/SCF_READINESS.md`.
 
 ## What is not yet demonstrated live
 

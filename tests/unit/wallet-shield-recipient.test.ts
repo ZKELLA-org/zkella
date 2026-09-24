@@ -49,6 +49,17 @@ describe('ZKELLAWallet.shield() recipient handling', () => {
     jest.restoreAllMocks()
   })
 
+  test('rejects a malformed or unreduced recipient owner key before doing any proving work', async () => {
+    const sender = await ZKELLAKeys.generate()
+    const wallet = await makeWallet(sender)
+    const tk = bytesToHex(sender.spendingKey.transmissionKey)
+    const bad = ['', 'zz'.repeat(32), 'ab'.repeat(31), 'ff'.repeat(32)] // non-hex, short, >= field modulus
+    for (const toOwnerKey of bad) {
+      await expect(wallet.shield({ asset: MOCK_ASSET, amount: 1_000_000n, to: tk, toOwnerKey })).rejects.toThrow(/toOwnerKey/)
+    }
+    await expect(wallet.shield({ asset: MOCK_ASSET, amount: 1_000_000n, to: tk })).rejects.toThrow(/together/)
+  })
+
   test('opts.to is used: shield() encrypts to the recipient transmissionKey, not the sender\'s', async () => {
     const encryptSpy = jest.spyOn(encryptModule, 'encryptNote')
 

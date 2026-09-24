@@ -1235,6 +1235,67 @@ mod tests {
         assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "proof B, the current key, must still verify after the old key expires");
     }
 
+    /// A rotation made because the outgoing key is unsound must be able to end
+    /// the retention grace period at once.
+    #[test]
+    fn revoke_previous_vk_ends_the_retention_window_immediately() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+
+        // Two genuinely distinct, independently-valid (VK, proof) pairs —
+        // borrowing the real unshield and real swap_fairness fixtures purely
+        // as two unrelated valid Groth16 instances, not for their real
+        // circuit semantics, to exercise key rotation mechanics. Both share
+        // the same 5-public-input arity, matching how a real rotation always
+        // replaces a VK with another for the *same* circuit (same arity) —
+        // unlike a shield(4)/transfer2x2(11) pair, which would make `verify`
+        // return a `PublicInputCountMismatch` `Err` against the wrong key
+        // rather than a clean `Ok(false)`, a case that can't arise from a
+        // real same-circuit rotation and would otherwise make this test
+        // exercise a scenario `update_verifying_key` was never meant to
+        // handle.
+        let mut vk_a = Bytes::new(&env);
+        hex_push(UNSHIELD_VK_HEX, &mut vk_a);
+        let mut proof_a = Bytes::new(&env);
+        hex_push(UNSHIELD_PROOF_HEX, &mut proof_a);
+        let mut inputs_a = Vec::new(&env);
+        for input_hex in UNSHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs_a.push_back(b.try_into().unwrap());
+        }
+
+        let mut vk_b = Bytes::new(&env);
+        hex_push(SWAP_FAIRNESS_VK_HEX, &mut vk_b);
+        let mut proof_b = Bytes::new(&env);
+        hex_push(SWAP_FAIRNESS_PROOF_HEX, &mut proof_b);
+        let mut inputs_b = Vec::new(&env);
+        for input_hex in SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs_b.push_back(b.try_into().unwrap());
+        }
+
+        client.register_verifying_key(&CircuitType::Shield, &vk_a);
+        assert!(client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must verify against key A before any rotation");
+
+        // Rotate to key B. The new key must verify immediately...
+        client.update_verifying_key(&CircuitType::Shield, &vk_b);
+        assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "proof B must verify against key B immediately after rotation");
+        // ...and proof A, built against the now-retired key A, must still
+        // verify too, within the retention window.
+        assert!(client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must still verify against retained key A within the retention window");
+
+        client.revoke_previous_vk(&CircuitType::Shield);
+        assert!(
+            !client.verify(&CircuitType::Shield, &inputs_a, &proof_a),
+            "proof A must stop verifying the moment the previous key is revoked, inside the window"
+        );
+        assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "the current key is unaffected by revoke");
+    }
+
     // Audit regression: a public input x and x + r are the same field
     // element. The verifier must not accept the second encoding, or any
     // caller keying storage on raw input bytes (nullifiers) can be aliased.
@@ -1261,9 +1322,18 @@ mod tests {
             inputs.push_back(b.try_into().unwrap());
         }
         let res = client.try_verify(&CircuitType::Shield, &inputs, &proof);
-        assert!(
-            !matches!(res, Ok(Ok(true))),
-            "verify accepted the non-canonical alias of a public input"
+        assert_eq!(
+            res,
+            Err(Ok(Error::NonCanonicalInput)),
+            "verify must reject the non-canonical alias of a public input with NonCanonicalInput"
+        );
+
+        // The batch path applies the same rule.
+        let items = Vec::from_array(&env, [BatchProofItem { public_inputs: inputs, proof }]);
+        assert_eq!(
+            client.try_verify_batch(&CircuitType::Shield, &items),
+            Err(Ok(Error::NonCanonicalInput)),
+            "verify_batch must reject non-canonical public inputs too"
         );
     }
 

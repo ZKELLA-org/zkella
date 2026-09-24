@@ -69,6 +69,10 @@ pub enum Error {
     InvalidInputCount     = 15,
     RecipientMismatch     = 16,
     DuplicateInputInCall  = 17,
+    AssetNotApproved      = 18,
+    BatchLengthMismatch   = 19,
+    EmptyBatch            = 20,
+    BatchTooLarge         = 21,
 }
 
 /// Mirrors `zkella_token::ShieldedToken`'s public interface (the subset

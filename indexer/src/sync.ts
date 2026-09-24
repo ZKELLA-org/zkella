@@ -105,10 +105,12 @@ export class Syncer {
       const lastEvent = response.events[response.events.length - 1]
       pagingToken = lastEvent.id
       // The db's persisted cursor stays ledger-based (not the RPC paging
-      // token) — safe across a restart because re-fetching from the start
-      // of a ledger already partially processed just re-upserts the same
-      // rows (`upsertNote`/`markNullifierSpent` are idempotent).
-      this.config.db.setLastSyncedLedger(lastEvent.ledger + 1)
+      // token). It records the last ledger *seen*, not the one after it: a
+      // page can end part-way through a ledger, and resuming at ledger+1 after
+      // an error or restart would drop that ledger's remaining events.
+      // Re-fetching the ledger is safe — `upsertNote`/`markNullifierSpent`
+      // are idempotent.
+      this.config.db.setLastSyncedLedger(lastEvent.ledger)
 
       if (response.events.length < 1000) break
     }

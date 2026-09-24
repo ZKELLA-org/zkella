@@ -388,7 +388,7 @@ fee                   : field
 asset_id              : field  // all notes must share same asset
 ```
 
-**Constraints (per-group breakdown below is an unverified design-time guess; the real, measured total from `snarkjs r1cs info` against the compiled circuit is 42,853 constraints — see `docs/CIRCUIT_SPEC.md` §8 — not the ~15,450 this breakdown sums to):**
+**Constraints (per-group breakdown below is an unverified design-time guess; the measured total from `snarkjs r1cs info` against the currently built circuit is 21,391 constraints — see `docs/CIRCUIT_SPEC.md` §8 — not the ~15,450 this breakdown sums to):**
 
 | Constraint group | Gates (design-time estimate, unverified) |
 |---|---|
@@ -401,7 +401,7 @@ asset_id              : field  // all notes must share same asset
 | Range proofs: values ∈ [0, 2^64) (×4) | ~8,000 |
 | Asset consistency | ~100 |
 | **Total (estimate)** | **~15,450** |
-| **Total (real, measured)** | **42,853** |
+| **Total (measured)** | **21,391** |
 
 Proving time estimate: ~1.5–2.5 seconds on a modern browser (snarkjs WASM, Groth16) — unmeasured.
 
@@ -448,7 +448,7 @@ for each value in [in_value[0..2], out_value[0..2]]:
 
 Extends 2-in/2-out with 4 input and 4 output notes. Supports dust consolidation and multi-recipient payments.
 
-Real, measured constraint count: 40,268 (`snarkjs r1cs info` against the compiled circuit — an earlier design-time estimate of ~28,000 undercounted this; see `docs/CIRCUIT_SPEC.md` §5 for the note on why it isn't roughly double 2-in/2-out's count despite twice the inputs/outputs).
+Measured constraint count: 42,489 (`snarkjs r1cs info` against the currently built circuit).
 Proving time estimate: ~4–6 seconds on a modern browser — unmeasured.
 
 Public inputs include `nullifiers[4]` and `out_commitments[4]`.
@@ -459,19 +459,19 @@ Public inputs include `nullifiers[4]` and `out_commitments[4]`.
 
 Simpler circuit: no Merkle proof (note is not yet in the tree).
 
-Private inputs: `value, asset_id, rho, rcm, rcv`
+Private inputs: `value, asset_id, rho, rcm, pk, rcv` (`pk` is the recipient's owner key)
 Public inputs: `commitment, value_commit, pub_value, pub_asset_id` — see `docs/CIRCUIT_SPEC.md` §2 for the exact template; `pub_value`/`pub_asset_id` are the revealed amount/asset the circuit constrains to equal the private `value`/`asset_id`, not additional independent signals.
 
-Constraints: 2,133 (real, measured). Proving time: ~200ms (unmeasured estimate).
+Constraints: 1,264 (measured). Proving time: ~200ms (unmeasured estimate).
 
 ### 5.4 Unshield Circuit (shielded → public)
 
 **File:** `circuits/unshield/unshield.circom`
 
-Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]`
+Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]` (`pk` is derived in-circuit from `nk`)
 Public inputs: `anchor, nullifier, pub_value, pub_asset_id, recipient_hash` (amount and asset are revealed via `pub_value`/`pub_asset_id`; `recipient_hash = Poseidon2(address_field(to), 0)` binds the withdrawal destination — see `docs/CIRCUIT_SPEC.md` §3)
 
-Constraints: 18,773 (real, measured — the 32-level Merkle proof dominates; an earlier estimate of ~6,200 undercounted this substantially). Proving time: ~600ms (unmeasured estimate).
+Constraints: 9,277 (measured). Proving time: ~600ms (unmeasured estimate).
 
 ### 5.5 Swap Fairness Circuit
 
@@ -494,7 +494,7 @@ amount_out >= min_amount_out
 
 `asset_in`/`asset_out` are public in this circuit (unlike `intent_nonce`/`amount_in`/`max_slippage_bps`, which stay private) because `contracts/swap::reveal_and_claim` needs to bind the proof to the specific assets already recorded in on-chain swap state before it will accept it. An earlier draft of this spec used a different `execution_price_bps` public signal that was never implemented; `min_amount_out`, derived in-circuit from the private `amount_in`/`max_slippage_bps`, is what the real circuit and contract use.
 
-Constraints: 927 (real, measured — no Merkle proof in this circuit, unlike shield/unshield/transfer, so it's much smaller than an earlier estimate of ~3,500 assumed). Proving time: ~400ms (unmeasured estimate).
+Constraints: 941 (measured; no Merkle proof in this circuit). Proving time: ~400ms (unmeasured estimate).
 
 ### 5.6 Sanctions Non-Membership Circuit
 
@@ -502,12 +502,12 @@ Constraints: 927 (real, measured — no Merkle proof in this circuit, unlike shi
 
 Proves address is not in a published sanctions Merkle tree.
 
-Private inputs: `sk, non_membership_path[32], boundary_leaves[2]`  
+Private inputs: `sk`, two boundary leaves with their Merkle paths and indices  
 Public inputs: `sanctions_root, tk_commitment`
 
-Uses sorted Merkle tree non-membership proof: proves that the address falls between two consecutive leaves in the sorted tree (both provided as witnesses).
+Uses a sorted Merkle tree non-membership proof: `lower < address < upper` (strict), the two leaves adjacent (`upper_idx = lower_idx + 1`), values truncated to 248 bits with `Num2Bits_strict`, sentinel leaves `0` and `2^248 - 1`. See `docs/CIRCUIT_SPEC.md` §7.
 
-Constraints: ~9,000 (design-time estimate — this circuit has never been built/measured in this environment, unlike the other five).
+Constraints: 17,533 (measured; public inputs `sanctions_root, tk_commitment`).
 
 ### 5.7 Trusted Setup
 
@@ -541,11 +541,22 @@ pub trait ShieldedTokenInterface {
         amount:         i128,
         rho:            BytesN<32>,
         rcm:            BytesN<32>,
+        owner_pk:       BytesN<32>,  // recipient's owner key pk = H(nk, DOMAIN_PK), see §3.2
         commitment:     BytesN<32>,  // note commitment
         encrypted_note: Bytes,       // 176-byte ciphertext bundle (see §2.4)
         shield_proof:   Bytes,       // Groth16 proof, 256-byte wire format (see §2.5)
         shield_pub:     ShieldPublicInputs,
     ) -> Result<u32, Error>;         // leaf index in Merkle tree
+
+    /// Shield up to `MAX_SHIELD_BATCH` (= 3) deposits of one `asset` in a
+    /// single call. Each item carries its own Groth16 proof; the auth check,
+    /// asset-approval check and the final SEP-41 transfer are shared.
+    /// Returns one leaf index per item, in order.
+    /// Errors: EmptyBatch = 20, BatchTooLarge = 21 (more than 3 items),
+    /// BatchLengthMismatch = 19, AssetNotApproved = 18.
+    fn shield_batch(
+        env: Env, from: Address, asset: Address, items: Vec<ShieldBatchItem>,
+    ) -> Result<Vec<u32>, Error>;
 
     /// Private note-to-note transfer, 2-in/2-out. Spends nullifiers, adds
     /// output commitments to the tree. `transfer4` is the same shape against
@@ -582,6 +593,15 @@ pub trait ShieldedTokenInterface {
         pub_inputs:  UnshieldPublicInputs,
     ) -> Result<(), Error>;
 
+    /// Asset allowlist: nothing is approved by default, including native XLM.
+    /// `shield` and `shield_batch` fail with AssetNotApproved = 18 otherwise.
+    fn set_asset_approved(env: Env, asset: Address, approved: bool) -> Result<(), Error>; // admin
+    fn is_asset_approved(env: Env, asset: Address) -> bool;
+
+    /// Spam floor for shielded amounts (default 1,000 base units).
+    fn set_min_shield_amount(env: Env, new_amount: i128) -> Result<(), Error>; // admin
+    fn min_shield_amount(env: Env) -> i128;
+
     fn merkle_root(env: Env) -> BytesN<32>;
     fn merkle_path(env: Env, leaf_index: u32) -> Vec<BytesN<32>>;
     fn leaf_count(env: Env) -> u32;
@@ -594,6 +614,8 @@ pub trait ShieldedTokenInterface {
     fn accept_admin(env: Env) -> Result<(), Error>;
 }
 ```
+
+`ShieldBatchItem { amount, rho, rcm, owner_pk, commitment, encrypted_note, shield_proof, shield_pub }` (`owner_pk` follows `rcm`). `transfer` and `transfer4` reject a negative `fee`. Public inputs for asset fields are reduced modulo the BN254 scalar field before use, because the verifier rejects non-canonical inputs. Token error codes: AlreadyInitialized 1, NotInitialized 2, Paused 3, InvalidProof 4, InvalidAnchor 5, NullifierSpent 6, CommitmentMismatch 7, AssetMismatch 8, AmountMismatch 9, Unauthorized 10, MerkleTreeFull 11, NotImplemented 12, InvalidNote 13, DuplicateCommitment 14, InvalidInputCount 15, RecipientMismatch 16, DuplicateInputInCall 17, AssetNotApproved 18, BatchLengthMismatch 19, EmptyBatch 20, BatchTooLarge 21.
 
 **Verification logic (transfer, unshield, shield — all real, not pseudocode-only):** each calls `VerifierClient::new(&env, &verifier).verify(circuit, public_inputs, proof)`, which the `contracts/verifier` contract implements as: deserialize the wire-format proof into `(A, B, C)` over BN254, compute `vk_x = IC[0] + Σ public_input[i] · IC[i+1]` via `env.crypto().bn254().g1_msm(...)`, then a single `pairing_check([−A, α, vk_x, C], [B, β, γ, δ])` call. `−A` is computed as `g1_mul(A, r−1)` (scalar multiplication by `r−1` in a prime-order group is exact negation — no separate negate host function exists).
 
@@ -608,10 +630,23 @@ pub trait VerifierRegistry {
     fn initialize(env: Env, admin: Address);
     fn register_verifying_key(env: Env, circuit: CircuitType, vk: Bytes) -> Result<(), Error>; // first-time only
     fn update_verifying_key(env: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error>; // rotation, admin-gated
+    /// Drop the retained previous key immediately (admin-gated).
+    fn revoke_previous_vk(env: Env, circuit: CircuitType) -> Result<(), Error>;
     fn get_verifying_key(env: Env, circuit: CircuitType) -> Result<Bytes, Error>;
     fn verify(env: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> bool;
+    /// Batched verification of K proofs for one circuit (K + 3 pairings).
+    /// Each item's random weight is a SHA-256 challenge over a digest of the
+    /// whole batch (circuit, every item's public inputs and proof) and the
+    /// item's index, so no item can be chosen after the challenges are known.
+    fn verify_batch(env: Env, circuit: CircuitType, items: Vec<BatchProofItem>) -> Result<bool, Error>;
 }
 ```
+
+Verifier behavior and errors:
+
+- `update_verifying_key` keeps the outgoing key valid for `VK_RETENTION_WINDOW_LEDGERS = 17,280` ledgers (about one day); `verify` tries the new key first and falls back to the retained key only inside the window. `revoke_previous_vk` ends the window immediately. Expiry arithmetic is saturating.
+- Any public input greater than or equal to the BN254 scalar modulus is rejected with `NonCanonicalInput = 9`; without this check `x` and `x + r` verify identically, which allowed a nullifier to be aliased.
+- Error codes: NotInitialized 1, Unauthorized 2, VkAlreadyRegistered 3, VkNotRegistered 4, InvalidVkLength 5, InvalidProofLength 6, PublicInputCountMismatch 7, EmptyBatch 8, NonCanonicalInput 9.
 
 `CircuitType` is `{ Shield = 0, Transfer = 1, Unshield = 2, NonMembership = 3, Transfer4x4 = 4, SwapFairness = 5 }` — one verifying key per variant, shared across `ShieldedToken`, `swap`, and `compliance`.
 
@@ -670,8 +705,11 @@ pub trait ShieldedSwap {
     fn commit_swap(
         env: Env, nullifier_in: BytesN<32>, intent_commitment: BytesN<32>,
         asset_in: Address, asset_out: Address, amount_in: i128, anchor: BytesN<32>,
-        refund_to: Address, ownership_proof: Bytes, expiry_ledger: u32,
+        refund_to: Address, out_owner_pk: BytesN<32>, ownership_proof: Bytes, expiry_ledger: u32,
     ) -> BytesN<32>; // swap_id = sha256(intent_commitment)
+
+    // `out_owner_pk` is the claimant's owner key, committed here; `reveal_and_claim`
+    // must use the same key. Swap state is held in persistent storage (TTL-bumped).
 
     /// Relayer really fronts `amount_out` of `asset_out` into escrow (a real
     /// SEP-41 transfer), in exchange for the already-escrowed `asset_in` once
@@ -686,7 +724,7 @@ pub trait ShieldedSwap {
     /// `fairness_proof`).
     fn reveal_and_claim(
         env: Env, swap_id: BytesN<32>, out_rho: BytesN<32>, out_rcm: BytesN<32>,
-        out_commitment: BytesN<32>, out_value_commit: BytesN<32>, encrypted_note: Bytes,
+        out_owner_pk: BytesN<32>, out_commitment: BytesN<32>, out_value_commit: BytesN<32>, encrypted_note: Bytes,
         fairness_proof: Bytes, fairness_pub: SwapFairnessPublicInputs, shield_proof: Bytes,
     ) -> u32; // output note leaf index
 
@@ -722,6 +760,8 @@ pub trait ZKELLAGovernance {
     fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes); // starts the 7-day timelock — first-time registration AND replacement both go through this
     fn execute_vk_update(env: Env, circuit: CircuitType);              // after the timelock elapses; registers if the circuit has no key yet, else rotates
     fn cancel_vk_update(env: Env, circuit: CircuitType);
+    fn revoke_previous_vk(env: Env, circuit: CircuitType);             // forwards to verifier.revoke_previous_vk
+    fn timelock_ledgers(env: Env) -> u32;                               // timelock the binary was built with
     fn transfer_admin(env: Env, new_admin: Address);                  // two-step handover
     fn accept_admin(env: Env);
 }
@@ -975,7 +1015,7 @@ Step 1 — User: build the fairness-circuit witness off-chain
   (amount_out and min_amount_out stay private until reveal_and_claim)
 
 Step 2 — User: commit_swap(nullifier_in, intent_commitment, asset_in, asset_out,
-                            amount_in, anchor, refund_to, ownership_proof, expiry_ledger)
+                            amount_in, anchor, refund_to, out_owner_pk, ownership_proof, expiry_ledger)
   - ownership_proof is a real unshield.circom proof; the call cross-calls
     ShieldedToken::unshield(nullifier_in, swap_contract_address, ownership_proof, ...),
     which both verifies note ownership and atomically escrows amount_in of
@@ -986,8 +1026,8 @@ Step 3 — Relayer: execute_swap(swap_id, amount_out, relayer)
   - relayer really transfers amount_out of asset_out into escrow
   - state moves Committed -> Executed
 
-Step 4 — User: reveal_and_claim(swap_id, out_rho, out_rcm, out_commitment,
-                                 out_value_commit, encrypted_note,
+Step 4 — User: reveal_and_claim(swap_id, out_rho, out_rcm, out_owner_pk,
+                                 out_commitment, out_value_commit, encrypted_note,
                                  fairness_proof, fairness_pub, shield_proof)
   - fairness_proof (real swap_fairness.circom proof) is checked against the
     verifier; binds the now-revealed amount_out/min_amount_out back to
@@ -1252,18 +1292,18 @@ If users do not trust the ceremony, they should wait for a PLONK-based circuit (
 
 | Circuit | Constraints | Proving Time | Proof Size |
 |---|---|---|---|
-| Shield | 2,133 (real) | ~200ms | 256 bytes |
-| Unshield | 18,773 (real) | ~600ms | 256 bytes |
-| Transfer 2-in/2-out | 42,853 (real) | ~2.0s | 256 bytes |
-| Transfer 4-in/4-out | 40,268 (real) | ~4.5s | 256 bytes |
-| Swap fairness | 927 (real) | ~400ms | 256 bytes |
-| Sanctions non-membership | ~9,000 (estimate — never built in this environment) | ~1.0s | 256 bytes |
+| Shield | 1,264 (measured) | ~200ms | 256 bytes |
+| Unshield | 9,277 (measured) | ~600ms | 256 bytes |
+| Transfer 2-in/2-out | 21,391 (measured) | ~2.0s | 256 bytes |
+| Transfer 4-in/4-out | 42,489 (measured) | ~4.5s | 256 bytes |
+| Swap fairness | 941 (measured) | ~400ms | 256 bytes |
+| Sanctions non-membership | 17,533 (measured) | ~1.0s | 256 bytes |
 
-Constraint counts are real, measured via `snarkjs r1cs info` against the compiled circuits (see `docs/CIRCUIT_SPEC.md` §8 for the full Wires/Labels breakdown) — an earlier draft of this table used design-time guesses that undercounted several of these substantially (unshield and both transfer circuits in particular). All Groth16 proofs are 256 bytes regardless of circuit size (uncompressed BN254 points — see `docs/CIRCUIT_SPEC.md` §1 for why this isn't the 192-byte compressed size some Groth16 tooling defaults to). Proving-time estimates in this table are still unmeasured design-time guesses, not benchmarked numbers.
+Constraint counts are measured via `snarkjs r1cs info` on the currently built circuits; the proving-time column is an unmeasured estimate against the compiled circuits (see `docs/CIRCUIT_SPEC.md` §8 for the full Wires/Labels breakdown) — an earlier draft of this table used design-time guesses that undercounted several of these substantially (unshield and both transfer circuits in particular). All Groth16 proofs are 256 bytes regardless of circuit size (uncompressed BN254 points — see `docs/CIRCUIT_SPEC.md` §1 for why this isn't the 192-byte compressed size some Groth16 tooling defaults to). Proving-time estimates in this table are still unmeasured design-time guesses, not benchmarked numbers.
 
 ### 13.2 Soroban On-Chain Verification Cost
 
-The table below is the original design-time estimate. It has since been superseded by a **real measurement**: a full `shield()` call (commitment computation + Merkle insert + real on-chain Groth16 verification) costs **~104M instructions** in Soroban's own host environment (`InvocationResourceLimits::mainnet()`, 400M budget) — about 26%, with the verifier's cross-contract Groth16 check alone at ~30M of that. This was also confirmed on live Stellar Testnet across four real `shield()` transactions. See `docs/POC_IMPLEMENTATION.md` for the methodology, the regression test, and transaction hashes. The estimate below undercounts by roughly two orders of magnitude — kept here only to show how far an unmeasured guess can be from Soroban's real per-operation cost, not as a usable budget figure.
+The table below is the original design-time estimate. It has since been superseded by a **real measurement**: a full `shield()` call (commitment computation + Merkle insert + real on-chain Groth16 verification) costs **~113.2M instructions** in Soroban's own host environment (`InvocationResourceLimits::mainnet()`, 400M budget) — about 28%. Other measured costs on the real WASM: transfer 2x2 ~228M (57%), transfer4 396,688,826 (99.17%), unshield 33,887,174 (8.5%), `shield_batch` of 3 items 347,231,269 (~116M per item, 87%), which is why `MAX_SHIELD_BATCH = 3`. This was also confirmed on live Stellar Testnet across four real `shield()` transactions. See `docs/POC_IMPLEMENTATION.md` for the methodology, the regression test, and transaction hashes. The estimate below undercounts by roughly two orders of magnitude — kept here only to show how far an unmeasured guess can be from Soroban's real per-operation cost, not as a usable budget figure.
 
 | Operation | Soroban Instructions (original, unmeasured estimate) |
 |---|---|

@@ -99,7 +99,12 @@ impl ComplianceContract {
             published_ledger: env.ledger().sequence(),
             version:          String::from_str(&env, "1.0"),
         };
-        env.storage().instance().set(&StorageKey::ComplianceRecord(owner.clone()), &record);
+        // One entry per owner, each with its own TTL — instance storage is a
+        // single size-capped entry loaded on every call and would let the
+        // record set grow without bound.
+        let key = StorageKey::ComplianceRecord(owner.clone());
+        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().extend_ttl(&key, 17_280 * 30, 17_280 * 365);
         env.events().publish(
             (symbol_short!("zkella"), symbol_short!("comply")),
             owner,
@@ -108,7 +113,7 @@ impl ComplianceContract {
     }
 
     pub fn get_compliance_proof(env: Env, owner: Address) -> Option<ComplianceRecord> {
-        env.storage().instance().get(&StorageKey::ComplianceRecord(owner))
+        env.storage().persistent().get(&StorageKey::ComplianceRecord(owner))
     }
 }
 
