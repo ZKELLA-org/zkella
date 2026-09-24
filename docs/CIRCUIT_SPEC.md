@@ -196,6 +196,8 @@ template ValueCommit() {
 **File:** `circuits/shield/shield.circom`  
 **Purpose:** Proves a valid note commitment for a publicly known amount being moved into the shielded pool.  
 **Constraints:** 1,264 (measured via `snarkjs r1cs info` against the compiled circuit; 1,270 wires, 6 private and 4 public inputs). The recipient's owner key `pk` is a private input bound into the commitment.  
+
+**Expected shape, and why 1,264 is the right number.** The circuit is five Poseidon2 hashes plus a 64-bit range check plus three equalities: the commitment is four hashes (`H(value, asset)`, `H(rho, rcm)`, their combination, then the combination with `pk`), the value commitment is one (`H(value, rcv)`), and `Range64` is a 64-bit decomposition. A two-input circomlib Poseidon costs about 240 constraints, so 5 x ~240 = ~1,200, plus 64 for the bit decomposition, plus the equality and public-binding constraints, gives about 1,264. If a constraint were dropped (one of the hashes or the range check) the count would fall by roughly 240 or 64, and if one were added it would rise by the same, so the measured figure matches the design and rules out a missing hash or range check. There is no Merkle membership proof (shield creates a note, it does not spend one), which is why this is the smallest circuit in the set (unshield 9,277, transfer 2x2 21,391, transfer4 42,489).  
 **Proving time:** ~200ms (unmeasured estimate — see §13.1 of `docs/TECHNICAL_SPEC.md`)
 
 ```circom

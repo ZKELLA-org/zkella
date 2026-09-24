@@ -120,6 +120,31 @@ const { leafIndex } = await submit()
 console.log('Note committed at leaf index:', leafIndex)
 ```
 
+**Worked end-to-end example (proof generation and on-chain verification against deployed contracts).** `scripts/testnet_live_validation.cjs` is the runnable reference: it builds four notes with `wallet.shield`, spends all four with `generateTransfer4Proof` and submits `transfer4`, then unshields one output. Each step is one Testnet transaction whose proof is verified on-chain by the deployed verifier. Run it with a funded Testnet account:
+
+```
+npm run build --workspace=sdk
+STELLAR_SECRET=<funded testnet secret> \
+TOKEN_ID=<deployed ShieldedToken> \
+ASSET_ID=<approved SEP-41 asset> \
+node scripts/testnet_live_validation.cjs
+```
+
+The core of what it does, for one shield (this is the sequence `wallet.shield` performs):
+
+```typescript
+const note = await buildNote(amount, asset, keys.spendingKey.ownerKey)        // fresh rho, rcm; commitment includes the owner key
+const { proof, valueCommit } = await generateShieldProof(
+  note, { commitment: note.commitment, asset, amount },
+  'circuits/shield/build/shield_js/shield.wasm', 'circuits/shield/build/shield.zkey')   // real Groth16 proof (WASM witness calculator + snarkjs)
+// shield(from, asset, amount, rho, rcm, owner_pk, commitment, encrypted_note, proof, shield_pub) is then
+// simulated, signed and submitted; the verifier contract checks `proof` on-chain.
+```
+
+`scripts/testnet_swap_validation.cjs` and `scripts/testnet_compliance_validation.cjs` do the same for the swap lifecycle (unshield ownership proof, swap-fairness proof, shield proof) and the compliance contract. Every transaction they produced on the current Testnet stack is listed in `docs/TESTNET_DEPLOYMENT.md`, and `scripts/tx_resource_profile.cjs` prints each one's resource profile.
+
+To keep the page responsive in a browser, run the same generators in the Web Worker (`sdk/src/prover/worker.ts`): post `{ kind: 'shield', args: [note, publicInputs, wasmUrl, zkeyUrl] }` and await `{ ok, result }`. `scripts/browser_worker_check.mjs` demonstrates it in Chromium.
+
 There is no separate "inspect the XDR before submitting" step — `submit()` builds, signs (with `stellarSecret`), sends, and polls the transaction to completion in one call. Under the hood:
 1. Builds a fresh note `(value, asset, rho, rcm)` and its commitment.
 2. Encrypts the note to the wallet's own transmission key.

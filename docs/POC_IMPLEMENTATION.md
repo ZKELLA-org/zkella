@@ -84,7 +84,7 @@ Two root causes were identified and fixed:
 
 **Locally measured** (Soroban's real host environment via `soroban-sdk`'s test harness, with `InvocationResourceLimits::mainnet()` explicitly enforced — the SDK's own snapshot of the current Testnet/Mainnet instruction limit, 400M, as of 2026-07-10 — rather than the SDK's more conservative built-in local-test default of 100M, which is what this document's original failure was actually hitting):
 
-- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **113.2M instructions** on the real WASM, about 28% of the 400M budget (an earlier measurement of ~104M predates the owner-key commitment and the canonical-input check). Other real-WASM costs: transfer 2x2 ~228M (57%), transfer4 396,688,826 (99.17%), unshield 33,887,174 (8.5%), `shield_batch` of 3 items 347,231,269 (~116M per item, 87%).
+- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **118.6M instructions** on the real WASM, about 28% of the 400M budget (an earlier measurement of ~104M predates the owner-key commitment and the canonical-input check). Other real-WASM costs: transfer 2x2 ~228M (57%), transfer4 396,688,826 (99.17%), unshield 33,887,174 (8.5%), `shield_batch` of 3 items 347,231,269 (~116M per item, 87%).
 - The verifier's cross-contract Groth16 check alone: **~30M instructions** of that total.
 - Regression test: `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget`.
 

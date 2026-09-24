@@ -23,8 +23,10 @@ jobs:
         working-directory: contracts
         run: cargo build --workspace --target wasm32v1-none --release
       - name: cargo test --workspace
+        # Release profile: the at-scale Merkle test and the real-WASM cost-parity tests
+        # hash thousands of Poseidon inputs in pure Rust, which is impractically slow unoptimised.
         working-directory: contracts
-        run: cargo test --workspace
+        run: cargo test --workspace --release
 
   sdk:
     name: SDK and circuits (npm test + typecheck)

@@ -174,3 +174,28 @@ Compliance contract on the same stack: `CC55I2ZEZRQLZ4VZN2OLCSAPBLPCI3XPYRTHKNI7
 | Sanctioned address (its own leaf as a neighbour) | cannot build a witness, so no proof exists | (local, no transaction) |
 | `publish_compliance_proof` | real non-membership proof verified on-chain; record stored in persistent storage and read back with `get_compliance_proof` | https://stellar.expert/explorer/testnet/tx/87f4a34619e03df9e228cf4790ef06961473e86664b6ce6d3c26194351d3f529 |
 
+### Governance-settable minimum shield amount, changed live without a redeploy
+
+On the validation token (`CDQ53BGU...`), the minimum was read (1,000), raised to 2,000,000 and read back, a shield below it was rejected, and the minimum was restored. No contract was redeployed.
+
+| Step | Tx |
+| --- | --- |
+| `set_min_shield_amount(2000000)` | https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890 |
+| shield of 1,000,000 while the minimum was 2,000,000 | rejected by the contract during simulation (no transaction) |
+| `set_min_shield_amount(1000)` (restore) | https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25 |
+
+`scripts/testnet_min_shield_check.cjs` performs the rejected shield.
+
+### Resource profile of the live transactions
+
+Declared Soroban resources of each transaction (from the transaction envelope, printed by `scripts/tx_resource_profile.cjs`). The instruction figure is the simulation result plus the safety margin the client adds, so it sits a few percent above the measured cost; every figure is well under the 400M limit. Four shields on a fresh deployment stayed within 126.1M to 126.3M each, consistent across all four.
+
+| Transaction | Instructions | Ledger entries (footprint) | Written entries | Write bytes |
+| --- | --- | --- | --- | --- |
+| `shield` #0 to #3 | 126.1M, 126.3M, 126.3M, 126.3M | 73 | 37 | 5,980 to 6,100 |
+| `transfer4` | 378.7M | 79 | 46 | 7,432 |
+| `unshield` | 35.5M | 8 | 4 | 1,504 |
+| swap `commit_swap` | 44.0M | 11 | 5 | 2,392 |
+| swap `reveal_and_claim` | 158.5M | 77 | 39 | 7,368 |
+| compliance `publish_compliance_proof` | 30.4M | 5 | 1 | 336 |
+

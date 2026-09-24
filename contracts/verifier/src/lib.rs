@@ -538,6 +538,7 @@ impl VerifierContract {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
 
@@ -1335,6 +1336,97 @@ mod tests {
             Err(Ok(Error::NonCanonicalInput)),
             "verify_batch must reject non-canonical public inputs too"
         );
+    }
+
+    // Instruction cost of batch verification against verifying the same proofs
+    // one by one, measured on the compiled WASM (Tranche 1, Deliverable 3).
+    // Repeating one real shield proof is a valid batch (each item gets its own
+    // challenge), so the comparison is like for like.
+    const VERIFIER_WASM_FOR_COST: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_verifier.wasm");
+
+    fn shield_items(env: &Env, k: u32) -> (Vec<BytesN<32>>, Bytes, Vec<BatchProofItem>) {
+        let mut proof = Bytes::new(env);
+        hex_push(SHIELD_PROOF_HEX, &mut proof);
+        let mut inputs = Vec::new(env);
+        for input_hex in SHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(env);
+            hex_push(input_hex, &mut b);
+            inputs.push_back(b.try_into().unwrap());
+        }
+        let mut items = Vec::new(env);
+        for _ in 0..k {
+            items.push_back(BatchProofItem { public_inputs: inputs.clone(), proof: proof.clone() });
+        }
+        (inputs, proof, items)
+    }
+
+    #[test]
+    fn verify_batch_cost_vs_individual_verification_on_real_wasm() {
+        let mut rows: std::vec::Vec<(u32, u64, u64)> = std::vec::Vec::new();
+        for k in [2u32, 4, 8] {
+            let env = Env::default();
+            env.cost_estimate().budget().reset_limits(4_000_000_000, 200_000_000);
+            env.mock_all_auths();
+            let admin = Address::generate(&env);
+            let id = env.register(VERIFIER_WASM_FOR_COST, ());
+            let client = VerifierContractClient::new(&env, &id);
+            client.initialize(&admin);
+            let mut vk = Bytes::new(&env);
+            hex_push(SHIELD_VK_HEX, &mut vk);
+            client.register_verifying_key(&CircuitType::Shield, &vk);
+            let (inputs, proof, items) = shield_items(&env, k);
+
+            let mut individual = 0u64;
+            for _ in 0..k {
+                env.cost_estimate().budget().reset_tracker();
+                assert!(client.verify(&CircuitType::Shield, &inputs, &proof));
+                individual += env.cost_estimate().budget().cpu_instruction_cost();
+            }
+            env.cost_estimate().budget().reset_tracker();
+            assert!(client.verify_batch(&CircuitType::Shield, &items));
+            let batch = env.cost_estimate().budget().cpu_instruction_cost();
+            rows.push((k, individual, batch));
+        }
+        for (k, individual, batch) in &rows {
+            std::println!("BATCH_COST k={k} individual_total={individual} batch={batch} ratio={:.2}", *batch as f64 / *individual as f64);
+        }
+        // Batching replaces 4K pairings with K+3, so it must win once K is large enough.
+        let (_, individual, batch) = rows[rows.len() - 1];
+        assert!(batch < individual, "batch of 8 ({batch}) must cost less than 8 individual verifications ({individual})");
+    }
+
+    /// Cost parity for the verifier's own entrypoints (Tranche 1, Deliverable 6):
+    /// native contract vs compiled WASM, failing on a material gap or on a
+    /// single call above the 400M limit.
+    #[test]
+    fn cost_parity_verify_and_verify_batch() {
+        const BUDGET: u64 = 400_000_000;
+        let run = |wasm: bool| -> (u64, u64) {
+            let env = Env::default();
+            env.cost_estimate().budget().reset_limits(4_000_000_000, 200_000_000);
+            env.mock_all_auths();
+            let admin = Address::generate(&env);
+            let id = if wasm { env.register(VERIFIER_WASM_FOR_COST, ()) } else { env.register(VerifierContract, ()) };
+            let client = VerifierContractClient::new(&env, &id);
+            client.initialize(&admin);
+            let mut vk = Bytes::new(&env);
+            hex_push(SHIELD_VK_HEX, &mut vk);
+            client.register_verifying_key(&CircuitType::Shield, &vk);
+            let (inputs, proof, items) = shield_items(&env, 4);
+            env.cost_estimate().budget().reset_tracker();
+            assert!(client.verify(&CircuitType::Shield, &inputs, &proof));
+            let single = env.cost_estimate().budget().cpu_instruction_cost();
+            env.cost_estimate().budget().reset_tracker();
+            assert!(client.verify_batch(&CircuitType::Shield, &items));
+            (single, env.cost_estimate().budget().cpu_instruction_cost())
+        };
+        let (n_single, n_batch) = run(false);
+        let (w_single, w_batch) = run(true);
+        std::println!("COST_PARITY verify: native={n_single} wasm={w_single}; verify_batch(4): native={n_batch} wasm={w_batch}");
+        for (name, native, wasm) in [("verify", n_single, w_single), ("verify_batch(4)", n_batch, w_batch)] {
+            assert!(wasm < BUDGET, "{name}: WASM used {wasm}, over the limit");
+            assert!(wasm * 100 <= native * 125, "{name}: WASM ({wasm}) is more than 25% above native ({native})");
+        }
     }
 
     // ── Deliverable 3: batch verification ─────────────────────────────────
