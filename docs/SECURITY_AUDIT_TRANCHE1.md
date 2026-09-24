@@ -40,3 +40,19 @@ A second re-audit of the same code found further issues. Fixed items are describ
 - **`value_commit` is a Poseidon hash, not homomorphic.** Balance is enforced inside the circuit, not by a homomorphic check.
 - **Swap `min_amount_out` and `amount_out` are not range-bound in the circuit.** The contract passes `u128` values, so this is not exploitable through the contract.
 - **Transfer fee is proven but not collected.** The fee is constrained in the circuit; no contract code pays it to anyone.
+
+## Shield circuit negative-testing pass
+
+`tests/unit/shield-circuit-negative.test.ts` builds a witness for the compiled `shield.circom` with a deliberate defect and checks that circom's witness calculator refuses it. Each case changes exactly one thing against a known-good baseline (which is first confirmed accepted as a positive control), so each isolates one constraint:
+
+| Malformed witness | Constraint exercised | Result |
+| --- | --- | --- |
+| Commitment off by one | commitment equals the four-hash formula including `pk` | rejected |
+| Commitment computed for a different owner key than the `pk` witness | owner key is bound into the commitment | rejected |
+| Value commitment off by one | `value_commit = H(value, rcv)` | rejected |
+| `pub_value` differs from the witness value | public amount equals the committed amount | rejected |
+| `pub_asset_id` differs from the witness asset | public asset equals the committed asset | rejected |
+| Value exactly 2^64 (hashes recomputed for it) | 64-bit range check | rejected |
+| Value near the field modulus (a "negative" amount) | 64-bit range check | rejected |
+
+No under-constrained path was found in the shield circuit. The pass did find one in the spend circuits, outside shield's own constraints: the nullifier key was not bound to the note (see the table above), which is now fixed and covered by `tests/unit/circuit-owner-binding.test.ts`. The compliance circuit's non-membership soundness holes were likewise found by review and covered by `tests/unit/circuit-compliance.test.ts`.

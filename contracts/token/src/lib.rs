@@ -205,10 +205,11 @@ impl ShieldedToken {
     /// invoke clawback against *any* balance holder, including this
     /// contract's own custodied balance after a deposit, not just a user's
     /// trustline before one. There is no way for this contract to detect or
-    /// reverse a clawback after the fact — the real funds backing a shielded
-    /// note would simply be gone, with no on-chain signal distinguishing
-    /// that from correct operation until someone tries to unshield more than
-    /// the contract's real balance can cover. Rather than accept that risk
+    /// prevent a clawback after the fact. What it does about one: the
+    /// shortfall is visible on-chain (`custody_shortfall`), withdrawals are
+    /// paid pro rata so the loss is shared by every holder instead of going
+    /// to whoever withdraws first (`unshield`), and revoking the asset here
+    /// stops new deposits. Rather than accept that risk
     /// implicitly for every asset, shielding requires an explicit,
     /// per-asset governance decision first. Native XLM has no issuer and
     /// therefore no clawback right, so approving it is a safe, informed
@@ -869,6 +870,8 @@ impl ShieldedToken {
             .instance()
             .get(&StorageKey::ShieldedSupply(pub_inputs.pub_asset_id.clone()))
             .unwrap_or(0);
+        let balance_before = token::Client::new(&env, &pub_inputs.pub_asset_id)
+            .balance(&env.current_contract_address());
         if pub_inputs.pub_value > prev_supply {
             return Err(Error::AmountMismatch);
         }
@@ -895,8 +898,25 @@ impl ShieldedToken {
         );
 
         // ── 8. Interaction: release public tokens (last, checks-effects-interactions) ──
+        // Clawback policy (see `set_asset_approved`): if the issuer has clawed
+        // back part of the custodied balance, the pool holds less than the
+        // shielded supply. First-come-first-served withdrawal would let the
+        // earliest holders take everything and strand the rest, so the loss is
+        // shared pro rata: each withdrawal is paid `value * balance / supply`
+        // (supply and balance both measured before this withdrawal), which
+        // leaves the backing ratio unchanged for everyone still in the pool.
+        // When the pool is fully backed the payout is exactly `pub_value`.
         let token_client = token::Client::new(&env, &pub_inputs.pub_asset_id);
-        token_client.transfer(&env.current_contract_address(), &to, &pub_inputs.pub_value);
+        let payout = if balance_before >= prev_supply {
+            pub_inputs.pub_value
+        } else {
+            pub_inputs
+                .pub_value
+                .checked_mul(balance_before)
+                .ok_or(Error::AmountMismatch)?
+                / prev_supply
+        };
+        token_client.transfer(&env.current_contract_address(), &to, &payout);
 
         Ok(())
     }
@@ -922,6 +942,22 @@ impl ShieldedToken {
             .instance()
             .get(&StorageKey::ShieldedSupply(asset))
             .unwrap_or(0)
+    }
+
+    /// How much less of `asset` the pool holds than it owes to note holders:
+    /// `max(0, shielded_supply - custodied balance)`. Zero while fully backed.
+    /// A positive value means the issuer clawed back custodied funds; governance
+    /// should then revoke the asset (`set_asset_approved(asset, false)`) so no
+    /// new deposits are taken, and withdrawals are paid pro rata (see
+    /// `unshield`).
+    pub fn custody_shortfall(env: Env, asset: Address) -> i128 {
+        let supply: i128 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::ShieldedSupply(asset.clone()))
+            .unwrap_or(0);
+        let balance = token::Client::new(&env, &asset).balance(&env.current_contract_address());
+        if supply > balance { supply - balance } else { 0 }
     }
 
     /// Merkle authentication path for a leaf, used as circuit witness.
@@ -1005,6 +1041,10 @@ impl ShieldedToken {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+    mod cost_parity;
+    mod shield_flow;
+    mod spend_paths;
     /// Filler bytes for public inputs must be canonical field elements (< r).
     fn canon(b: u8) -> [u8; 32] {
         let mut a = [b; 32];
@@ -2170,6 +2210,96 @@ mod tests {
         );
     }
 
+    /// Clawback policy: if the issuer claws back part of the custodied balance,
+    /// the shortfall is visible via `custody_shortfall` and withdrawals are paid
+    /// pro rata (loss shared by all holders) rather than first-come-first-served.
+    #[test]
+    fn unshield_shares_a_clawback_loss_pro_rata_and_reports_the_shortfall() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        use soroban_sdk::testutils::IssuerFlags;
+        token_id.issuer().set_flag(IssuerFlags::RevocableFlag);
+        token_id.issuer().set_flag(IssuerFlags::ClawbackEnabledFlag);
+        let token_addr  = token_id.address();
+        client.set_asset_approved(&token_addr, &true);
+        let recipient   = Address::generate(&env);
+        let shielder    = Address::generate(&env);
+
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&shielder, &1_000_000_000);
+
+        // Go through a real shield() first (rather than minting straight to
+        // the contract) so shielded_supply() accounting is genuinely
+        // exercised, not just token balances — this is the regression test
+        // for unshield() now symmetrically decrementing what shield()
+        // increments (see the audit finding this fixes).
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let shield_rho = BytesN::from_array(&env, &canon(30));
+        let shield_rcm = BytesN::from_array(&env, &canon(31));
+        let shield_amount: i128 = 1_000_000;
+        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &test_pk(&env), &mut hasher);
+        let commitment = BytesN::from_array(&env, &commitment_bytes);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let shield_pub_inputs = ShieldPublicInputs {
+            commitment: commitment.clone(),
+            value_commit: value_commit.clone(),
+            pub_value: shield_amount,
+            pub_asset_id: token_addr.clone(),
+        };
+        let shield_proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, shield_amount, &token_addr);
+        let encrypted_note = Bytes::from_array(&env, &[0u8; 176]);
+        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &test_pk(&env), &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
+        assert_eq!(client.shielded_supply(&token_addr), shield_amount);
+        assert_eq!(client.custody_shortfall(&token_addr), 0, "fully backed before any clawback");
+
+        // The issuer claws back 400,000 of the 1,000,000 the contract custodies.
+        stellar_asset.clawback(&token, &400_000i128);
+        assert_eq!(client.custody_shortfall(&token_addr), 400_000);
+
+        let anchor = client.merkle_root();
+        let nullifier = BytesN::from_array(&env, &canon(31));
+        let recipient_field = address_to_field_bytes(&env, &recipient);
+        let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
+        let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
+
+        let pub_value: i128 = 500_000;
+        let pub_inputs = UnshieldPublicInputs {
+            anchor: anchor.clone(),
+            nullifier: nullifier.clone(),
+            pub_value,
+            pub_asset_id: token_addr.clone(),
+            recipient_hash: recipient_hash.clone(),
+        };
+
+        let mut value_bytes = [0u8; 32];
+        value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
+        let public_inputs_le: [[u8; 32]; 5] = [
+            anchor.clone().into(),
+            nullifier.clone().into(),
+            value_bytes,
+            address_to_field_bytes(&env, &token_addr),
+            recipient_hash_bytes,
+        ];
+        let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
+
+        let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
+        client.unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
+
+        assert!(client.is_spent(&nullifier));
+        // 500,000 of 1,000,000 supply against 600,000 actually held pays 300,000.
+        assert_eq!(stellar_asset.balance(&recipient), 300_000i128);
+        assert_eq!(stellar_asset.balance(&token), 300_000i128);
+        assert_eq!(client.shielded_supply(&token_addr), 500_000i128);
+        // Backing ratio is preserved for the remaining holders: 300k held vs 500k owed.
+        assert_eq!(client.custody_shortfall(&token_addr), 200_000);
+    }
+
     #[test]
     fn unshield_rejects_when_it_would_underflow_shielded_supply() {
         // No prior shield() for this asset, so shielded_supply() is 0;
@@ -3044,6 +3174,122 @@ mod tests {
             used < 400_000_000,
             "shield_batch({ITEMS}) (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
         );
+    }
+
+    /// Per-insert cost at a realistic scale (Tranche 1, Deliverable 2): a real
+    /// `shield()` on the compiled WASM into a tree already holding `POPULATED`
+    /// leaves, compared with the same call into an empty tree.
+    ///
+    /// Why the tree is populated by writing its boundary nodes instead of by
+    /// shielding `POPULATED` times: the network caps one transaction at 400
+    /// ledger entries, so thousands of real inserts cannot happen inside one
+    /// invocation (see `merkle_insert_cost_as_tree_depth_grows`). An insert only
+    /// ever reads the left siblings along its path, so writing exactly those
+    /// nodes (computed independently, in pure Rust, from a full in-memory tree
+    /// of the populated leaves) makes the insert see the same state it would in
+    /// a tree that really grew to that size. The new root is then checked
+    /// against an independently computed root of the full `POPULATED + 1`
+    /// leaves, so the insert is verified correct as well as measured.
+    #[test]
+    fn merkle_insert_cost_and_correctness_at_thousands_of_leaves() {
+        use crate::poseidon::poseidon2_bytes;
+        const POPULATED: u32 = 5_000;
+        const EMPTY_LEAF: [u8; 32] = [
+            0x64, 0x48, 0xb6, 0x46, 0x84, 0xee, 0x39, 0xa8, 0x23, 0xd5, 0xfe, 0x5f, 0xd5, 0x24, 0x31, 0xdc,
+            0x81, 0xe4, 0x81, 0x7b, 0xf2, 0xc3, 0xea, 0x3c, 0xab, 0x9e, 0x23, 0x9e, 0xfb, 0xf5, 0x98, 0x20,
+        ];
+        let mut empty = [[0u8; 32]; 33];
+        empty[0] = EMPTY_LEAF;
+        for l in 1..33 { empty[l] = poseidon2_bytes(&empty[l - 1], &empty[l - 1]); }
+
+        // Full levels of the tree over a leaf list (pure Rust, independent of the contract).
+        let levels_of = |leaves: &std::vec::Vec<[u8; 32]>| -> std::vec::Vec<std::vec::Vec<[u8; 32]>> {
+            let mut levels = std::vec![leaves.clone()];
+            for l in 0..32 {
+                let cur = &levels[l];
+                let mut next = std::vec::Vec::new();
+                let mut i = 0;
+                while i < cur.len() {
+                    let right = if i + 1 < cur.len() { cur[i + 1] } else { empty[l] };
+                    next.push(poseidon2_bytes(&cur[i], &right));
+                    i += 2;
+                }
+                levels.push(next);
+            }
+            levels
+        };
+        let mut leaves: std::vec::Vec<[u8; 32]> = (0..POPULATED)
+            .map(|i| { let mut b = [0u8; 32]; b[..4].copy_from_slice(&i.to_le_bytes()); poseidon2_bytes(&b, &b) })
+            .collect();
+        let populated_levels = levels_of(&leaves);
+
+        let measure = |prefill: bool| -> (u64, [u8; 32], [u8; 32]) {
+            let env = Env::default();
+            env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+            env.mock_all_auths();
+            let admin = Address::generate(&env);
+            let token = env.register(TOKEN_WASM, ());
+            let verifier = env.register(VERIFIER_WASM, ());
+            zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+            let client = ShieldedTokenClient::new(&env, &token);
+            client.initialize(&admin, &verifier);
+            let asset = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+            client.set_asset_approved(&asset, &true);
+            let user = Address::generate(&env);
+            soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&user, &1_000_000_000);
+
+            if prefill {
+                env.as_contract(&token, || {
+                    // Left siblings along the path of leaf index POPULATED.
+                    for l in 0..32u32 {
+                        if (POPULATED >> l) & 1 == 1 {
+                            let idx = (POPULATED >> l) - 1;
+                            let node = populated_levels[l as usize][idx as usize];
+                            env.storage().persistent().set(&StorageKey::MerkleNode(l, idx), &BytesN::from_array(&env, &node));
+                        }
+                    }
+                    env.storage().instance().set(&StorageKey::NextLeafIndex, &POPULATED);
+                });
+            }
+
+            let rho = BytesN::from_array(&env, &canon(70));
+            let rcm = BytesN::from_array(&env, &canon(71));
+            let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+            let commitment = BytesN::from_array(
+                &env,
+                &compute_commitment(&env, 10_000, &asset, &rho, &rcm, &test_pk(&env), &mut hasher),
+            );
+            let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+            let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, 10_000, &asset);
+            let pub_in = ShieldPublicInputs {
+                commitment: commitment.clone(), value_commit, pub_value: 10_000, pub_asset_id: asset.clone(),
+            };
+
+            env.cost_estimate().budget().reset_tracker();
+            let index = client.shield(
+                &user, &asset, &10_000i128, &rho, &rcm, &test_pk(&env), &commitment,
+                &Bytes::from_array(&env, &[0u8; 176]), &proof, &pub_in,
+            );
+            let used = env.cost_estimate().budget().cpu_instruction_cost();
+            assert_eq!(index, if prefill { POPULATED } else { 0 });
+            (used, client.merkle_root().into(), commitment.into())
+        };
+
+        let (empty_cost, _, _) = measure(false);
+        let (scaled_cost, root, inserted) = measure(true);
+
+        // Independent root of all POPULATED + 1 leaves, in pure Rust.
+        leaves.push(inserted);
+        let expected_root = levels_of(&leaves)[32][0];
+        assert_eq!(root, expected_root, "insert at {POPULATED} leaves produced a wrong root");
+
+        assert!(scaled_cost < 400_000_000, "insert at {POPULATED} leaves used {scaled_cost}, over the 400M budget");
+        assert!(
+            scaled_cost < empty_cost + empty_cost / 5,
+            "insert cost grew from {empty_cost} (empty tree) to {scaled_cost} at {POPULATED} leaves"
+        );
+        // Published in docs/TRANCHE1_DELIVERABLES.md (`cargo test ... -- --nocapture` prints them).
+        std::println!("MERKLE_SCALE empty={empty_cost} at_{POPULATED}={scaled_cost}");
     }
 
     /// Regression test for a real bug caught while deploying to Stellar Testnet:

@@ -47,7 +47,7 @@ No automated alerting exists yet (see "Known limitations") — this section defi
 
 Watch simulation/submission failures for these specific error shapes, each pointing at a different root cause:
 
-- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~113.2M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
+- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~118.6M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
 - `Error(Contract, #5)` on `token` (`Error::InvalidAnchor`) — the caller's proof anchor fell outside the 32-root history window (`contracts/token/src/merkle.rs`'s `ROOT_HISTORY_SIZE`). Expected occasionally under concurrent load; a sudden spike means proofs are being generated much slower than the tree is advancing, or the window needs re-tuning.
 - `Error(Auth, InvalidAction)` on any cross-contract call — a missing `authorize_as_current_contract` entry (see the real incident this exact error caused in `docs/POC_IMPLEMENTATION.md`'s swap audit). Treat as a code-level bug, not an operational issue, unless it appears on a code path that was previously working.
 - `Error(Contract, #3)` on `verifier` (`Error::VkAlreadyRegistered`) — an attempted `register_verifying_key` for a circuit that already has one; use `governance.queue_vk_update`/`execute_vk_update` instead (see §3).
@@ -142,6 +142,16 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 4. Any swap or note state stranded in a superseded contract instance follows the same recovery path already documented for the superseded `swap` instance in `docs/TESTNET_DEPLOYMENT.md` ("Swap redeployment") — `reclaim_expired_swap` once the window passes; there is no equivalent unwind for `token`, which is why getting `token`'s configuration right the first time matters more than any other single deployment step.
 
 ---
+
+### Category 5 — Issuer clawback of a custodied asset
+
+**Symptoms:** `token.custody_shortfall(asset)` returns a positive value; unshield payouts for that asset are lower than the withdrawn amount.
+
+1. Confirm: compare `shielded_supply(asset)` with the token contract's balance of `asset` (the difference is `custody_shortfall`).
+2. Stop new deposits: `set_asset_approved(asset, false)`. Existing notes stay withdrawable; nothing is trapped.
+3. Do not pause unless withdrawals themselves are at risk. Withdrawals are already paid pro rata (`value * balance / supply`), so the loss is shared by all holders and early withdrawers cannot drain the pool.
+4. `contracts/swap::commit_swap` will refuse to escrow this asset while a shortfall exists (the escrow would be short); this is expected.
+5. Communicate the loss ratio (`balance / supply`) to holders and file the issuer action for follow-up. Only re-approve the asset once the issuer's clawback authority is resolved.
 
 ## 5. Minimum operating checklist
 

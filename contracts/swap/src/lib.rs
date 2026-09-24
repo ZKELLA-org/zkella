@@ -256,6 +256,7 @@ impl ShieldedSwap {
         // Panics (propagating token's error) if the proof, nullifier, or
         // anchor don't check out — commit_swap simply doesn't complete, so
         // there's no partial/inconsistent state to clean up afterward.
+        let escrow_before = token::Client::new(&env, &asset_in).balance(&swap_addr);
         TokenClient::new(&env, &token_contract).unshield(
             &nullifier_in,
             &swap_addr,
@@ -268,6 +269,14 @@ impl ShieldedSwap {
                 pub_asset_id: asset_in.clone(),
                 recipient_hash,
             },
+        );
+
+        // If the issuer clawed back custodied funds, `unshield` pays out a pro-rata
+        // share instead of the full amount; escrowing less than `amount_in` would
+        // strand the counterparty, so refuse the commit (the note stays unspent).
+        assert!(
+            token::Client::new(&env, &asset_in).balance(&swap_addr) - escrow_before == amount_in,
+            "escrow short of amount_in: custody shortfall on asset_in"
         );
 
         let state = SwapState {
