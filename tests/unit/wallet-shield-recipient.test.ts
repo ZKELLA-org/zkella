@@ -57,7 +57,7 @@ describe('ZKELLAWallet.shield() recipient handling', () => {
     const senderWallet = await makeWallet(sender)
 
     const recipientTkHex = bytesToHex(recipient.spendingKey.transmissionKey)
-    await senderWallet.shield({ asset: MOCK_ASSET, amount: 1_000_000n, to: recipientTkHex })
+    await senderWallet.shield({ asset: MOCK_ASSET, amount: 1_000_000n, to: recipientTkHex, toOwnerKey: bytesToHex(recipient.spendingKey.ownerKey) })
 
     expect(encryptSpy).toHaveBeenCalledTimes(1)
     const [, transmissionKeyArg] = encryptSpy.mock.calls[0]
@@ -89,7 +89,7 @@ describe('ZKELLAWallet.shield() recipient handling', () => {
 
     const recipientTkHex = bytesToHex(recipient.spendingKey.transmissionKey)
     const { note } = await senderWallet.shield({
-      asset: MOCK_ASSET, amount: 250_000n, to: recipientTkHex,
+      asset: MOCK_ASSET, amount: 250_000n, to: recipientTkHex, toOwnerKey: bytesToHex(recipient.spendingKey.ownerKey),
     })
 
     // shield() doesn't return the encrypted bundle directly (it's only used

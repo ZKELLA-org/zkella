@@ -16,7 +16,7 @@
 
 import * as path from 'path'
 import { generateUnshieldProof } from '../../sdk/src/prover/unshield'
-import { computeCommitment, computeNullifier } from '../../sdk/src/notes/builder'
+import { computeCommitment, computeNullifier, computeOwnerKey } from '../../sdk/src/notes/builder'
 import { poseidon2, bigIntToBuffer, bufferToBigInt, addressToField } from '../../sdk/src/crypto/poseidon'
 import { Note } from '../../sdk/src/types'
 
@@ -49,8 +49,9 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
     const rho   = bigIntToBuffer(2222n)
     const rcm   = bigIntToBuffer(3333n)
     const nk    = bigIntToBuffer(4444n)
+    const ownerPk = await computeOwnerKey(nk)
 
-    const commitment = await computeCommitment(value, ASSET_ADDR, rho, rcm)
+    const commitment = await computeCommitment(value, ASSET_ADDR, rho, rcm, ownerPk)
     const { anchor, path } = await buildSingleLeafTree(commitment)
 
     const note: Note = {
@@ -60,6 +61,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
       rcm,
       leafIndex:  0, // single leaf, inserted first
       commitment,
+      ownerPk,
     }
 
     const result = await generateUnshieldProof(
@@ -90,6 +92,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
   }, 60_000)
 
   test('rejects a note with an unassigned leafIndex', async () => {
+    const ownerPk = await computeOwnerKey(bigIntToBuffer(3n))
     const note: Note = {
       value: 100n,
       assetId: ASSET_ADDR,
@@ -97,6 +100,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
       rcm: bigIntToBuffer(2n),
       leafIndex: -1, // never shielded / not yet assigned an on-chain index
       commitment: new Uint8Array(32),
+      ownerPk,
     }
     await expect(
       generateUnshieldProof(
@@ -109,6 +113,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
   })
 
   test('rejects a malformed Merkle path length', async () => {
+    const ownerPk = await computeOwnerKey(bigIntToBuffer(3n))
     const note: Note = {
       value: 100n,
       assetId: ASSET_ADDR,
@@ -116,6 +121,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
       rcm: bigIntToBuffer(2n),
       leafIndex: 0,
       commitment: new Uint8Array(32),
+      ownerPk,
     }
     await expect(
       generateUnshieldProof(

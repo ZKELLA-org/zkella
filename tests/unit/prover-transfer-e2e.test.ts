@@ -17,7 +17,7 @@
 
 import * as path from 'path'
 import { generateTransferProof } from '../../sdk/src/prover/transfer'
-import { computeCommitment, computeNullifier } from '../../sdk/src/notes/builder'
+import { computeCommitment, computeNullifier, computeOwnerKey } from '../../sdk/src/notes/builder'
 import { poseidon2, bigIntToBuffer, bufferToBigInt } from '../../sdk/src/crypto/poseidon'
 import { Note } from '../../sdk/src/types'
 
@@ -62,13 +62,15 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
     const rho1 = bigIntToBuffer(333n)
     const rcm1 = bigIntToBuffer(444n)
     const nk   = bigIntToBuffer(555n)
+    const ownerPk = await computeOwnerKey(nk)
+    const outPk   = await computeOwnerKey(bigIntToBuffer(9999n))
 
-    const commitment0 = await computeCommitment(600000n, ASSET_ADDR, rho0, rcm0)
-    const commitment1 = await computeCommitment(400000n, ASSET_ADDR, rho1, rcm1)
+    const commitment0 = await computeCommitment(600000n, ASSET_ADDR, rho0, rcm0, ownerPk)
+    const commitment1 = await computeCommitment(400000n, ASSET_ADDR, rho1, rcm1, ownerPk)
     const { anchor, path0, path1 } = await buildTwoLeafTree(commitment0, commitment1)
 
-    const note0: Note = { value: 600000n, assetId: ASSET_ADDR, rho: rho0, rcm: rcm0, leafIndex: 0, commitment: commitment0 }
-    const note1: Note = { value: 400000n, assetId: ASSET_ADDR, rho: rho1, rcm: rcm1, leafIndex: 1, commitment: commitment1 }
+    const note0: Note = { value: 600000n, assetId: ASSET_ADDR, rho: rho0, rcm: rcm0, leafIndex: 0, commitment: commitment0, ownerPk }
+    const note1: Note = { value: 400000n, assetId: ASSET_ADDR, rho: rho1, rcm: rcm1, leafIndex: 1, commitment: commitment1, ownerPk }
 
     const fee = 1000n
     const result = await generateTransferProof(
@@ -79,8 +81,8 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
         ],
         nk,
         outputs: [
-          { value: 700000n, assetId: ASSET_ADDR },
-          { value: 299000n, assetId: ASSET_ADDR },
+          { value: 700000n, assetId: ASSET_ADDR, ownerPk: outPk },
+          { value: 299000n, assetId: ASSET_ADDR, ownerPk: outPk },
         ],
         fee,
       },
@@ -120,11 +122,13 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
     const rho1 = bigIntToBuffer(3n)
     const rcm1 = bigIntToBuffer(4n)
     const nk   = bigIntToBuffer(5n)
-    const commitment0 = await computeCommitment(100n, ASSET_ADDR, rho0, rcm0)
-    const commitment1 = await computeCommitment(100n, ASSET_ADDR, rho1, rcm1)
+    const ownerPk = await computeOwnerKey(nk)
+    const outPk   = await computeOwnerKey(bigIntToBuffer(9999n))
+    const commitment0 = await computeCommitment(100n, ASSET_ADDR, rho0, rcm0, ownerPk)
+    const commitment1 = await computeCommitment(100n, ASSET_ADDR, rho1, rcm1, ownerPk)
 
-    const note0: Note = { value: 100n, assetId: ASSET_ADDR, rho: rho0, rcm: rcm0, leafIndex: 0, commitment: commitment0 }
-    const note1: Note = { value: 100n, assetId: ASSET_ADDR, rho: rho1, rcm: rcm1, leafIndex: 1, commitment: commitment1 }
+    const note0: Note = { value: 100n, assetId: ASSET_ADDR, rho: rho0, rcm: rcm0, leafIndex: 0, commitment: commitment0, ownerPk }
+    const note1: Note = { value: 100n, assetId: ASSET_ADDR, rho: rho1, rcm: rcm1, leafIndex: 1, commitment: commitment1, ownerPk }
     const emptyPath = new Array(MERKLE_DEPTH).fill(new Uint8Array(32))
 
     await expect(
@@ -136,8 +140,8 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
           ],
           nk,
           outputs: [
-            { value: 500n, assetId: ASSET_ADDR }, // doesn't balance
-            { value: 500n, assetId: ASSET_ADDR },
+            { value: 500n, assetId: ASSET_ADDR, ownerPk: outPk }, // doesn't balance
+            { value: 500n, assetId: ASSET_ADDR, ownerPk: outPk },
           ],
           fee: 0n,
         },
@@ -151,9 +155,12 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
   test('rejects an input note with an unassigned leafIndex', async () => {
     const rho = bigIntToBuffer(1n)
     const rcm = bigIntToBuffer(2n)
-    const commitment = await computeCommitment(100n, ASSET_ADDR, rho, rcm)
-    const note0: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: -1, commitment }
-    const note1: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: 0, commitment }
+    const nk  = bigIntToBuffer(5n)
+    const ownerPk = await computeOwnerKey(nk)
+    const outPk   = await computeOwnerKey(bigIntToBuffer(9999n))
+    const commitment = await computeCommitment(100n, ASSET_ADDR, rho, rcm, ownerPk)
+    const note0: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: -1, commitment, ownerPk }
+    const note1: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: 0, commitment, ownerPk }
     const emptyPath = new Array(MERKLE_DEPTH).fill(new Uint8Array(32))
 
     await expect(
@@ -163,10 +170,10 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
             { note: note0, merklePath: emptyPath },
             { note: note1, merklePath: emptyPath },
           ],
-          nk: bigIntToBuffer(5n),
+          nk,
           outputs: [
-            { value: 100n, assetId: ASSET_ADDR },
-            { value: 100n, assetId: ASSET_ADDR },
+            { value: 100n, assetId: ASSET_ADDR, ownerPk: outPk },
+            { value: 100n, assetId: ASSET_ADDR, ownerPk: outPk },
           ],
           fee: 0n,
         },

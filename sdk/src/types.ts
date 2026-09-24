@@ -5,11 +5,15 @@ export interface Note {
   rcm:        Uint8Array
   leafIndex:  number
   commitment: Uint8Array
+  /** Owner key the note commits to: Poseidon2(nk, DOMAIN_PK) of whoever may spend it. */
+  ownerPk:    Uint8Array
 }
 
 export interface SpendingKey {
   raw:         Uint8Array
   nullifierKey: Uint8Array
+  /** Poseidon2(nullifierKey, DOMAIN_PK) — the key notes for this owner commit to. */
+  ownerKey:    Uint8Array
   viewingKey:  Uint8Array
   transmissionKey: Uint8Array  // BN254 G1 point, compressed
 }
@@ -33,7 +37,8 @@ export interface Proof {
 }
 
 export interface TransferOptions {
-  to:     string   // shielded address
+  to:     string   // recipient transmission key (hex)
+  toOwnerKey: string // recipient owner key (hex) — committed into the new note
   asset:  string   // SEP-41 contract
   amount: bigint
 }

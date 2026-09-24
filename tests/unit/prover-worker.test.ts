@@ -31,7 +31,8 @@
  * silently assumed.
  */
 
-import { buildNote } from '../../sdk/src/notes/builder'
+import { buildNote, computeOwnerKey } from '../../sdk/src/notes/builder'
+import { bigIntToBuffer } from '../../sdk/src/crypto/poseidon'
 import { generateShieldProof, ShieldPublicInputs, ShieldProofResult } from '../../sdk/src/prover/shield'
 import { handle, ProverWorkerRequest, ProverWorkerResponse } from '../../sdk/src/prover/worker'
 import * as path from 'path'
@@ -43,7 +44,7 @@ const AMOUNT = 500n
 
 describe('prover worker dispatch (sdk/src/prover/worker.ts)', () => {
   test('handle() routes a "shield" request to generateShieldProof and returns a consistent result', async () => {
-    const note = await buildNote(AMOUNT, ASSET)
+    const note = await buildNote(AMOUNT, ASSET, await computeOwnerKey(bigIntToBuffer(4444n)))
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset: ASSET, amount: AMOUNT }
 
     const direct = await generateShieldProof(note, publicInputs, WASM_PATH, ZKEY_PATH)
@@ -67,7 +68,7 @@ describe('prover worker dispatch (sdk/src/prover/worker.ts)', () => {
     const snarkjs = require('snarkjs')
     const vkJson = require('../../circuits/shield/build/verification_key.json')
 
-    const note = await buildNote(AMOUNT, ASSET)
+    const note = await buildNote(AMOUNT, ASSET, await computeOwnerKey(bigIntToBuffer(4444n)))
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset: ASSET, amount: AMOUNT }
 
     const result = await generateShieldProof(note, publicInputs, WASM_PATH, ZKEY_PATH, true)
@@ -83,7 +84,7 @@ describe('prover worker dispatch (sdk/src/prover/worker.ts)', () => {
   }, 30_000)
 
   test('self.onmessage/postMessage are wired to handle() under a mocked Worker global scope', async () => {
-    const note = await buildNote(AMOUNT, ASSET)
+    const note = await buildNote(AMOUNT, ASSET, await computeOwnerKey(bigIntToBuffer(4444n)))
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset: ASSET, amount: AMOUNT }
 
     const posted: ProverWorkerResponse[] = []

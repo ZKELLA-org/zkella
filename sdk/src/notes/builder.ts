@@ -1,13 +1,25 @@
-import { poseidon2, valueToField, addressToField } from '../crypto/poseidon'
+import { poseidon2, valueToField, addressToField, bigIntToBuffer } from '../crypto/poseidon'
 import { Note } from '../types'
 
 /**
  * Construct a new note with cryptographically random rho and rcm.
  * The commitment is computed and stored alongside the plaintext.
  */
+/** int("zkella_pk") — must match circuits/common/owner.circom's constant. */
+export const DOMAIN_PK = 2258241487740017274987n
+
+/**
+ * Owner key: Poseidon2(nk, DOMAIN_PK). Committed into every note; spending a
+ * note requires the nullifier key that hashes to it (enforced in-circuit).
+ */
+export async function computeOwnerKey(nk: Uint8Array): Promise<Uint8Array> {
+  return poseidon2(nk, bigIntToBuffer(DOMAIN_PK))
+}
+
 export async function buildNote(
   value:   bigint,
   assetId: string,  // SEP-41 contract address
+  ownerPk: Uint8Array, // recipient's owner key (see computeOwnerKey)
 ): Promise<Note> {
   if (value <= 0n) throw new Error('note value must be positive')
   if (value >= 2n ** 64n) throw new Error('note value exceeds u64 max')
@@ -18,7 +30,7 @@ export async function buildNote(
   const rho  = crypto.getRandomValues(new Uint8Array(32))
   const rcm32 = crypto.getRandomValues(new Uint8Array(32))
 
-  const commitment = await computeCommitment(value, assetId, rho as Uint8Array, rcm32)
+  const commitment = await computeCommitment(value, assetId, rho as Uint8Array, rcm32, ownerPk)
 
   return {
     value,
@@ -27,11 +39,13 @@ export async function buildNote(
     rcm:        rcm32,
     leafIndex:  -1,   // assigned on-chain after shield()
     commitment,
+    ownerPk,
   }
 }
 
 /**
- * Compute note commitment: Poseidon2(Poseidon2(value, assetId), Poseidon2(rho, rcm))
+ * Compute note commitment:
+ * Poseidon2(Poseidon2(Poseidon2(value, assetId), Poseidon2(rho, rcm)), ownerPk)
  * Matches the on-chain compute_commitment() in contracts/token/src/lib.rs exactly.
  */
 export async function computeCommitment(
@@ -39,12 +53,13 @@ export async function computeCommitment(
   assetId: string,
   rho:     Uint8Array,
   rcm:     Uint8Array,
+  ownerPk: Uint8Array,
 ): Promise<Uint8Array> {
   const valueField  = valueToField(value)
   const assetField  = addressToField(assetId)
   const h1          = await poseidon2(valueField, assetField)
   const h2          = await poseidon2(rho, rcm)
-  return poseidon2(h1, h2)
+  return poseidon2(await poseidon2(h1, h2), ownerPk)
 }
 
 /**
@@ -81,6 +96,7 @@ export async function verifyNoteIntegrity(note: Note): Promise<boolean> {
     note.assetId,
     note.rho,
     note.rcm,
+    note.ownerPk,
   )
   for (let i = 0; i < 32; i++) {
     if (expected[i] !== note.commitment[i]) return false

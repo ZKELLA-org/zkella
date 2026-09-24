@@ -1,4 +1,6 @@
-import { buildNote, computeCommitment, computeNullifier, verifyNoteIntegrity } from '../../sdk/src/notes/builder'
+import { buildNote, computeCommitment, computeNullifier, computeOwnerKey, verifyNoteIntegrity } from '../../sdk/src/notes/builder'
+import { poseidon2, bigIntToBuffer, bufferToBigInt, valueToField, addressToField } from '../../sdk/src/crypto/poseidon'
+import shieldInput from '../../circuits/shield/build/input.json'
 import vectors from '../../circuits/shield/shield_test_vectors.json'
 
 const MOCK_ASSET = 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA' // USDC testnet
@@ -14,9 +16,11 @@ function bytesToHex(buf: Uint8Array): string {
 }
 
 describe('Note commitment', () => {
+  let ownerPk: Uint8Array
+  beforeAll(async () => { ownerPk = await computeOwnerKey(bigIntToBuffer(4444n)) })
 
   test('buildNote produces a note with a valid commitment', async () => {
-    const note = await buildNote(100_000_000n, MOCK_ASSET)
+    const note = await buildNote(100_000_000n, MOCK_ASSET, ownerPk)
     expect(note.value).toBe(100_000_000n)
     expect(note.assetId).toBe(MOCK_ASSET)
     expect(note.rho).toHaveLength(32)
@@ -28,16 +32,16 @@ describe('Note commitment', () => {
   test('commitment is deterministic for same inputs', async () => {
     const rho = new Uint8Array(32).fill(0xaa)
     const rcm = new Uint8Array(32).fill(0xbb)
-    const c1 = await computeCommitment(50_000_000n, MOCK_ASSET, rho, rcm)
-    const c2 = await computeCommitment(50_000_000n, MOCK_ASSET, rho, rcm)
+    const c1 = await computeCommitment(50_000_000n, MOCK_ASSET, rho, rcm, ownerPk)
+    const c2 = await computeCommitment(50_000_000n, MOCK_ASSET, rho, rcm, ownerPk)
     expect(c1).toEqual(c2)
   })
 
   test('commitment changes when value changes', async () => {
     const rho = new Uint8Array(32).fill(0x01)
     const rcm = new Uint8Array(32).fill(0x02)
-    const c1 = await computeCommitment(100n, MOCK_ASSET, rho, rcm)
-    const c2 = await computeCommitment(200n, MOCK_ASSET, rho, rcm)
+    const c1 = await computeCommitment(100n, MOCK_ASSET, rho, rcm, ownerPk)
+    const c2 = await computeCommitment(200n, MOCK_ASSET, rho, rcm, ownerPk)
     expect(c1).not.toEqual(c2)
   })
 
@@ -45,8 +49,8 @@ describe('Note commitment', () => {
     const rho = new Uint8Array(32).fill(0x03)
     const rcm = new Uint8Array(32).fill(0x04)
     const other = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'
-    const c1 = await computeCommitment(100n, MOCK_ASSET, rho, rcm)
-    const c2 = await computeCommitment(100n, other,      rho, rcm)
+    const c1 = await computeCommitment(100n, MOCK_ASSET, rho, rcm, ownerPk)
+    const c2 = await computeCommitment(100n, other,      rho, rcm, ownerPk)
     expect(c1).not.toEqual(c2)
   })
 
@@ -54,19 +58,36 @@ describe('Note commitment', () => {
     const rcm  = new Uint8Array(32).fill(0x05)
     const rho1 = new Uint8Array(32).fill(0x06)
     const rho2 = new Uint8Array(32).fill(0x07)
-    const c1 = await computeCommitment(100n, MOCK_ASSET, rho1, rcm)
-    const c2 = await computeCommitment(100n, MOCK_ASSET, rho2, rcm)
+    const c1 = await computeCommitment(100n, MOCK_ASSET, rho1, rcm, ownerPk)
+    const c2 = await computeCommitment(100n, MOCK_ASSET, rho2, rcm, ownerPk)
     expect(c1).not.toEqual(c2)
   })
 
+  test('commitment changes when ownerPk changes', async () => {
+    const rho = new Uint8Array(32).fill(0x08)
+    const rcm = new Uint8Array(32).fill(0x09)
+    const otherOwner = await computeOwnerKey(bigIntToBuffer(4445n))
+    const c1 = await computeCommitment(100n, MOCK_ASSET, rho, rcm, ownerPk)
+    const c2 = await computeCommitment(100n, MOCK_ASSET, rho, rcm, otherOwner)
+    expect(c1).not.toEqual(c2)
+  })
+
+  test('matches the commitment in circuits/shield/build/input.json (circuit cross-check)', async () => {
+    const asset = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'
+    const owner = await computeOwnerKey(bigIntToBuffer(4444n))
+    expect(bufferToBigInt(owner)).toBe(BigInt(shieldInput.pk))
+    const cm = await computeCommitment(500n, asset, bigIntToBuffer(3n), bigIntToBuffer(4n), owner)
+    expect(bufferToBigInt(cm)).toBe(BigInt(shieldInput.commitment))
+  })
+
   test('verifyNoteIntegrity passes for a freshly built note', async () => {
-    const note = await buildNote(999_000_000n, MOCK_ASSET)
+    const note = await buildNote(999_000_000n, MOCK_ASSET, ownerPk)
     const valid = await verifyNoteIntegrity(note)
     expect(valid).toBe(true)
   })
 
   test('verifyNoteIntegrity fails when commitment is tampered', async () => {
-    const note = await buildNote(999_000_000n, MOCK_ASSET)
+    const note = await buildNote(999_000_000n, MOCK_ASSET, ownerPk)
     const tampered = { ...note, commitment: new Uint8Array(32).fill(0xff) }
     const valid = await verifyNoteIntegrity(tampered)
     expect(valid).toBe(false)
@@ -83,8 +104,19 @@ describe('Shield test vectors (SDK matches circomlibjs reference)', () => {
       const rho    = hexToBytes(vec.inputs.rho)
       const rcm    = hexToBytes(vec.inputs.rcm)
 
-      const commitment = await computeCommitment(value, asset, rho, rcm)
-      expect(bytesToHex(commitment)).toBe(vec.expected.commitment)
+      // Vectors carry the full owner-bound commitment plus the shared owner key.
+      const ownerPk = hexToBytes(vectors.owner_key)
+      const commitment = await computeCommitment(value, asset, rho, rcm, ownerPk)
+      const inner = await poseidon2(
+        await poseidon2(
+          await poseidon2(valueToField(value), addressToField(asset)),
+          await poseidon2(rho, rcm),
+        ),
+        ownerPk,
+      )
+      expect(bytesToHex(inner)).toBe(vec.expected.commitment)
+      const expected = hexToBytes(vec.expected.commitment)
+      expect(bytesToHex(commitment)).toBe(bytesToHex(expected))
     })
   }
 

@@ -57,7 +57,8 @@
       "**/tests/**/*.test.ts"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!(uint8array-extras|@exodus|@noble|@scure|@stellar)/)"
+      "node_modules/(?!(uint8array-extras|@exodus|@noble|@scure|@stellar)/)",
+      "<rootDir>/circuits/"
     ]
   }
 }

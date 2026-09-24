@@ -305,6 +305,7 @@ impl ShieldedSwap {
         swap_id:          BytesN<32>,
         out_rho:          BytesN<32>,
         out_rcm:          BytesN<32>,
+        out_owner_pk:     BytesN<32>,
         out_commitment:   BytesN<32>,
         out_value_commit: BytesN<32>,
         encrypted_note:   Bytes,
@@ -410,6 +411,7 @@ impl ShieldedSwap {
             &state.amount_out,
             &out_rho,
             &out_rcm,
+            &out_owner_pk,
             &out_commitment,
             &encrypted_note,
             &shield_proof,
@@ -514,6 +516,11 @@ mod tests {
         a
     }
 
+    /// Owner key filler for tests (any canonical field element).
+    fn test_pk(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &canon(9))
+    }
+
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use zkella_verifier::{VerifierContract, VerifierContractClient};
@@ -523,7 +530,7 @@ mod tests {
     };
 
     /// Note commitment, matching `token::compute_commitment` exactly:
-    /// `H(H(value, asset_field), H(rho, rcm))`.
+    /// `H(H(H(value, asset_field), H(rho, rcm)), owner_pk)`.
     fn note_commitment(
         env: &Env,
         hasher: &mut poseidon::Poseidon2Hasher,
@@ -531,6 +538,7 @@ mod tests {
         asset: &Address,
         rho: &BytesN<32>,
         rcm: &BytesN<32>,
+        owner_pk: &BytesN<32>,
     ) -> BytesN<32> {
         let mut value_bytes = [0u8; 32];
         value_bytes[..16].copy_from_slice(&(value as u128).to_le_bytes());
@@ -540,7 +548,9 @@ mod tests {
 
         let h1 = hasher.hash(&value_bytes, &asset_bytes);
         let h2 = hasher.hash(&rho_bytes, &rcm_bytes);
-        BytesN::from_array(env, &hasher.hash(&h1, &h2))
+        let h3 = hasher.hash(&h1, &h2);
+        let pk_bytes: [u8; 32] = owner_pk.clone().into();
+        BytesN::from_array(env, &hasher.hash(&h3, &pk_bytes))
     }
 
     fn i128_le_bytes(v: i128) -> [u8; 32] {
@@ -624,7 +634,7 @@ mod tests {
         let rho = BytesN::from_array(&s.env, &[rho_seed; 32]);
         let rcm = BytesN::from_array(&s.env, &[rcm_seed; 32]);
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
-        let commitment = note_commitment(&s.env, &mut hasher, amount, asset, &rho, &rcm);
+        let commitment = note_commitment(&s.env, &mut hasher, amount, asset, &rho, &rcm, &test_pk(&s.env));
         let value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
 
         let public_inputs_le: [[u8; 32]; 4] = [
@@ -640,7 +650,7 @@ mod tests {
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
         let token_client = ShieldedTokenClient::new(&s.env, &s.token_contract);
         let leaf_index = token_client.shield(
-            shielder, asset, &amount, &rho, &rcm, &commitment, &encrypted_note, &proof,
+            shielder, asset, &amount, &rho, &rcm, &test_pk(&s.env), &commitment, &encrypted_note, &proof,
             &NativeShieldPublicInputs {
                 commitment: commitment.clone(),
                 value_commit,
@@ -774,7 +784,7 @@ mod tests {
         let out_rho = BytesN::from_array(&s.env, &canon(20));
         let out_rcm = BytesN::from_array(&s.env, &canon(21));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
-        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
         let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
 
@@ -788,7 +798,7 @@ mod tests {
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
 
         let leaf_index = swap_client.reveal_and_claim(
-            &swap_id, &out_rho, &out_rcm, &out_commitment, &out_value_commit,
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );
 
@@ -880,7 +890,7 @@ mod tests {
         let out_rho = BytesN::from_array(&s.env, &canon(160));
         let out_rcm = BytesN::from_array(&s.env, &canon(161));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
-        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
         let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
         let fairness_pub = SwapFairnessPublicInputs {
@@ -901,7 +911,7 @@ mod tests {
         s.env.set_auths(&[]);
 
         let leaf_index = swap_client.reveal_and_claim(
-            &swap_id, &out_rho, &out_rcm, &out_commitment, &out_value_commit,
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );
 
@@ -978,7 +988,7 @@ mod tests {
         let out_rho = BytesN::from_array(&s.env, &canon(220));
         let out_rcm = BytesN::from_array(&s.env, &canon(221));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
-        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
         let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
 
@@ -994,7 +1004,7 @@ mod tests {
         // Must fail: this fairness proof is for a different intent_commitment
         // than the one actually committed to at commit_swap time.
         swap_client.reveal_and_claim(
-            &swap_id, &out_rho, &out_rcm, &out_commitment, &out_value_commit,
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );
     }
@@ -1216,7 +1226,7 @@ mod tests {
         let out_rho = BytesN::from_array(&s.env, &canon(60));
         let out_rcm = BytesN::from_array(&s.env, &canon(61));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
-        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
         let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
 
@@ -1230,7 +1240,7 @@ mod tests {
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
 
         let result = ShieldedSwapClient::new(&s.env, &s.swap).try_reveal_and_claim(
-            &swap_id, &out_rho, &out_rcm, &out_commitment, &out_value_commit,
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
             &encrypted_note, &bad_proof, &fairness_pub, &shield_proof,
         );
         assert!(result.is_err());

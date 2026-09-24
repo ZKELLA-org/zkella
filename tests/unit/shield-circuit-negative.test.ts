@@ -48,12 +48,14 @@ type ShieldInput = {
   rho: string
   rcm: string
   rcv: string
+  pk: string
   commitment: string
   value_commit: string
   pub_value: string
   pub_asset_id: string
 }
 
+const DOMAIN_PK = 2258241487740017274987n
 let P2: (a: bigint, b: bigint) => bigint
 
 async function calculateWitness(input: ShieldInput): Promise<void> {
@@ -73,7 +75,8 @@ function buildValidInput(value: bigint): ShieldInput {
   const rho = 823746192837465192837465n
   const rcm = 918273645192837465918273n
   const rcv = 102938475610293847561029n
-  const commitment = P2(P2(value, asset_id), P2(rho, rcm))
+  const pk = P2(4444n, DOMAIN_PK)
+  const commitment = P2(P2(P2(value, asset_id), P2(rho, rcm)), pk)
   const value_commit = P2(value, rcv)
   return {
     value: value.toString(),
@@ -81,6 +84,7 @@ function buildValidInput(value: bigint): ShieldInput {
     rho: rho.toString(),
     rcm: rcm.toString(),
     rcv: rcv.toString(),
+    pk: pk.toString(),
     commitment: commitment.toString(),
     value_commit: value_commit.toString(),
     pub_value: value.toString(),
@@ -99,9 +103,16 @@ describe('shield.circom — negative witness tests (real compiled circuit)', () 
     await expect(calculateWitness(buildValidInput(500n))).resolves.toBeUndefined()
   })
 
-  test('rejects a commitment that does not match Poseidon2(Poseidon2(value,asset_id),Poseidon2(rho,rcm))', async () => {
+  test('rejects a commitment that does not match the note fields and owner key', async () => {
     const input = buildValidInput(500n)
     input.commitment = (BigInt(input.commitment) + 1n).toString()
+    await expect(calculateWitness(input)).rejects.toThrow()
+  })
+
+  test('rejects a commitment computed for a different owner key than the pk witness', async () => {
+    const input = buildValidInput(500n)
+    const other = P2(P2(P2(500n, BigInt(input.asset_id)), P2(BigInt(input.rho), BigInt(input.rcm))), P2(9999n, DOMAIN_PK))
+    input.commitment = other.toString()
     await expect(calculateWitness(input)).rejects.toThrow()
   })
 

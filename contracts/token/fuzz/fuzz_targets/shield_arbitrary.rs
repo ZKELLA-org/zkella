@@ -52,7 +52,7 @@ fuzz_target!(|data: &[u8]| {
     let (leaves, root, supply) =
         (client.leaf_count(), client.merkle_root(), client.shielded_supply(&asset));
     let res = client.try_shield(
-        &from, &asset, &amount, &b32(0), &b32(1), &commitment,
+        &from, &asset, &amount, &b32(0), &b32(1), &b32(1), &commitment,
         &Bytes::from_slice(&env, enc), &Bytes::from_slice(&env, proof), &pub_in,
     );
     if res.is_err() || res.as_ref().map(|r| r.is_err()).unwrap_or(true) {

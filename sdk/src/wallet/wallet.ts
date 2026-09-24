@@ -57,11 +57,15 @@ export class ZKELLAWallet {
         const plaintext = await tryDecryptNote(bundle, vk.raw)
         if (!plaintext) continue
 
+        // The plaintext carries no owner key: a note this wallet can decrypt
+        // and spend is, by construction, one committed to this wallet's own.
+        const ownerPk = this.config.keys.ownerKey
         const commitment = await computeCommitment(
           plaintext.value,
           plaintext.assetId,
           plaintext.rho,
           plaintext.rcm,
+          ownerPk,
         )
         const expectedHex = toHex(commitment)
         if (expectedHex !== raw.commitment) continue
@@ -70,6 +74,7 @@ export class ZKELLAWallet {
           ...plaintext,
           leafIndex:  raw.leafIndex,
           commitment,
+          ownerPk,
         })
       }
       cursor = nextLedger
@@ -113,16 +118,24 @@ export class ZKELLAWallet {
    *                     key (32-byte compressed point), same format as
    *                     `transfer()`'s `opts.to` (defaults to this wallet's
    *                     own `transmissionKey`, i.e. shielding for yourself).
+   * @param opts.toOwnerKey  The recipient's owner key (hex) — required with
+   *                     `to`, since the note commits to it (defaults to this
+   *                     wallet's own `ownerKey`).
    */
   async shield(opts: {
     asset:  string
     amount: bigint
     to?:    string
+    toOwnerKey?: string
   }): Promise<{ note: Note; submit: () => Promise<{ leafIndex: number }> }> {
-    const { asset, amount, to } = opts
+    const { asset, amount, to, toOwnerKey } = opts
+    if ((to === undefined) !== (toOwnerKey === undefined)) {
+      throw new Error('shield(): `to` and `toOwnerKey` must be supplied together')
+    }
     requireCircuit(this.config.shieldCircuit, 'shieldCircuit', 'shield()')
 
-    const note = await buildNote(amount, asset)
+    const ownerPk = toOwnerKey !== undefined ? hexToBytes(toOwnerKey) : this.config.keys.ownerKey
+    const note = await buildNote(amount, asset, ownerPk)
     // `to`, when given, is the *recipient's* transmission key — encrypting
     // to `this.config.keys.transmissionKey` regardless (the previous bug
     // here) would silently deposit "for a recipient" but leave the note
@@ -150,6 +163,7 @@ export class ZKELLAWallet {
         nativeToScVal(amount,                          { type: 'i128' }),
         nativeToScVal(note.rho,                        { type: 'bytes' }),
         nativeToScVal(note.rcm,                        { type: 'bytes' }),
+        nativeToScVal(note.ownerPk,                    { type: 'bytes' }),
         nativeToScVal(note.commitment,                 { type: 'bytes' }),
         nativeToScVal(encryptedBundle,                 { type: 'bytes' }),
         nativeToScVal(proof,                           { type: 'bytes' }),
@@ -223,7 +237,10 @@ export class ZKELLAWallet {
 
     const result = await generateTransferProof(
       { inputs, nk: this.config.keys.nullifierKey,
-        outputs: [{ value: amount, assetId: asset }, { value: changeAmount, assetId: asset }],
+        outputs: [
+          { value: amount, assetId: asset, ownerPk: hexToBytes(opts.toOwnerKey) },
+          { value: changeAmount, assetId: asset, ownerPk: this.config.keys.ownerKey },
+        ],
         fee },
       { anchor, assetId: asset },
       this.config.transferCircuit!.wasmPath, this.config.transferCircuit!.zkeyPath,

@@ -12,7 +12,7 @@
 
 import { Account, Contract, Keypair, Networks, rpc, TransactionBuilder, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { ZKELLAKeys }     from '../../sdk/src/keys/keys'
-import { buildNote }       from '../../sdk/src/notes/builder'
+import { buildNote } from '../../sdk/src/notes/builder'
 import { encryptNote }     from '../../sdk/src/notes/encrypt'
 
 const RPC_URL     = process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org'
@@ -38,7 +38,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
 
     // 2. Build a note for 10 USDC (7 decimals = 100_000_000 stroops)
     const AMOUNT = 100_000_000n
-    const note   = await buildNote(AMOUNT, USDC_ID)
+    const note   = await buildNote(AMOUNT, USDC_ID, keys.spendingKey.ownerKey)
     expect(note.commitment).toHaveLength(32)
 
     // 3. Encrypt the note to the recipient (self in this test)

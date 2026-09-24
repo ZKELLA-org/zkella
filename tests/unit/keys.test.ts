@@ -1,7 +1,7 @@
 import { ZKELLAKeys } from '../../sdk/src/keys/keys'
 import { hashToCurveG1, scalarMultPoint } from '../../sdk/src/crypto/bn254'
 import { encryptNote, tryDecryptNote } from '../../sdk/src/notes/encrypt'
-import { buildNote } from '../../sdk/src/notes/builder'
+import { buildNote, computeOwnerKey } from '../../sdk/src/notes/builder'
 
 const BN254_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
 
@@ -79,7 +79,7 @@ describe('ZKELLAKeys', () => {
     const addr = await k.deriveAddress(3)
     const gD   = await hashToCurveG1(addr.diversifier)
 
-    const note = await buildNote(42_000_000n, 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA')
+    const note = await buildNote(42_000_000n, 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA', await computeOwnerKey(new Uint8Array(32).fill(7)))
     const bundle = await encryptNote(note, addr.pkD, gD)
     const decrypted = await tryDecryptNote(bundle, k.spendingKey.viewingKey)
 
