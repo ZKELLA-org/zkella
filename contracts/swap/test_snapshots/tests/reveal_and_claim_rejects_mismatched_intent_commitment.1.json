@@ -314,7 +314,7 @@
               "function_name": "execute_swap",
               "args": [
                 {
-                  "bytes": "7ffcc64c652fd457b5142f0bf1b586874ca12f665a88fa01c58985832f2df013"
+                  "bytes": "b1a39b30ebcb982fef856714c2d31341c648abff5bae67707b7783dcc15b3bb8"
                 },
                 {
                   "i128": "950000"
@@ -1758,7 +1758,7 @@
                     "symbol": "Nullifier"
                   },
                   {
-                    "bytes": "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9"
+                    "bytes": "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c900"
                   }
                 ]
               },
@@ -1978,7 +1978,7 @@
                             "symbol": "SwapState"
                           },
                           {
-                            "bytes": "7ffcc64c652fd457b5142f0bf1b586874ca12f665a88fa01c58985832f2df013"
+                            "bytes": "b1a39b30ebcb982fef856714c2d31341c648abff5bae67707b7783dcc15b3bb8"
                           }
                         ]
                       },
@@ -2029,7 +2029,7 @@
                               "symbol": "intent_commitment"
                             },
                             "val": {
-                              "bytes": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2"
+                              "bytes": "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d200"
                             }
                           },
                           {
@@ -2037,7 +2037,7 @@
                               "symbol": "nullifier_in"
                             },
                             "val": {
-                              "bytes": "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9"
+                              "bytes": "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c900"
                             }
                           },
                           {
