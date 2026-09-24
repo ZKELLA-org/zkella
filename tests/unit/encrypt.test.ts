@@ -1,5 +1,5 @@
 import { encryptNote, tryDecryptNote } from '../../sdk/src/notes/encrypt'
-import { buildNote }                   from '../../sdk/src/notes/builder'
+import { buildNote, computeOwnerKey }   from '../../sdk/src/notes/builder'
 import { ZKELLAKeys }                  from '../../sdk/src/keys/keys'
 
 const MOCK_ASSET = 'CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA'
@@ -10,14 +10,14 @@ describe('Note encryption', () => {
 
   test('encrypted note is 136 bytes', async () => {
     const keys = await ZKELLAKeys.generate()
-    const note = await buildNote(100_000_000n, MOCK_ASSET)
+    const note = await buildNote(100_000_000n, MOCK_ASSET, await computeOwnerKey(new Uint8Array(32).fill(7)))
     const bundle = await encryptNote(note, keys.spendingKey.transmissionKey)
     expect(bundle).toHaveLength(176)
   })
 
   test('encrypted note decrypts correctly with the right viewing key', async () => {
     const keys = await ZKELLAKeys.generate()
-    const note = await buildNote(100_000_000n, MOCK_ASSET)
+    const note = await buildNote(100_000_000n, MOCK_ASSET, await computeOwnerKey(new Uint8Array(32).fill(7)))
 
     const bundle    = await encryptNote(note, keys.spendingKey.transmissionKey)
     const decrypted = await tryDecryptNote(bundle, keys.spendingKey.viewingKey)
@@ -32,7 +32,7 @@ describe('Note encryption', () => {
   test('decryption fails with a wrong viewing key', async () => {
     const keys1 = await ZKELLAKeys.generate()
     const keys2 = await ZKELLAKeys.generate()
-    const note  = await buildNote(100_000_000n, MOCK_ASSET)
+    const note  = await buildNote(100_000_000n, MOCK_ASSET, await computeOwnerKey(new Uint8Array(32).fill(7)))
 
     const bundle    = await encryptNote(note, keys1.spendingKey.transmissionKey)
     const decrypted = await tryDecryptNote(bundle, keys2.spendingKey.viewingKey)
@@ -42,7 +42,7 @@ describe('Note encryption', () => {
 
   test('decryption fails with tampered ciphertext', async () => {
     const keys  = await ZKELLAKeys.generate()
-    const note  = await buildNote(50_000_000n, MOCK_ASSET)
+    const note  = await buildNote(50_000_000n, MOCK_ASSET, await computeOwnerKey(new Uint8Array(32).fill(7)))
     const bundle = await encryptNote(note, keys.spendingKey.transmissionKey)
 
     // Flip a bit in the ciphertext
@@ -55,7 +55,7 @@ describe('Note encryption', () => {
 
   test('two encryptions of the same note produce different ciphertexts', async () => {
     const keys  = await ZKELLAKeys.generate()
-    const note  = await buildNote(100_000_000n, MOCK_ASSET)
+    const note  = await buildNote(100_000_000n, MOCK_ASSET, await computeOwnerKey(new Uint8Array(32).fill(7)))
     const b1    = await encryptNote(note, keys.spendingKey.transmissionKey)
     const b2    = await encryptNote(note, keys.spendingKey.transmissionKey)
     // Ephemeral keys are different each time

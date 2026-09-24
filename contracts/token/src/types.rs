@@ -44,6 +44,7 @@ pub struct ShieldBatchItem {
     pub amount:         i128,
     pub rho:            BytesN<32>,
     pub rcm:            BytesN<32>,
+    pub owner_pk:       BytesN<32>,
     pub commitment:     BytesN<32>,
     pub encrypted_note: Bytes,
     pub shield_proof:   Bytes,

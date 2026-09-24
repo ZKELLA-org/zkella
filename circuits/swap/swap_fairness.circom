@@ -84,6 +84,10 @@ template SwapFairness() {
     signal scaled <== amount_in * (10000 - max_slippage_bps);
     signal remainder <-- scaled % 10000;
     min_amount_out * 10000 + remainder === scaled;
+    // LessThan(14) alone is only meaningful for inputs already known to fit in
+    // 14 bits; bit-decompose first so a negative (wrapped) remainder can't pass.
+    component remainder_bits = Num2Bits(14);
+    remainder_bits.in <== remainder;
     component remainder_range = LessThan(14); // 10000 < 2^14
     remainder_range.in[0] <== remainder;
     remainder_range.in[1] <== 10000;

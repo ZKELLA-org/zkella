@@ -10,11 +10,11 @@ export { encodeProof, encodeVerifyingKey } from './encoding'
  * Public inputs for the shield (deposit) circuit.
  *
  * Circuit: shield.circom, `component main {public [commitment, value_commit, pub_value, pub_asset_id]}`
- *   Private: value, asset_id, rho, rcm, rcv
+ *   Private: value, asset_id, rho, rcm, rcv, pk (owner key of the new note)
  *   Public:  commitment, value_commit, pub_value, pub_asset_id
  *
  * Invariants enforced by circuit (see shield.circom):
- *   commitment   == Poseidon2(Poseidon2(value, asset_id), Poseidon2(rho, rcm))
+ *   commitment   == Poseidon2(Poseidon2(Poseidon2(value, asset_id), Poseidon2(rho, rcm)), pk)
  *   value_commit == Poseidon2(value, rcv)
  *   value        == pub_value   (prevents value inflation)
  *   asset_id     == pub_asset_id
@@ -103,6 +103,7 @@ export async function generateShieldProof(
     rho:           bufferToBigInt(note.rho).toString(),
     rcm:           bufferToBigInt(note.rcm).toString(),
     rcv:           bufferToBigInt(rcv).toString(),
+    pk:            bufferToBigInt(note.ownerPk).toString(),
     commitment:    bufferToBigInt(publicInputs.commitment).toString(),
     value_commit:  bufferToBigInt(valueCommit).toString(),
     pub_value:     publicInputs.amount.toString(),

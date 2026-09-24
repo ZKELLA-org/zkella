@@ -3,6 +3,7 @@ pragma circom 2.0.0;
 include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../common/commitment.circom";
 include "../common/nullifier.circom";
+include "../common/owner.circom";
 include "../common/merkle.circom";
 include "../common/range.circom";
 include "../common/value_commit.circom";
@@ -25,6 +26,7 @@ template Transfer2x2(D) {
     signal input out_rho[N_OUT];
     signal input out_rcm[N_OUT];
     signal input out_rcv[N_OUT];
+    signal input out_pk[N_OUT]; // owner key of each output note (recipient's, or own for change)
 
     signal input anchor;
     signal input nullifiers[N_IN];
@@ -33,6 +35,10 @@ template Transfer2x2(D) {
     signal input out_value_commits[N_OUT];
     signal input fee;
     signal input asset_id;
+
+    // Inputs must commit to the owner key derived from `nk` (see owner.circom).
+    component owner = OwnerKey();
+    owner.nk <== nk;
 
     component in_cm[N_IN];
     component in_mp[N_IN];
@@ -46,6 +52,7 @@ template Transfer2x2(D) {
         in_cm[i].asset_id <== in_asset_id[i];
         in_cm[i].rho      <== in_rho[i];
         in_cm[i].rcm      <== in_rcm[i];
+        in_cm[i].pk       <== owner.pk;
 
         in_mp[i] = MerkleProof(D);
         in_mp[i].leaf <== in_cm[i].cm;
@@ -81,6 +88,7 @@ template Transfer2x2(D) {
         out_cm[i].asset_id <== out_asset_id[i];
         out_cm[i].rho      <== out_rho[i];
         out_cm[i].rcm      <== out_rcm[i];
+        out_cm[i].pk       <== out_pk[i];
         out_cm[i].cm       === out_commitments[i];
 
         out_cv[i] = ValueCommit();
@@ -97,6 +105,10 @@ template Transfer2x2(D) {
     signal sum_in  <== in_value[0]  + in_value[1];
     signal sum_out <== out_value[0] + out_value[1];
     sum_in === sum_out + fee;
+
+    // fee must be a 64-bit amount so the balance equation cannot wrap the field.
+    component fee_range = Range64();
+    fee_range.value <== fee;
 
     // Each input slot above is constrained independently (its own Merkle
     // proof, its own nullifier derivation) with nothing linking the two

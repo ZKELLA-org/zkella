@@ -843,7 +843,7 @@ mod tests {
     // compiled shield.circom circuit* uses the same Poseidon parameterization
     // as this contract, only that this contract matches circomlibjs in the
     // abstract. This test closes that gap directly: it recomputes
-    // NoteCommitment = Poseidon2(Poseidon2(value, asset), Poseidon2(rho, rcm))
+    // NoteCommitment = Poseidon2(Poseidon2(Poseidon2(value, asset), Poseidon2(rho, rcm)), pk)
     // purely in Rust from circuits/shield/shield_test_vectors.json's
     // v2_shield_500stroops inputs (value=500, asset_field_decimal — the real
     // testnet asset CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC's
@@ -874,12 +874,16 @@ mod tests {
             hex32_le("d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61");
         // expected.commitment from the same vector (also
         // SHIELD_PUBLIC_INPUTS_LE_HEX[0] in contracts/verifier's tests).
+        // Owner key pk = Poseidon2(4444, int("zkella_pk")), the shield fixture's `pk`.
+        let pk_bytes =
+            hex32_le("cec42292e142cb8f1beb9dc9903d6f827f3b2a7385116f697d357f0bf1d6072c");
         let expected =
-            hex32_le("34e0b1164d8115f16361db88db58197334127310d50ed897e3ca979f403b302c");
+            hex32_le("fcb8cc071cd8261e2250cb43775ad177b4f73c39850d7d85d8cc1e5a5381f807");
 
         let h1 = poseidon2_bytes(&value_bytes, &asset_bytes);
         let h2 = poseidon2_bytes(&rho_bytes, &rcm_bytes);
-        let commitment = poseidon2_bytes(&h1, &h2);
+        let h3 = poseidon2_bytes(&h1, &h2);
+        let commitment = poseidon2_bytes(&h3, &pk_bytes);
 
         assert_eq!(
             commitment, expected,

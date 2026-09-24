@@ -782,7 +782,7 @@ A shielded note contains:
 A note commitment is the on-chain representation of a shielded note:
 
 ```
-cm = Poseidon2(Poseidon2(value_field, asset_field), Poseidon2(rho, rcm))
+cm = Poseidon2(Poseidon2(Poseidon2(value_field, asset_field), Poseidon2(rho, rcm)), pk),  pk = Poseidon2(nk, DOMAIN_PK)
 ```
 
 This commitment is inserted into the ShieldedToken Merkle tree.

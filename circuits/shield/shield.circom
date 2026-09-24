@@ -10,6 +10,7 @@ template Shield() {
     signal input rho;
     signal input rcm;
     signal input rcv;
+    signal input pk; // owner key of the note being created
 
     signal input commitment;
     signal input value_commit;
@@ -21,6 +22,7 @@ template Shield() {
     cm_check.asset_id <== asset_id;
     cm_check.rho      <== rho;
     cm_check.rcm      <== rcm;
+    cm_check.pk       <== pk;
     cm_check.cm       === commitment;
 
     component cv_check = ValueCommit();

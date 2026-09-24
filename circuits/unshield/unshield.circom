@@ -2,6 +2,7 @@ pragma circom 2.0.0;
 
 include "../common/commitment.circom";
 include "../common/nullifier.circom";
+include "../common/owner.circom";
 include "../common/merkle.circom";
 include "../common/range.circom";
 
@@ -20,11 +21,17 @@ template Unshield(D) {
     signal input pub_asset_id;
     signal input recipient_hash;
 
+    // The note must commit to the owner key derived from `nk`; this is what
+    // ties `nk` (and hence the nullifier) to the note being spent.
+    component owner = OwnerKey();
+    owner.nk <== nk;
+
     component cm = NoteCommitment();
     cm.value    <== value;
     cm.asset_id <== asset_id;
     cm.rho      <== rho;
     cm.rcm      <== rcm;
+    cm.pk       <== owner.pk;
 
     component mp = MerkleProof(D);
     mp.leaf <== cm.cm;

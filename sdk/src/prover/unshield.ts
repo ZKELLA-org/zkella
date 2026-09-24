@@ -1,6 +1,6 @@
 import * as snarkjs from 'snarkjs'
 import { Note } from '../types'
-import { computeNullifier } from '../notes/builder'
+import { computeNullifier, computeOwnerKey } from '../notes/builder'
 import { addressToField, bufferToBigInt, bigIntToBuffer, poseidon2 } from '../crypto/poseidon'
 import { encodeProof } from './encoding'
 
@@ -73,6 +73,11 @@ export async function generateUnshieldProof(
     throw new Error(
       `unshield proof: merklePath must have exactly ${MERKLE_DEPTH} entries, got ${witness.merklePath.length}`
     )
+  }
+
+  const ownerPk = await computeOwnerKey(witness.nk)
+  if (bufferToBigInt(witness.note.ownerPk) !== bufferToBigInt(ownerPk)) {
+    throw new Error('unshield proof: note.ownerPk is not derived from the supplied nullifier key')
   }
 
   const pathIndex = pathIndicesFor(witness.note.leafIndex)

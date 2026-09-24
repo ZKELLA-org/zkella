@@ -1,6 +1,6 @@
 import * as snarkjs from 'snarkjs'
 import { Note } from '../types'
-import { computeCommitment, computeNullifier, computeValueCommit } from '../notes/builder'
+import { computeCommitment, computeNullifier, computeOwnerKey, computeValueCommit } from '../notes/builder'
 import { addressToField, bufferToBigInt, bigIntToBuffer } from '../crypto/poseidon'
 import { encodeProof } from './encoding'
 
@@ -37,6 +37,8 @@ export interface TransferInputNote {
 export interface TransferOutputSpec {
   value:   bigint
   assetId: string
+  /** Owner key of the recipient (or of the sender, for change). */
+  ownerPk: Uint8Array
 }
 
 export interface TransferWitness {
@@ -108,6 +110,13 @@ export async function generateTransferProof(
     }
   }
 
+  const ownerPk = await computeOwnerKey(witness.nk)
+  for (const [i, input] of witness.inputs.entries()) {
+    if (bufferToBigInt(input.note.ownerPk) !== bufferToBigInt(ownerPk)) {
+      throw new Error(`transfer proof: inputs[${i}].note.ownerPk is not derived from the supplied nullifier key`)
+    }
+  }
+
   const sumIn  = witness.inputs[0].note.value + witness.inputs[1].note.value
   const sumOut = witness.outputs[0].value + witness.outputs[1].value
   if (sumIn !== sumOut + witness.fee) {
@@ -143,7 +152,7 @@ export async function generateTransferProof(
     const rho = crypto.getRandomValues(new Uint8Array(32))
     const rcm = crypto.getRandomValues(new Uint8Array(32))
     const rcv = crypto.getRandomValues(new Uint8Array(32))
-    const commitment = await computeCommitment(out.value, out.assetId, rho, rcm)
+    const commitment = await computeCommitment(out.value, out.assetId, rho, rcm, out.ownerPk)
     outputNotes.push({
       value: out.value,
       assetId: out.assetId,
@@ -151,6 +160,7 @@ export async function generateTransferProof(
       rcm,
       leafIndex: -1,
       commitment,
+      ownerPk: out.ownerPk,
     })
     outRcv.push(rcv)
     outValueCommits.push(await computeValueCommit(out.value, rcv))
@@ -178,6 +188,7 @@ export async function generateTransferProof(
     out_rho:      outputNotes.map(n => bufferToBigInt(n.rho).toString()),
     out_rcm:      outputNotes.map(n => bufferToBigInt(n.rcm).toString()),
     out_rcv:      outRcv.map(r => bufferToBigInt(r).toString()),
+    out_pk:       witness.outputs.map(o => bufferToBigInt(o.ownerPk).toString()),
 
     anchor:            bufferToBigInt(publicInputs.anchor).toString(),
     nullifiers:        nullifiers.map(n => bufferToBigInt(n).toString()),

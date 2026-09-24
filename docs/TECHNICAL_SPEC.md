@@ -185,12 +185,19 @@ A note is considered **spent** when its nullifier appears in the on-chain nullif
 
 ```
 cm = H_pos2(
-       H_pos2(value_field, asset_id_field),
-       H_pos2(rho_field, rcm_field)
+       H_pos2(
+         H_pos2(value_field, asset_id_field),
+         H_pos2(rho_field, rcm_field)
+       ),
+       pk
      )
+
+pk = H_pos2(nk, DOMAIN_PK)      DOMAIN_PK = int("zkella_pk") = 2258241487740017274987
 ```
 
 Where `*_field` denotes the field element representation (little-endian 32-byte → F_p).
+
+`pk` is the note's **owner key**. Every spend circuit (`unshield`, `transfer`, `transfer4`) derives `pk` from the private `nk` it is given and requires the spent note's commitment to contain it, so the only `nk` that can open a note's Merkle leaf is its owner's. Without this binding `nk` was a free private input: a prover could choose a fresh `nk` per spend, obtaining a fresh nullifier `H_pos2(nk, rho)` for the same note (an unbounded double spend), and anyone who knew a note's plaintext could spend it. A depositor or transfer sender must know the recipient's `pk` in order to create a note for them; a shielded address therefore carries the transmission key and the owner key.
 
 The commitment is a 32-byte field element stored as a Merkle tree leaf.
 

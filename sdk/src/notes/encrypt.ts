@@ -80,7 +80,7 @@ export async function encryptNote(
 export async function tryDecryptNote(
   bundle:     Uint8Array,
   viewingKey: Uint8Array,  // 32-byte viewing key scalar (ZKELLAKeys.spendingKey.viewingKey)
-): Promise<Omit<Note, 'leafIndex' | 'commitment'> | null> {
+): Promise<Omit<Note, 'leafIndex' | 'commitment' | 'ownerPk'> | null> {
   if (bundle.length !== ENCRYPTED_NOTE_LENGTH) return null
 
   const ephemeralPk = bundle.slice(0, 32)
@@ -132,7 +132,7 @@ function encodePlaintext(note: Note): Uint8Array {
   return buf
 }
 
-function decodePlaintext(buf: Uint8Array): Omit<Note, 'leafIndex' | 'commitment'> {
+function decodePlaintext(buf: Uint8Array): Omit<Note, 'leafIndex' | 'commitment' | 'ownerPk'> {
   if (buf.length !== PLAINTEXT_LENGTH) throw new Error('invalid plaintext length')
 
   const dv = new DataView(buf.buffer, buf.byteOffset)

@@ -1,6 +1,7 @@
 import { blake2b }           from '@noble/hashes/blake2b'
 import { poseidon2, bigIntToBuffer, bufferToBigInt } from '../crypto/poseidon'
 import { scalarMultBase, scalarMultPoint, hashToCurveG1 } from '../crypto/bn254'
+import { computeOwnerKey } from '../notes/builder'
 import { SpendingKey, ViewingKey, ShieldedAddress, ViewingKeyExport } from '../types'
 
 // BN254 scalar field order
@@ -63,10 +64,12 @@ export class ZKELLAKeys {
     const vk    = reduceModR(vkRaw)
 
     const tk = await scalarMultBase(vk)
+    const ownerKey = await computeOwnerKey(nk)
 
     const spendingKey: SpendingKey = {
       raw:             sk,
       nullifierKey:    nk,
+      ownerKey,
       viewingKey:      vk,
       transmissionKey: tk,
     }

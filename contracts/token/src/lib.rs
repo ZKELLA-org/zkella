@@ -42,7 +42,12 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 17_280 * 365; // extend to 1 year from now
 
 // ── Note commitment ───────────────────────────────────────────────────────────
 
-/// Compute note commitment: Poseidon2(Poseidon2(value, asset_field), Poseidon2(rho, rcm))
+/// Compute note commitment:
+/// Poseidon2(Poseidon2(Poseidon2(value, asset_field), Poseidon2(rho, rcm)), owner_pk)
+///
+/// `owner_pk` = Poseidon2(nk, DOMAIN_PK) binds the note to its owner's nullifier
+/// key (see circuits/common/owner.circom); without it `nk` was unconstrained
+/// and a note could be spent repeatedly under fresh nullifiers.
 ///
 /// Field encoding:
 ///   value       — little-endian u128, zero-padded to 32 bytes (safe for u64 amounts)
@@ -58,6 +63,7 @@ fn compute_commitment(
     asset:  &Address,
     rho:    &BytesN<32>,
     rcm:    &BytesN<32>,
+    owner_pk: &BytesN<32>,
     hasher: &mut poseidon::Poseidon2Hasher,
 ) -> [u8; 32] {
     let mut value_bytes = [0u8; 32];
@@ -68,9 +74,12 @@ fn compute_commitment(
     let rho_bytes: [u8; 32] = rho.clone().into();
     let rcm_bytes: [u8; 32] = rcm.clone().into();
 
+    let owner_pk_bytes: [u8; 32] = owner_pk.clone().into();
+
     let h1 = hasher.hash(&value_bytes, &asset_bytes);
     let h2 = hasher.hash(&rho_bytes, &rcm_bytes);
-    hasher.hash(&h1, &h2)
+    let h3 = hasher.hash(&h1, &h2);
+    hasher.hash(&h3, &owner_pk_bytes)
 }
 
 /// BN254 scalar-field modulus r, big-endian.
@@ -229,6 +238,7 @@ impl ShieldedToken {
         amount:         i128,
         rho:            BytesN<32>,
         rcm:            BytesN<32>,
+        owner_pk:       BytesN<32>,
         commitment:     BytesN<32>,
         encrypted_note: Bytes,
         shield_proof:   Bytes,
@@ -275,7 +285,7 @@ impl ShieldedToken {
         // below (~35 hashes total) — see Poseidon2Hasher's doc comment for why
         // a fresh sponge per call blew the instruction budget.
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed  = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
+        let computed  = compute_commitment(&env, amount, &asset, &rho, &rcm, &owner_pk, &mut hasher);
         let provided: [u8; 32] = commitment.clone().into();
         if computed != provided {
             return Err(Error::CommitmentMismatch);
@@ -442,7 +452,7 @@ impl ShieldedToken {
             }
 
             // ── 5. Verify commitment matches Poseidon2 re-computation ────────
-            let computed = compute_commitment(&env, item.amount, &asset, &item.rho, &item.rcm, &mut hasher);
+            let computed = compute_commitment(&env, item.amount, &asset, &item.rho, &item.rcm, &item.owner_pk, &mut hasher);
             let provided: [u8; 32] = item.commitment.clone().into();
             if computed != provided {
                 return Err(Error::CommitmentMismatch);
@@ -992,6 +1002,11 @@ mod tests {
         a
     }
 
+    /// Owner key filler for tests (any canonical field element).
+    fn test_pk(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &canon(9))
+    }
+
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
@@ -1103,7 +1118,7 @@ mod tests {
 
         // Compute commitment using the same function the contract will call
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed = compute_commitment(&env, 100_000_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, 100_000_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
 
@@ -1128,7 +1143,7 @@ mod tests {
             &token_addr,
             &100_000_000i128,
             &rho,
-            &rcm,
+            &rcm, &test_pk(&env),
             &commitment,
             &encrypted_note,
             &proof,
@@ -1176,7 +1191,7 @@ mod tests {
             let rcm = BytesN::from_array(env, &[0x99u8; 32]);
 
             let mut hasher = poseidon::Poseidon2Hasher::new(env);
-            let computed = compute_commitment(env, amount, &token_addr, &rho, &rcm, &mut hasher);
+            let computed = compute_commitment(env, amount, &token_addr, &rho, &rcm, &test_pk(env), &mut hasher);
             let commitment = BytesN::from_array(env, &computed);
             let value_commit = BytesN::from_array(env, &[0u8; 32]);
 
@@ -1212,7 +1227,7 @@ mod tests {
             let encrypted_note = Bytes::from_array(env, &[0u8; 176]);
 
             client.shield(
-                &user, &token_addr, &amount, &rho, &rcm, &commitment,
+                &user, &token_addr, &amount, &rho, &rcm, &test_pk(&env), &commitment,
                 &encrypted_note, &proof, &pub_inputs,
             );
 
@@ -1368,7 +1383,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(7));
         let rcm = BytesN::from_array(&env, &canon(8));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc = Bytes::from_array(&env, &[0u8; 176]);
@@ -1396,7 +1411,7 @@ mod tests {
             .register_verifying_key(&CircuitType::Shield.into(), &vk_bytes);
         let bad_proof = test_groth16::corrupt_proof(&env, &valid_proof);
 
-        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &bad_proof, &pub_inputs);
+        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &bad_proof, &pub_inputs);
         assert!(result.is_err());
     }
 
@@ -1426,7 +1441,7 @@ mod tests {
 
         // Negative amount is rejected before proof verification is reached,
         // so an empty/garbage proof is fine here.
-        let result = client.try_shield(&user, &token_addr, &-1i128, &rho, &rcm, &cm, &enc, &Bytes::new(&env), &pub_inputs);
+        let result = client.try_shield(&user, &token_addr, &-1i128, &rho, &rcm, &test_pk(&env), &cm, &enc, &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
     }
 
@@ -1452,7 +1467,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(3));
         let rcm = BytesN::from_array(&env, &canon(4));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc        = Bytes::from_array(&env, &[0u8; 176]);
@@ -1468,12 +1483,12 @@ mod tests {
         );
 
         // First shield succeeds
-        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
 
         // Second shield with same commitment must fail at the duplicate
         // check, before proof verification is reached again.
         stellar_asset.mint(&user, &1_000_000_000);
-        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert!(result.is_err());
     }
 
@@ -1513,7 +1528,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(3));
         let rcm = BytesN::from_array(&env, &canon(4));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc        = Bytes::from_array(&env, &[0u8; 176]);
@@ -1529,14 +1544,14 @@ mod tests {
         );
 
         // User A's genuine shield succeeds and funds come from user A.
-        client.shield(&user_a, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        client.shield(&user_a, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert_eq!(client.leaf_count(), 1u32);
 
         // The attacker, a wholly unrelated address, replays the exact same
         // (rho, rcm, commitment, proof) tuple under its own authorization,
         // funded by its own balance. Knowledge of the public tuple confers
         // no ability to claim or duplicate the note.
-        let result = client.try_shield(&attacker, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let result = client.try_shield(&attacker, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert!(result.is_err(), "a different caller replaying another user's shield tuple must be rejected");
         assert_eq!(client.leaf_count(), 1u32, "no second note may be inserted from the replayed tuple");
     }
@@ -1557,7 +1572,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(5));
         let rcm = BytesN::from_array(&env, &canon(6));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         // Wrong length: 136 instead of 176
         let bad_enc    = Bytes::from_array(&env, &[0u8; 136]);
@@ -1570,7 +1585,7 @@ mod tests {
 
         // Wrong note length is rejected before proof verification, so an
         // empty/garbage proof is fine here.
-        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &bad_enc, &Bytes::new(&env), &pub_inputs);
+        let result = client.try_shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &bad_enc, &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
     }
 
@@ -2090,7 +2105,7 @@ mod tests {
         let shield_rho = BytesN::from_array(&env, &canon(30));
         let shield_rcm = BytesN::from_array(&env, &canon(31));
         let shield_amount: i128 = 1_000_000;
-        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &mut hasher);
+        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &commitment_bytes);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let shield_pub_inputs = ShieldPublicInputs {
@@ -2101,7 +2116,7 @@ mod tests {
         };
         let shield_proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, shield_amount, &token_addr);
         let encrypted_note = Bytes::from_array(&env, &[0u8; 176]);
-        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
+        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &test_pk(&env), &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
         assert_eq!(client.shielded_supply(&token_addr), shield_amount);
 
         let anchor = client.merkle_root();
@@ -2321,7 +2336,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(9));
         let rcm = BytesN::from_array(&env, &canon(10));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc = Bytes::from_array(&env, &[0u8; 176]);
@@ -2335,7 +2350,7 @@ mod tests {
         let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, 1_000, &token_addr);
 
         env.cost_estimate().budget().reset_tracker();
-        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2384,7 +2399,7 @@ mod tests {
         let rho = BytesN::from_array(&env, &canon(9));
         let rcm = BytesN::from_array(&env, &canon(10));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let enc = Bytes::from_array(&env, &[0u8; 176]);
@@ -2398,7 +2413,7 @@ mod tests {
         let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, 1_000, &token_addr);
 
         env.cost_estimate().budget().reset_tracker();
-        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        client.shield(&user, &token_addr, &1_000i128, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2881,7 +2896,7 @@ mod tests {
         let shield_rho = BytesN::from_array(&env, &canon(40));
         let shield_rcm = BytesN::from_array(&env, &canon(41));
         let shield_amount: i128 = 1_000_000;
-        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &mut hasher);
+        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &commitment_bytes);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let shield_pub_inputs = ShieldPublicInputs {
@@ -2892,7 +2907,7 @@ mod tests {
         };
         let shield_proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, shield_amount, &token_addr);
         let encrypted_note = Bytes::from_array(&env, &[0u8; 176]);
-        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
+        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &test_pk(&env), &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
 
         let anchor = client.merkle_root();
         let nullifier = BytesN::from_array(&env, &canon(42));
@@ -2980,12 +2995,14 @@ mod tests {
         let rcm = BytesN::from_array(&env, &rcm_le);
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let commitment = compute_commitment(&env, value, &asset, &rho, &rcm, &mut hasher);
+        let commitment = compute_commitment(&env, value, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
 
+        // Independently computed with circomlibjs (Poseidon2(Poseidon2(Poseidon2(value,
+        // asset), Poseidon2(rho, rcm)), pk)) for owner key pk = [9; 31] ++ [0].
         let expected_from_circuit: [u8; 32] = [
-            0xfe, 0x1a, 0x40, 0xc4, 0x22, 0x85, 0x0b, 0x8b, 0x97, 0x02, 0x2d, 0x66, 0xd2, 0x35,
-            0x75, 0xd1, 0x18, 0x2e, 0x3f, 0x53, 0x50, 0xac, 0x90, 0x08, 0x0c, 0x6d, 0x9b, 0x6a,
-            0x24, 0xb7, 0x3b, 0x07,
+            0x4f, 0xfc, 0xd4, 0x52, 0x61, 0xdf, 0xe9, 0xc6, 0xac, 0x9a, 0xd6, 0x12, 0xf3, 0xa1,
+            0xe0, 0x41, 0x25, 0x22, 0x0b, 0xd9, 0xd7, 0x3c, 0xf1, 0x84, 0x0e, 0x42, 0x60, 0xdf,
+            0x28, 0x89, 0x7d, 0x11,
         ];
         assert_eq!(commitment, expected_from_circuit);
     }
@@ -3018,7 +3035,7 @@ mod tests {
         let rcm = BytesN::from_array(&env, &canon(202));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let below_amount: i128 = 10_000;
-        let computed = compute_commitment(&env, below_amount, &asset, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, below_amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = ShieldPublicInputs {
@@ -3029,14 +3046,14 @@ mod tests {
         };
         let proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, below_amount, &asset);
         let enc = Bytes::from_array(&env, &[0u8; 176]);
-        let result = client.try_shield(&user, &asset, &below_amount, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let result = client.try_shield(&user, &asset, &below_amount, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert_eq!(result, Err(Ok(Error::AmountMismatch)));
 
         // The same amount succeeds once the caller meets the new floor.
         let above_amount: i128 = new_min;
         let rho2 = BytesN::from_array(&env, &canon(203));
         let rcm2 = BytesN::from_array(&env, &canon(204));
-        let computed2 = compute_commitment(&env, above_amount, &asset, &rho2, &rcm2, &mut hasher);
+        let computed2 = compute_commitment(&env, above_amount, &asset, &rho2, &rcm2, &test_pk(&env), &mut hasher);
         let commitment2 = BytesN::from_array(&env, &computed2);
         let pub_inputs2 = ShieldPublicInputs {
             commitment: commitment2.clone(),
@@ -3068,7 +3085,7 @@ mod tests {
             address_to_field_bytes(&env, &asset),
         ];
         let (_, proof2) = test_groth16::build_valid_shield_proof(&env, public_inputs_le);
-        client.shield(&user, &asset, &above_amount, &rho2, &rcm2, &commitment2, &enc, &proof2, &pub_inputs2);
+        client.shield(&user, &asset, &above_amount, &rho2, &rcm2, &test_pk(&env), &commitment2, &enc, &proof2, &pub_inputs2);
     }
 
     #[test]
@@ -3089,7 +3106,7 @@ mod tests {
         let rcm = BytesN::from_array(&env, &canon(206));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let amount: i128 = 1_000_000;
-        let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = ShieldPublicInputs {
@@ -3103,14 +3120,14 @@ mod tests {
 
         // Real, non-native asset, not yet governance-approved: rejected before
         // any custody or Merkle-tree state changes.
-        let result = client.try_shield(&user, &asset, &amount, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let result = client.try_shield(&user, &asset, &amount, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert_eq!(result, Err(Ok(Error::AssetNotApproved)));
         assert_eq!(client.shielded_supply(&asset), 0);
 
         // Governance approves it — the same call now succeeds.
         client.set_asset_approved(&asset, &true);
         assert!(client.is_asset_approved(&asset));
-        client.shield(&user, &asset, &amount, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        client.shield(&user, &asset, &amount, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert_eq!(client.shielded_supply(&asset), amount);
 
         // Governance can revoke it again; already-shielded notes are
@@ -3118,7 +3135,7 @@ mod tests {
         client.set_asset_approved(&asset, &false);
         let rho2 = BytesN::from_array(&env, &canon(207));
         let rcm2 = BytesN::from_array(&env, &canon(208));
-        let computed2 = compute_commitment(&env, amount, &asset, &rho2, &rcm2, &mut hasher);
+        let computed2 = compute_commitment(&env, amount, &asset, &rho2, &rcm2, &test_pk(&env), &mut hasher);
         let commitment2 = BytesN::from_array(&env, &computed2);
         let pub_inputs2 = ShieldPublicInputs {
             commitment: commitment2.clone(),
@@ -3141,7 +3158,7 @@ mod tests {
         let (vk2, proof2) = test_groth16::build_valid_shield_proof(&env, public_inputs_le2);
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .update_verifying_key(&CircuitType::Shield.into(), &vk2);
-        let result2 = client.try_shield(&user, &asset, &amount, &rho2, &rcm2, &commitment2, &enc, &proof2, &pub_inputs2);
+        let result2 = client.try_shield(&user, &asset, &amount, &rho2, &rcm2, &test_pk(&env), &commitment2, &enc, &proof2, &pub_inputs2);
         assert_eq!(result2, Err(Ok(Error::AssetNotApproved)));
     }
 
@@ -3166,7 +3183,7 @@ mod tests {
             let seed = 210u8 + (i as u8) * 2;
             let rho = BytesN::from_array(&env, &[seed; 32]);
             let rcm = BytesN::from_array(&env, &[seed + 1; 32]);
-            let computed = compute_commitment(&env, *amount, &asset, &rho, &rcm, &mut hasher);
+            let computed = compute_commitment(&env, *amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
             let commitment = BytesN::from_array(&env, &computed);
             let value_commit = BytesN::from_array(&env, &[0u8; 32]);
             let pub_inputs = ShieldPublicInputs {
@@ -3202,6 +3219,7 @@ mod tests {
                 amount: *amount,
                 rho,
                 rcm,
+                owner_pk: test_pk(&env),
                 commitment,
                 encrypted_note,
                 shield_proof: proof,
@@ -3262,7 +3280,7 @@ mod tests {
         let rcm = BytesN::from_array(&env, &canon(221));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let amount: i128 = 1_000;
-        let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
+        let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
         let value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = ShieldPublicInputs {
@@ -3277,7 +3295,7 @@ mod tests {
         // A full tree must fail as a typed `Result::Err`, not a host panic —
         // this is the actual fix: `MerkleTreeFull` used to exist only as a
         // declared error variant, never returned.
-        let result = client.try_shield(&user, &asset, &amount, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+        let result = client.try_shield(&user, &asset, &amount, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
         assert_eq!(result, Err(Ok(Error::MerkleTreeFull)));
         // No state changed: the tree didn't advance, and no funds moved.
         assert_eq!(client.shielded_supply(&asset), 0);
@@ -3337,7 +3355,7 @@ mod tests {
             let rho = BytesN::from_array(&env, &rho_arr);
             let rcm = BytesN::from_array(&env, &rcm_arr);
 
-            let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
+            let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher);
             let commitment = BytesN::from_array(&env, &computed);
             let value_commit = BytesN::from_array(&env, &[0u8; 32]);
             let pub_inputs = ShieldPublicInputs {
@@ -3364,7 +3382,7 @@ mod tests {
 
             let enc = Bytes::from_array(&env, &[0u8; 176]);
             env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
-            client.shield(&user, &asset, &amount, &rho, &rcm, &commitment, &enc, &proof, &pub_inputs);
+            client.shield(&user, &asset, &amount, &rho, &rcm, &test_pk(&env), &commitment, &enc, &proof, &pub_inputs);
             last_used = env.cost_estimate().budget().cpu_instruction_cost();
         }
 

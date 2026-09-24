@@ -84,6 +84,7 @@ pub trait Token {
         amount:         i128,
         rho:            BytesN<32>,
         rcm:            BytesN<32>,
+        owner_pk:       BytesN<32>,
         commitment:     BytesN<32>,
         encrypted_note: Bytes,
         shield_proof:   Bytes,

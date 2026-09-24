@@ -46,7 +46,7 @@ const vec = items => xdr.ScVal.scvVec(items.map(i => nativeToScVal(i, { type: 'b
   }
   const res = await generateTransfer4Proof(
     { inputs, nk: keys.spendingKey.nullifierKey, fee: 0n,
-      outputs: [0, 1, 2, 3].map(() => ({ value: AMOUNT, assetId: ASSET_ID })) },
+      outputs: [0, 1, 2, 3].map(() => ({ value: AMOUNT, assetId: ASSET_ID, ownerPk: keys.spendingKey.ownerKey })) },
     { anchor, assetId: ASSET_ID },
     b('transfer_4in4out/build/transfer_js/transfer.wasm'), b('transfer_4in4out/build/transfer.zkey'),
   )

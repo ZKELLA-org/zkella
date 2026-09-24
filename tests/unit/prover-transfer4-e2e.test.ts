@@ -17,7 +17,7 @@
 
 import * as path from 'path'
 import { generateTransfer4Proof } from '../../sdk/src/prover/transfer4'
-import { computeCommitment, computeNullifier } from '../../sdk/src/notes/builder'
+import { computeCommitment, computeNullifier, computeOwnerKey } from '../../sdk/src/notes/builder'
 import { poseidon2, bigIntToBuffer, bufferToBigInt } from '../../sdk/src/crypto/poseidon'
 import { Note } from '../../sdk/src/types'
 
@@ -59,9 +59,11 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
     const rcms = [222n, 444n, 666n, 888n].map(bigIntToBuffer)
     const values = [300000n, 200000n, 150000n, 100000n]
     const nk = bigIntToBuffer(555n)
+    const ownerPk = await computeOwnerKey(nk)
+    const outPk   = await computeOwnerKey(bigIntToBuffer(9999n))
 
     const commitments = await Promise.all(
-      values.map((v, i) => computeCommitment(v, ASSET_ADDR, rhos[i], rcms[i])),
+      values.map((v, i) => computeCommitment(v, ASSET_ADDR, rhos[i], rcms[i], ownerPk)),
     ) as [Uint8Array, Uint8Array, Uint8Array, Uint8Array]
     const { anchor, paths } = await buildFourLeafTree(commitments)
 
@@ -72,6 +74,7 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
       rcm: rcms[i],
       leafIndex: i,
       commitment: commitments[i],
+      ownerPk,
     }))
 
     const outValues = [250000n, 200000n, 150000n, 149000n]
@@ -81,7 +84,7 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
       {
         inputs: [0, 1, 2, 3].map(i => ({ note: notes[i], merklePath: paths[i] })) as any,
         nk,
-        outputs: outValues.map(v => ({ value: v, assetId: ASSET_ADDR })) as any,
+        outputs: outValues.map(v => ({ value: v, assetId: ASSET_ADDR, ownerPk: outPk })) as any,
         fee,
       },
       { anchor, assetId: ASSET_ADDR },
@@ -109,16 +112,19 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
   test('rejects when in_value sum does not balance out_value sum + fee', async () => {
     const rho = bigIntToBuffer(1n)
     const rcm = bigIntToBuffer(2n)
-    const commitment = await computeCommitment(100n, ASSET_ADDR, rho, rcm)
-    const note: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: 0, commitment }
+    const nk = bigIntToBuffer(5n)
+    const ownerPk = await computeOwnerKey(nk)
+    const outPk   = await computeOwnerKey(bigIntToBuffer(9999n))
+    const commitment = await computeCommitment(100n, ASSET_ADDR, rho, rcm, ownerPk)
+    const note: Note = { value: 100n, assetId: ASSET_ADDR, rho, rcm, leafIndex: 0, commitment, ownerPk }
     const emptyPath = new Array(MERKLE_DEPTH).fill(new Uint8Array(32))
 
     await expect(
       generateTransfer4Proof(
         {
           inputs: [0, 1, 2, 3].map(i => ({ note: { ...note, leafIndex: i }, merklePath: emptyPath })) as any,
-          nk: bigIntToBuffer(5n),
-          outputs: [1000n, 1000n, 1000n, 1000n].map(v => ({ value: v, assetId: ASSET_ADDR })) as any, // doesn't balance
+          nk,
+          outputs: [1000n, 1000n, 1000n, 1000n].map(v => ({ value: v, assetId: ASSET_ADDR, ownerPk: outPk })) as any, // doesn't balance
           fee: 0n,
         },
         { anchor: new Uint8Array(32), assetId: ASSET_ADDR },
