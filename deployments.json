@@ -1,25 +1,26 @@
 {
   "testnet": {
-    "verifier":     "CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER",
-    "governance":   "CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS",
-    "compliance":   "CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS",
-    "token":        "CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ",
-    "swap":         "CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN",
+    "verifier": "CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER",
+    "governance": "CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS",
+    "compliance": "CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS",
+    "token": "CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ",
+    "swap": "CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN",
     "viewing_keys": null,
-    "_note":        "LEGACY stack, not source-equivalent to current code (built before owner-key notes, the canonical public-input check, batch transcript challenges and revoke_previous_vk). Redeployed 2026-08-14 to close 7 findings from an external technical review (three Critical in contracts/swap, one High in contracts/governance, plus three lower-severity fixes) — see docs/POC_IMPLEMENTATION.md's 'Update: external audit' and 'Update: live redeployment with the fast-timelock testnet build'. The `governance` binary for this deployment was built with the testnet-fast-timelock feature (VK_TIMELOCK_LEDGERS=60, ~5 minutes, vs the real 7-day production value) — see contracts/governance/Cargo.toml's doc comment on that feature; never build a production artifact with it enabled. Prior addresses (verifier CCRLI4EAT62..., governance CDCSHTT3R75M..., compliance CA2EU46YYEBJ..., token CDE7U6HTLMDF..., swap CDPPRPAVKUJG...) predate all seven fixes and are superseded."
+    "_note": "LEGACY stack, not source-equivalent to current code (built before owner-key notes, the canonical public-input check, batch transcript challenges and revoke_previous_vk). Redeployed 2026-08-14 to close 7 findings from an external technical review (three Critical in contracts/swap, one High in contracts/governance, plus three lower-severity fixes) \u2014 see docs/POC_IMPLEMENTATION.md's 'Update: external audit' and 'Update: live redeployment with the fast-timelock testnet build'. The `governance` binary for this deployment was built with the testnet-fast-timelock feature (VK_TIMELOCK_LEDGERS=60, ~5 minutes, vs the real 7-day production value) \u2014 see contracts/governance/Cargo.toml's doc comment on that feature; never build a production artifact with it enabled. Prior addresses (verifier CCRLI4EAT62..., governance CDCSHTT3R75M..., compliance CA2EU46YYEBJ..., token CDE7U6HTLMDF..., swap CDPPRPAVKUJG...) predate all seven fixes and are superseded."
   },
   "testnet_tranche1": {
-    "verifier":     "CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22",
-    "token":        "CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM",
-    "swap":         "CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3",
-    "_note":        "Tranche 1 live validation stack, the only stack built from the owner-key, canonical-input and batch-transcript source. The verifier is administered directly by the deployer (no governance timelock). The swap address predates the later commit_swap binding change (out_owner_pk committed at commit_swap; asset_out and expiry bound into the ownership proof binding tag) and the move of swap state to persistent storage, so it does not match current swap source; redeploy swap before relying on it. The `testnet` block above is the older stack and does not include the owner-key, canonical-input, batch-transcript or revoke_previous_vk changes."
+    "verifier": "CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22",
+    "token": "CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM",
+    "swap": "CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3",
+    "_note": "Tranche 1 live validation stack, the only stack built from the owner-key, canonical-input and batch-transcript source. The verifier is administered directly by the deployer (no governance timelock). The swap address predates the later commit_swap binding change (out_owner_pk committed at commit_swap; asset_out and expiry bound into the ownership proof binding tag) and the move of swap state to persistent storage, so it does not match current swap source; redeploy swap before relying on it. The `testnet` block above is the older stack and does not include the owner-key, canonical-input, batch-transcript or revoke_previous_vk changes.",
+    "compliance": "CC55I2ZEZRQLZ4VZN2OLCSAPBLPCI3XPYRTHKNI7QOIKWRU652GYNTUK"
   },
   "mainnet": {
-    "verifier":     null,
-    "governance":   null,
-    "compliance":   null,
-    "token":        null,
-    "swap":         null,
+    "verifier": null,
+    "governance": null,
+    "compliance": null,
+    "token": null,
+    "swap": null,
     "viewing_keys": null
   }
 }
