@@ -73,6 +73,12 @@ fn compute_commitment(
     hasher.hash(&h1, &h2)
 }
 
+/// BN254 scalar-field modulus r, big-endian.
+const FR_MODULUS_BE: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
+
 /// Extract the raw 32-byte contract ID from a Soroban Address via XDR.
 ///
 /// `addr.to_xdr(env)` serializes the full `ScVal::Address(ScAddress::Contract(Hash))`,
@@ -96,7 +102,17 @@ fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     for i in 0..32u32 {
         out[i as usize] = xdr.get(start + i).unwrap_or(0) as u8;
     }
-    out
+    // Reduce mod r: public inputs must be canonical field elements (the
+    // verifier rejects >= r), and Poseidon reduces the same way internally, so
+    // every hash over this value is unchanged.
+    let mut be = out;
+    be.reverse();
+    let r = soroban_sdk::U256::from_be_bytes(env, &soroban_sdk::Bytes::from_array(env, &FR_MODULUS_BE));
+    let v = soroban_sdk::U256::from_be_bytes(env, &soroban_sdk::Bytes::from_array(env, &be)).rem_euclid(&r);
+    let reduced: [u8; 32] = v.to_be_bytes().try_into().expect("u256 is 32 bytes");
+    let mut le = reduced;
+    le.reverse();
+    le
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -568,6 +584,10 @@ impl ShieldedToken {
     ) -> Result<Vec<u32>, Error> {
         Self::assert_not_paused(&env)?;
 
+        if pub_inputs.fee < 0 {
+            return Err(Error::AmountMismatch);
+        }
+
         // ── 1. Arity checks ───────────────────────────────────────────────────
         if nullifiers.len() != n || commitments.len() != n || encrypted_notes.len() != n {
             return Err(Error::InvalidInputCount);
@@ -965,6 +985,13 @@ impl ShieldedToken {
 
 #[cfg(test)]
 mod tests {
+    /// Filler bytes for public inputs must be canonical field elements (< r).
+    fn canon(b: u8) -> [u8; 32] {
+        let mut a = [b; 32];
+        a[31] = 0;
+        a
+    }
+
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
 
@@ -1071,8 +1098,8 @@ mod tests {
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
         stellar_asset.mint(&user, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[1u8; 32]);
-        let rcm = BytesN::from_array(&env, &[2u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(1));
+        let rcm = BytesN::from_array(&env, &canon(2));
 
         // Compute commitment using the same function the contract will call
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
@@ -1209,12 +1236,12 @@ mod tests {
         let (anchor, asset) = shield_n_times(&env, &client, &verifier, merkle::ROOT_HISTORY_SIZE);
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[201u8; 32]),
-            BytesN::from_array(&env, &[202u8; 32]),
+            BytesN::from_array(&env, &canon(201)),
+            BytesN::from_array(&env, &canon(202)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[203u8; 32]),
-            BytesN::from_array(&env, &[204u8; 32]),
+            BytesN::from_array(&env, &canon(203)),
+            BytesN::from_array(&env, &canon(204)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1270,12 +1297,12 @@ mod tests {
         let (anchor, asset) = shield_n_times(&env, &client, &verifier, merkle::ROOT_HISTORY_SIZE + 1);
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[211u8; 32]),
-            BytesN::from_array(&env, &[212u8; 32]),
+            BytesN::from_array(&env, &canon(211)),
+            BytesN::from_array(&env, &canon(212)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[213u8; 32]),
-            BytesN::from_array(&env, &[214u8; 32]),
+            BytesN::from_array(&env, &canon(213)),
+            BytesN::from_array(&env, &canon(214)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1338,8 +1365,8 @@ mod tests {
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
         stellar_asset.mint(&user, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[7u8; 32]);
-        let rcm = BytesN::from_array(&env, &[8u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(7));
+        let rcm = BytesN::from_array(&env, &canon(8));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -1422,8 +1449,8 @@ mod tests {
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
         stellar_asset.mint(&user, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[3u8; 32]);
-        let rcm = BytesN::from_array(&env, &[4u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(3));
+        let rcm = BytesN::from_array(&env, &canon(4));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -1483,8 +1510,8 @@ mod tests {
         stellar_asset.mint(&user_a, &1_000_000_000);
         stellar_asset.mint(&attacker, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[3u8; 32]);
-        let rcm = BytesN::from_array(&env, &[4u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(3));
+        let rcm = BytesN::from_array(&env, &canon(4));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -1527,8 +1554,8 @@ mod tests {
         client.set_asset_approved(&token_addr, &true);
         let user        = Address::generate(&env);
 
-        let rho = BytesN::from_array(&env, &[5u8; 32]);
-        let rcm = BytesN::from_array(&env, &[6u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(5));
+        let rcm = BytesN::from_array(&env, &canon(6));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed   = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -1605,12 +1632,12 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[11u8; 32]),
-            BytesN::from_array(&env, &[12u8; 32]),
+            BytesN::from_array(&env, &canon(11)),
+            BytesN::from_array(&env, &canon(12)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[13u8; 32]),
-            BytesN::from_array(&env, &[14u8; 32]),
+            BytesN::from_array(&env, &canon(13)),
+            BytesN::from_array(&env, &canon(14)),
         ]);
         let in_value_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1676,16 +1703,16 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[51u8; 32]),
-            BytesN::from_array(&env, &[52u8; 32]),
-            BytesN::from_array(&env, &[53u8; 32]),
-            BytesN::from_array(&env, &[54u8; 32]),
+            BytesN::from_array(&env, &canon(51)),
+            BytesN::from_array(&env, &canon(52)),
+            BytesN::from_array(&env, &canon(53)),
+            BytesN::from_array(&env, &canon(54)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[55u8; 32]),
-            BytesN::from_array(&env, &[56u8; 32]),
-            BytesN::from_array(&env, &[57u8; 32]),
-            BytesN::from_array(&env, &[58u8; 32]),
+            BytesN::from_array(&env, &canon(55)),
+            BytesN::from_array(&env, &canon(56)),
+            BytesN::from_array(&env, &canon(57)),
+            BytesN::from_array(&env, &canon(58)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1754,18 +1781,18 @@ mod tests {
         client.set_asset_approved(&asset, &true);
         let anchor = client.merkle_root();
 
-        let same_nullifier = BytesN::from_array(&env, &[77u8; 32]);
+        let same_nullifier = BytesN::from_array(&env, &canon(77));
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[61u8; 32]),
+            BytesN::from_array(&env, &canon(61)),
             same_nullifier.clone(),
-            BytesN::from_array(&env, &[62u8; 32]),
+            BytesN::from_array(&env, &canon(62)),
             same_nullifier.clone(),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[63u8; 32]),
-            BytesN::from_array(&env, &[64u8; 32]),
-            BytesN::from_array(&env, &[65u8; 32]),
-            BytesN::from_array(&env, &[66u8; 32]),
+            BytesN::from_array(&env, &canon(63)),
+            BytesN::from_array(&env, &canon(64)),
+            BytesN::from_array(&env, &canon(65)),
+            BytesN::from_array(&env, &canon(66)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1838,11 +1865,11 @@ mod tests {
         client.set_asset_approved(&asset, &true);
         let anchor = client.merkle_root();
 
-        let same_nullifier = BytesN::from_array(&env, &[99u8; 32]);
+        let same_nullifier = BytesN::from_array(&env, &canon(99));
         let nullifiers = Vec::from_array(&env, [same_nullifier.clone(), same_nullifier.clone()]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[15u8; 32]),
-            BytesN::from_array(&env, &[16u8; 32]),
+            BytesN::from_array(&env, &canon(15)),
+            BytesN::from_array(&env, &canon(16)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1906,10 +1933,10 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[17u8; 32]),
-            BytesN::from_array(&env, &[18u8; 32]),
+            BytesN::from_array(&env, &canon(17)),
+            BytesN::from_array(&env, &canon(18)),
         ]);
-        let same_commitment = BytesN::from_array(&env, &[19u8; 32]);
+        let same_commitment = BytesN::from_array(&env, &canon(19));
         let out_commitments = Vec::from_array(&env, [same_commitment.clone(), same_commitment.clone()]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -1963,12 +1990,12 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[21u8; 32]),
-            BytesN::from_array(&env, &[22u8; 32]),
+            BytesN::from_array(&env, &canon(21)),
+            BytesN::from_array(&env, &canon(22)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[23u8; 32]),
-            BytesN::from_array(&env, &[24u8; 32]),
+            BytesN::from_array(&env, &canon(23)),
+            BytesN::from_array(&env, &canon(24)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -2007,8 +2034,8 @@ mod tests {
         // Same nullifiers again (different output commitments, still a fresh
         // valid proof for those inputs) must fail on the spent-nullifier check.
         let out_commitments_2 = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[25u8; 32]),
-            BytesN::from_array(&env, &[26u8; 32]),
+            BytesN::from_array(&env, &canon(25)),
+            BytesN::from_array(&env, &canon(26)),
         ]);
         let anchor2 = client.merkle_root();
         let pub_inputs_2 = TransferPublicInputs {
@@ -2060,8 +2087,8 @@ mod tests {
         // for unshield() now symmetrically decrementing what shield()
         // increments (see the audit finding this fixes).
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let shield_rho = BytesN::from_array(&env, &[30u8; 32]);
-        let shield_rcm = BytesN::from_array(&env, &[31u8; 32]);
+        let shield_rho = BytesN::from_array(&env, &canon(30));
+        let shield_rcm = BytesN::from_array(&env, &canon(31));
         let shield_amount: i128 = 1_000_000;
         let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &commitment_bytes);
@@ -2078,7 +2105,7 @@ mod tests {
         assert_eq!(client.shielded_supply(&token_addr), shield_amount);
 
         let anchor = client.merkle_root();
-        let nullifier = BytesN::from_array(&env, &[31u8; 32]);
+        let nullifier = BytesN::from_array(&env, &canon(31));
         let recipient_field = address_to_field_bytes(&env, &recipient);
         let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
@@ -2139,7 +2166,7 @@ mod tests {
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let anchor = client.merkle_root();
-        let nullifier = BytesN::from_array(&env, &[32u8; 32]);
+        let nullifier = BytesN::from_array(&env, &canon(32));
         let recipient_field = address_to_field_bytes(&env, &recipient);
         let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
@@ -2190,7 +2217,7 @@ mod tests {
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let anchor = client.merkle_root();
-        let nullifier = BytesN::from_array(&env, &[41u8; 32]);
+        let nullifier = BytesN::from_array(&env, &canon(41));
         // recipient_hash computed for `recipient`, but the call passes `wrong_recipient`.
         let recipient_field = address_to_field_bytes(&env, &recipient);
         let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
@@ -2237,7 +2264,7 @@ mod tests {
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let anchor = client.merkle_root();
-        let nullifier = BytesN::from_array(&env, &[71u8; 32]);
+        let nullifier = BytesN::from_array(&env, &canon(71));
         let recipient_field = address_to_field_bytes(&env, &recipient);
 
         let tag_a = BytesN::from_array(&env, &[0xAAu8; 32]);
@@ -2291,8 +2318,8 @@ mod tests {
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
         stellar_asset.mint(&user, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[9u8; 32]);
-        let rcm = BytesN::from_array(&env, &[10u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(9));
+        let rcm = BytesN::from_array(&env, &canon(10));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -2354,8 +2381,8 @@ mod tests {
         let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
         stellar_asset.mint(&user, &1_000_000_000);
 
-        let rho = BytesN::from_array(&env, &[9u8; 32]);
-        let rcm = BytesN::from_array(&env, &[10u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(9));
+        let rcm = BytesN::from_array(&env, &canon(10));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let computed = compute_commitment(&env, 1_000, &token_addr, &rho, &rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &computed);
@@ -2400,12 +2427,12 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[111u8; 32]),
-            BytesN::from_array(&env, &[112u8; 32]),
+            BytesN::from_array(&env, &canon(111)),
+            BytesN::from_array(&env, &canon(112)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[113u8; 32]),
-            BytesN::from_array(&env, &[114u8; 32]),
+            BytesN::from_array(&env, &canon(113)),
+            BytesN::from_array(&env, &canon(114)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -2476,12 +2503,12 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[211u8; 32]),
-            BytesN::from_array(&env, &[212u8; 32]),
+            BytesN::from_array(&env, &canon(211)),
+            BytesN::from_array(&env, &canon(212)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[213u8; 32]),
-            BytesN::from_array(&env, &[214u8; 32]),
+            BytesN::from_array(&env, &canon(213)),
+            BytesN::from_array(&env, &canon(214)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -2552,16 +2579,16 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[151u8; 32]),
-            BytesN::from_array(&env, &[152u8; 32]),
-            BytesN::from_array(&env, &[153u8; 32]),
-            BytesN::from_array(&env, &[154u8; 32]),
+            BytesN::from_array(&env, &canon(151)),
+            BytesN::from_array(&env, &canon(152)),
+            BytesN::from_array(&env, &canon(153)),
+            BytesN::from_array(&env, &canon(154)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[155u8; 32]),
-            BytesN::from_array(&env, &[156u8; 32]),
-            BytesN::from_array(&env, &[157u8; 32]),
-            BytesN::from_array(&env, &[158u8; 32]),
+            BytesN::from_array(&env, &canon(155)),
+            BytesN::from_array(&env, &canon(156)),
+            BytesN::from_array(&env, &canon(157)),
+            BytesN::from_array(&env, &canon(158)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -2679,16 +2706,16 @@ mod tests {
         let anchor = client.merkle_root();
 
         let nullifiers = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[181u8; 32]),
-            BytesN::from_array(&env, &[182u8; 32]),
-            BytesN::from_array(&env, &[183u8; 32]),
-            BytesN::from_array(&env, &[184u8; 32]),
+            BytesN::from_array(&env, &canon(181)),
+            BytesN::from_array(&env, &canon(182)),
+            BytesN::from_array(&env, &canon(183)),
+            BytesN::from_array(&env, &canon(184)),
         ]);
         let out_commitments = Vec::from_array(&env, [
-            BytesN::from_array(&env, &[185u8; 32]),
-            BytesN::from_array(&env, &[186u8; 32]),
-            BytesN::from_array(&env, &[187u8; 32]),
-            BytesN::from_array(&env, &[188u8; 32]),
+            BytesN::from_array(&env, &canon(185)),
+            BytesN::from_array(&env, &canon(186)),
+            BytesN::from_array(&env, &canon(187)),
+            BytesN::from_array(&env, &canon(188)),
         ]);
         let zero_commits = Vec::from_array(&env, [
             BytesN::from_array(&env, &[0u8; 32]),
@@ -2752,13 +2779,13 @@ mod tests {
         client.initialize(&admin, &verifier);
 
         let args = (
-            BytesN::from_array(&env, &[1u8; 32]),
+            BytesN::from_array(&env, &canon(1)),
             Address::generate(&env),
             BytesN::from_array(&env, &[0u8; 32]),
             Bytes::new(&env),
             UnshieldPublicInputs {
                 anchor: client.merkle_root(),
-                nullifier: BytesN::from_array(&env, &[1u8; 32]),
+                nullifier: BytesN::from_array(&env, &canon(1)),
                 pub_value: 1,
                 pub_asset_id: Address::generate(&env),
                 recipient_hash: BytesN::from_array(&env, &[0u8; 32]),
@@ -2796,7 +2823,7 @@ mod tests {
         let client = ShieldedTokenClient::new(&env, &token);
         client.initialize(&admin, &verifier);
 
-        let leaf = BytesN::from_array(&env, &[7u8; 32]);
+        let leaf = BytesN::from_array(&env, &canon(7));
         env.as_contract(&token, || {
             let mut hasher = poseidon::Poseidon2Hasher::new(&env);
             merkle::insert(&env, leaf.clone(), &mut hasher);
@@ -2851,8 +2878,8 @@ mod tests {
         stellar_asset.mint(&shielder, &1_000_000_000);
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let shield_rho = BytesN::from_array(&env, &[40u8; 32]);
-        let shield_rcm = BytesN::from_array(&env, &[41u8; 32]);
+        let shield_rho = BytesN::from_array(&env, &canon(40));
+        let shield_rcm = BytesN::from_array(&env, &canon(41));
         let shield_amount: i128 = 1_000_000;
         let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &mut hasher);
         let commitment = BytesN::from_array(&env, &commitment_bytes);
@@ -2868,7 +2895,7 @@ mod tests {
         client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &commitment, &encrypted_note, &shield_proof, &shield_pub_inputs);
 
         let anchor = client.merkle_root();
-        let nullifier = BytesN::from_array(&env, &[42u8; 32]);
+        let nullifier = BytesN::from_array(&env, &canon(42));
         let recipient_field = address_to_field_bytes(&env, &recipient);
         let recipient_hash_bytes = hasher.hash(&recipient_field, &[0u8; 32]);
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
@@ -2928,9 +2955,11 @@ mod tests {
 
         let asset_bytes = address_to_field_bytes(&env, &asset);
         let expected_asset_bytes: [u8; 32] = [
-            0xd7, 0x92, 0x8b, 0x72, 0xc2, 0x70, 0x3c, 0xcf, 0xea, 0xf7, 0xeb, 0x9f, 0xf4, 0xef,
-            0x4d, 0x50, 0x4a, 0x55, 0xa8, 0xb9, 0x79, 0xfc, 0x9b, 0x45, 0x0e, 0xa2, 0xc8, 0x42,
-            0xb4, 0xd1, 0xce, 0x61,
+            // Raw contract ID d7928b72...ce61 reduced mod r; equals the asset public
+            // input inside the real shield proof (verifier tests' SHIELD_PUBLIC_INPUTS_LE_HEX[3]).
+            0xd5, 0x92, 0x8b, 0x92, 0x9a, 0x85, 0x78, 0x47, 0xc8, 0x16, 0x79, 0xac, 0x63, 0x1f,
+            0xe6, 0xff, 0x8f, 0xa4, 0xa5, 0xb6, 0x0c, 0x71, 0xfb, 0xd4, 0xba, 0x61, 0x65, 0x80,
+            0xce, 0x34, 0x06, 0x01,
         ];
         assert_eq!(asset_bytes, expected_asset_bytes, "address_to_field_bytes mismatch");
 
@@ -2985,8 +3014,8 @@ mod tests {
 
         // An amount that was valid under the old default (1_000) must now be
         // rejected under the new, higher governance-set floor.
-        let rho = BytesN::from_array(&env, &[201u8; 32]);
-        let rcm = BytesN::from_array(&env, &[202u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(201));
+        let rcm = BytesN::from_array(&env, &canon(202));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let below_amount: i128 = 10_000;
         let computed = compute_commitment(&env, below_amount, &asset, &rho, &rcm, &mut hasher);
@@ -3005,8 +3034,8 @@ mod tests {
 
         // The same amount succeeds once the caller meets the new floor.
         let above_amount: i128 = new_min;
-        let rho2 = BytesN::from_array(&env, &[203u8; 32]);
-        let rcm2 = BytesN::from_array(&env, &[204u8; 32]);
+        let rho2 = BytesN::from_array(&env, &canon(203));
+        let rcm2 = BytesN::from_array(&env, &canon(204));
         let computed2 = compute_commitment(&env, above_amount, &asset, &rho2, &rcm2, &mut hasher);
         let commitment2 = BytesN::from_array(&env, &computed2);
         let pub_inputs2 = ShieldPublicInputs {
@@ -3056,8 +3085,8 @@ mod tests {
 
         assert!(!client.is_asset_approved(&asset));
 
-        let rho = BytesN::from_array(&env, &[205u8; 32]);
-        let rcm = BytesN::from_array(&env, &[206u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(205));
+        let rcm = BytesN::from_array(&env, &canon(206));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let amount: i128 = 1_000_000;
         let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);
@@ -3087,8 +3116,8 @@ mod tests {
         // Governance can revoke it again; already-shielded notes are
         // unaffected, but no further deposits of that asset are accepted.
         client.set_asset_approved(&asset, &false);
-        let rho2 = BytesN::from_array(&env, &[207u8; 32]);
-        let rcm2 = BytesN::from_array(&env, &[208u8; 32]);
+        let rho2 = BytesN::from_array(&env, &canon(207));
+        let rcm2 = BytesN::from_array(&env, &canon(208));
         let computed2 = compute_commitment(&env, amount, &asset, &rho2, &rcm2, &mut hasher);
         let commitment2 = BytesN::from_array(&env, &computed2);
         let pub_inputs2 = ShieldPublicInputs {
@@ -3229,8 +3258,8 @@ mod tests {
             env.storage().instance().set(&StorageKey::NextLeafIndex, &merkle::MAX_LEAVES);
         });
 
-        let rho = BytesN::from_array(&env, &[220u8; 32]);
-        let rcm = BytesN::from_array(&env, &[221u8; 32]);
+        let rho = BytesN::from_array(&env, &canon(220));
+        let rcm = BytesN::from_array(&env, &canon(221));
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
         let amount: i128 = 1_000;
         let computed = compute_commitment(&env, amount, &asset, &rho, &rcm, &mut hasher);

@@ -1595,7 +1595,7 @@
                     "symbol": "Nullifier"
                   },
                   {
-                    "bytes": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+                    "bytes": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d00"
                   }
                 ]
               },
@@ -1815,7 +1815,7 @@
                             "symbol": "SwapState"
                           },
                           {
-                            "bytes": "5cfac09f7b171a7b492f1df33e8981f7b662a649329ffb8896f1ef816c41a6a6"
+                            "bytes": "eeab18f773609cb3aebe558e1ec3dbe0edda70c50817556bc5ac7d44d7818e93"
                           }
                         ]
                       },
@@ -1866,7 +1866,7 @@
                               "symbol": "intent_commitment"
                             },
                             "val": {
-                              "bytes": "3737373737373737373737373737373737373737373737373737373737373737"
+                              "bytes": "3737373737373737373737373737373737373737373737373737373737373700"
                             }
                           },
                           {
@@ -1874,7 +1874,7 @@
                               "symbol": "nullifier_in"
                             },
                             "val": {
-                              "bytes": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"
+                              "bytes": "4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d00"
                             }
                           },
                           {

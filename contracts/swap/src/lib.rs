@@ -33,6 +33,12 @@ pub enum StorageKey {
     Token,
 }
 
+/// BN254 scalar-field modulus r, big-endian.
+const FR_MODULUS_BE: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
+
 /// Extract the raw 32-byte contract ID from a Soroban Address via XDR.
 /// Identical to (and must stay in sync with) `token::address_to_field_bytes` —
 /// duplicated rather than shared because `swap` doesn't otherwise depend on
@@ -45,7 +51,17 @@ fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     for i in 0..32u32 {
         out[i as usize] = xdr.get(start + i).unwrap_or(0) as u8;
     }
-    out
+    // Reduce mod r: public inputs must be canonical field elements (the
+    // verifier rejects >= r), and Poseidon reduces the same way internally, so
+    // every hash over this value is unchanged.
+    let mut be = out;
+    be.reverse();
+    let r = soroban_sdk::U256::from_be_bytes(env, &soroban_sdk::Bytes::from_array(env, &FR_MODULUS_BE));
+    let v = soroban_sdk::U256::from_be_bytes(env, &soroban_sdk::Bytes::from_array(env, &be)).rem_euclid(&r);
+    let reduced: [u8; 32] = v.to_be_bytes().try_into().expect("u256 is 32 bytes");
+    let mut le = reduced;
+    le.reverse();
+    le
 }
 
 #[contracttype]
@@ -491,6 +507,13 @@ impl ShieldedSwap {
 
 #[cfg(test)]
 mod tests {
+    /// Filler bytes for public inputs must be canonical field elements (< r).
+    fn canon(b: u8) -> [u8; 32] {
+        let mut a = [b; 32];
+        a[31] = 0;
+        a
+    }
+
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use zkella_verifier::{VerifierContract, VerifierContractClient};
@@ -716,9 +739,9 @@ mod tests {
             shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
         let _ = (in_rho, in_rcm, in_leaf);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[99u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(99));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[42u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(42));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
@@ -748,8 +771,8 @@ mod tests {
 
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
 
-        let out_rho = BytesN::from_array(&s.env, &[20u8; 32]);
-        let out_rcm = BytesN::from_array(&s.env, &[21u8; 32]);
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -810,9 +833,9 @@ mod tests {
         let amount_in = 400_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 12, 13);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[151u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(151));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[152u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(152));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
@@ -854,8 +877,8 @@ mod tests {
             .execute_swap(&swap_id, &amount_out, &s.relayer);
 
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
-        let out_rho = BytesN::from_array(&s.env, &[160u8; 32]);
-        let out_rcm = BytesN::from_array(&s.env, &[161u8; 32]);
+        let out_rho = BytesN::from_array(&s.env, &canon(160));
+        let out_rcm = BytesN::from_array(&s.env, &canon(161));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -924,9 +947,9 @@ mod tests {
         let amount_in = 1_000_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 90, 91);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[201u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(201));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[210u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(210));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
@@ -947,13 +970,13 @@ mod tests {
         // An attacker's own, completely unrelated intent_commitment — a
         // real, validly constructed fairness proof, but for a commitment
         // nobody ever actually committed to at commit_swap time.
-        let attacker_intent_commitment = BytesN::from_array(&s.env, &[211u8; 32]);
+        let attacker_intent_commitment = BytesN::from_array(&s.env, &canon(211));
         let min_amount_out = 0i128; // attacker picks the loosest possible floor
         let fairness_proof =
             prove_and_register_fairness(&s, &attacker_intent_commitment, amount_out, min_amount_out);
 
-        let out_rho = BytesN::from_array(&s.env, &[220u8; 32]);
-        let out_rcm = BytesN::from_array(&s.env, &[221u8; 32]);
+        let out_rho = BytesN::from_array(&s.env, &canon(220));
+        let out_rcm = BytesN::from_array(&s.env, &canon(221));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -998,9 +1021,9 @@ mod tests {
         let amount_in = 400_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 95, 96);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[230u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(230));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[231u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(231));
         let legit_refund_to = Address::generate(&s.env);
         // Proof generated (and its VK registered) for `legit_refund_to`.
         let ownership_proof = prove_and_register_ownership(
@@ -1036,9 +1059,9 @@ mod tests {
         let amount_in = 111_000i128;
 
         shield_note(&s, &shielder, &s.asset_in, amount_in, 70, 71);
-        let nullifier_a = BytesN::from_array(&s.env, &[101u8; 32]);
+        let nullifier_a = BytesN::from_array(&s.env, &canon(101));
         let anchor_a = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[123u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(123));
         let refund_to = Address::generate(&s.env);
         let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in, &anchor_a, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
@@ -1051,7 +1074,7 @@ mod tests {
 
         // Same intent_commitment again — must be rejected before this
         // (deliberately unregistered/unverifiable) proof is ever checked.
-        let nullifier_b = BytesN::from_array(&s.env, &[102u8; 32]);
+        let nullifier_b = BytesN::from_array(&s.env, &canon(102));
         let bogus_proof = Bytes::from_array(&s.env, &[0u8; 4]);
         swap_client.commit_swap(
             &nullifier_b, &intent_commitment, &s.asset_in, &s.asset_out,
@@ -1075,9 +1098,9 @@ mod tests {
         let amount_in = 250_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 80, 81);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[241u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(241));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[242u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(242));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to,
@@ -1101,9 +1124,9 @@ mod tests {
         let amount_in = 500_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 30, 31);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[77u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(77));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[55u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(55));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 100;
@@ -1131,9 +1154,9 @@ mod tests {
         let amount_in = 700_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 40, 41);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[88u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(88));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[66u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(66));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 100;
@@ -1168,9 +1191,9 @@ mod tests {
         let amount_in = 300_000i128;
         shield_note(&s, &shielder, &s.asset_in, amount_in, 50, 51);
 
-        let nullifier_in = BytesN::from_array(&s.env, &[11u8; 32]);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(11));
         let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
-        let intent_commitment = BytesN::from_array(&s.env, &[22u8; 32]);
+        let intent_commitment = BytesN::from_array(&s.env, &canon(22));
         let refund_to = Address::generate(&s.env);
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to);
         let expiry = s.env.ledger().sequence() + 1000;
@@ -1190,8 +1213,8 @@ mod tests {
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
         let bad_proof = test_groth16::corrupt_proof(&s.env, &fairness_proof);
 
-        let out_rho = BytesN::from_array(&s.env, &[60u8; 32]);
-        let out_rcm = BytesN::from_array(&s.env, &[61u8; 32]);
+        let out_rho = BytesN::from_array(&s.env, &canon(60));
+        let out_rcm = BytesN::from_array(&s.env, &canon(61));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm);
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);

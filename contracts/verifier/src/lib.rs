@@ -106,6 +106,7 @@ pub enum Error {
     InvalidProofLength       = 6,
     PublicInputCountMismatch = 7,
     EmptyBatch               = 8,
+    NonCanonicalInput        = 9,
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -131,6 +132,15 @@ pub enum StorageKey {
 /// but not yet submitted at the moment rotation executes, not to make the
 /// old key a standing, long-lived alternative.
 const VK_RETENTION_WINDOW_LEDGERS: u32 = 17_280; // ~1 day
+
+/// BN254 scalar-field modulus r, big-endian. Public inputs must be strictly
+/// below it: the host reduces `x` and `x + r` to the same field element, so
+/// accepting both encodings lets a caller that keys storage on raw input bytes
+/// (nullifiers, commitments) be aliased into spending one note several times.
+const FR_MODULUS_BE: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
 
 // ── Wire-format constants ────────────────────────────────────────────────────
 
@@ -193,11 +203,22 @@ impl VerifierContract {
             .ok_or(Error::VkNotRegistered)?;
         Self::validate_vk_shape(&new_vk)?;
 
-        let expiry = env.ledger().sequence() + VK_RETENTION_WINDOW_LEDGERS;
+        let expiry = env.ledger().sequence().saturating_add(VK_RETENTION_WINDOW_LEDGERS);
         env.storage().instance().set(&StorageKey::PreviousVerifyingKey(circuit), &old_vk);
         env.storage().instance().set(&StorageKey::PreviousVkExpiry(circuit), &expiry);
 
         env.storage().instance().set(&key, &new_vk);
+        Ok(())
+    }
+
+
+    /// Immediately drops the retained previous key for `circuit`. Use this
+    /// when a rotation was made because the outgoing key (or its circuit) was
+    /// compromised, so it must not stay acceptable for the retention window.
+    pub fn revoke_previous_vk(env: Env, circuit: CircuitType) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().remove(&StorageKey::PreviousVerifyingKey(circuit));
+        env.storage().instance().remove(&StorageKey::PreviousVkExpiry(circuit));
         Ok(())
     }
 
@@ -288,12 +309,8 @@ impl VerifierContract {
         msm_points.push_back(ic.get(0).unwrap());
         msm_scalars.push_back(one.clone());
         for i in 0..public_inputs.len() {
-            // Public inputs are little-endian (see module doc); the host's
-            // U256/Bn254Fr are big-endian, so reverse before constructing.
-            let mut xi_be: [u8; 32] = public_inputs.get(i).unwrap().into();
-            xi_be.reverse();
-            let xi_bytes = Bytes::from_array(env, &xi_be);
-            let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(env, &xi_bytes));
+            // Public inputs are little-endian (see module doc) and must be canonical.
+            let xi_fr = Self::public_input_to_fr(env, &public_inputs.get(i).unwrap())?;
             msm_points.push_back(ic.get(i + 1).unwrap());
             msm_scalars.push_back(xi_fr);
         }
@@ -330,9 +347,9 @@ impl VerifierContract {
     /// `r_j` weights are unpredictable to whoever constructed the proofs —
     /// otherwise a forged proof could be crafted to cancel out against a
     /// genuine one under a known combination. Each `r_j` is therefore a
-    /// Fiat-Shamir challenge, SHA-256 over that item's own proof bytes and
-    /// its index in the batch, fixed only after every proof is already
-    /// committed to, not caller-supplied.
+    /// Fiat-Shamir challenge: SHA-256 over a digest of the whole batch (circuit,
+    /// every item's public inputs and proof) and the item's index, so no part
+    /// of any item can be chosen after the challenges are known.
     pub fn verify_batch(
         env: Env,
         circuit: CircuitType,
@@ -352,6 +369,21 @@ impl VerifierContract {
         let zero = Bn254Fr::from_u256(U256::from_u32(&env, 0));
         let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
 
+        // Transcript binds everything an adversary controls. Deriving r_j from
+        // the proof alone would let public inputs be chosen after r_j is known
+        // and cancelled across items.
+        let mut transcript = Bytes::new(&env);
+        transcript.extend_from_array(&(circuit as u32).to_be_bytes());
+        transcript.extend_from_array(&items.len().to_be_bytes());
+        for item in items.iter() {
+            transcript.extend_from_array(&item.public_inputs.len().to_be_bytes());
+            for input in item.public_inputs.iter() {
+                transcript.extend_from_array(&input.to_array());
+            }
+            transcript.append(&item.proof);
+        }
+        let transcript_digest: [u8; 32] = env.crypto().sha256(&transcript).to_array();
+
         let mut g1_points = Vec::new(&env); // per-item -r_j·A_j terms, then the 3 combined terms
         let mut g2_points = Vec::new(&env); // matching B_j terms, then beta/gamma/delta
         let mut alpha_weight_sum = zero.clone();
@@ -370,8 +402,9 @@ impl VerifierContract {
 
             let (a, b, c) = Self::parse_proof(&env, &item.proof);
 
-            // Fiat-Shamir challenge: hash(this item's proof bytes || its index).
-            let mut challenge_input = item.proof.clone();
+            // Fiat-Shamir challenge over the whole batch transcript (circuit,
+            // every item's public inputs and proof), then this item's index.
+            let mut challenge_input = Bytes::from_array(&env, &transcript_digest);
             challenge_input.extend_from_array(&(idx as u32).to_be_bytes());
             let digest: Bytes = env.crypto().sha256(&challenge_input).into();
             let r_j = Bn254Fr::from_u256(U256::from_be_bytes(&env, &digest));
@@ -382,10 +415,7 @@ impl VerifierContract {
             msm_points.push_back(ic.get(0).unwrap());
             msm_scalars.push_back(one.clone());
             for i in 0..item.public_inputs.len() {
-                let mut xi_be: [u8; 32] = item.public_inputs.get(i).unwrap().into();
-                xi_be.reverse();
-                let xi_bytes = Bytes::from_array(&env, &xi_be);
-                let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(&env, &xi_bytes));
+                let xi_fr = Self::public_input_to_fr(&env, &item.public_inputs.get(i).unwrap())?;
                 msm_points.push_back(ic.get(i + 1).unwrap());
                 msm_scalars.push_back(xi_fr);
             }
@@ -418,6 +448,20 @@ impl VerifierContract {
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
+
+
+    /// Converts a little-endian public input to a field element, rejecting any
+    /// encoding that is not already reduced (>= r).
+    fn public_input_to_fr(env: &Env, input: &BytesN<32>) -> Result<Bn254Fr, Error> {
+        let mut be: [u8; 32] = input.clone().into();
+        be.reverse();
+        // Big-endian byte arrays of equal length compare lexicographically.
+        if be >= FR_MODULUS_BE {
+            return Err(Error::NonCanonicalInput);
+        }
+        let bytes = Bytes::from_array(env, &be);
+        Ok(Bn254Fr::from_u256(U256::from_be_bytes(env, &bytes)))
+    }
 
     fn require_admin(env: &Env) -> Result<(), Error> {
         let admin: Address = env
@@ -1189,6 +1233,38 @@ mod tests {
 
         assert!(!client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must no longer verify once the retention window has expired");
         assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "proof B, the current key, must still verify after the old key expires");
+    }
+
+    // Audit regression: a public input x and x + r are the same field
+    // element. The verifier must not accept the second encoding, or any
+    // caller keying storage on raw input bytes (nullifiers) can be aliased.
+    #[test]
+    fn verify_rejects_non_canonical_public_input_encoding() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+        let mut proof = Bytes::new(&env);
+        hex_push(SHIELD_PROOF_HEX, &mut proof);
+
+        let mut inputs = Vec::new(&env);
+        for (i, input_hex) in SHIELD_PUBLIC_INPUTS_LE_HEX.iter().enumerate() {
+            let mut b = Bytes::new(&env);
+            if i == 2 {
+                hex_push("f50100f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430", &mut b); // 500 + r
+            } else {
+                hex_push(input_hex, &mut b);
+            }
+            inputs.push_back(b.try_into().unwrap());
+        }
+        let res = client.try_verify(&CircuitType::Shield, &inputs, &proof);
+        assert!(
+            !matches!(res, Ok(Ok(true))),
+            "verify accepted the non-canonical alias of a public input"
+        );
     }
 
     // ── Deliverable 3: batch verification ─────────────────────────────────
