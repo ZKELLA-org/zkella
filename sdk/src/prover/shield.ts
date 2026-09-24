@@ -67,6 +67,18 @@ export async function generateShieldProof(
   publicInputs: ShieldPublicInputs,
   wasmPath:     string,
   zkeyPath:     string,
+  // ffjavascript (snarkjs's field-arithmetic backend) spawns its own
+  // internal worker pool for multi-exponentiation unless told not to. That
+  // pool's Node implementation (the `web-worker` package) decides its
+  // behavior via `worker_threads.isMainThread`, which is false when this
+  // function is itself already running inside a `worker_threads.Worker`
+  // (see `worker.ts`) — nesting workers inside that check crashes with
+  // "Cannot destructure property 'mod' of 'threads.workerData'". Passing
+  // `singleThread: true` from `worker.ts`'s call sites avoids ffjavascript
+  // ever creating that nested pool; the proof generation still runs
+  // entirely off the caller's own thread (the actual goal), just without
+  // ffjavascript's additional internal parallelism.
+  singleThread?: boolean,
 ): Promise<ShieldProofResult> {
   // Validate public input consistency before proof generation — the circuit
   // itself also enforces value === pub_value and asset_id === pub_asset_id,
@@ -97,7 +109,10 @@ export async function generateShieldProof(
     pub_asset_id:  bufferToBigInt(addressToField(publicInputs.asset)).toString(),
   }
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath)
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    input, wasmPath, zkeyPath, undefined, undefined,
+    singleThread ? { singleThread: true } : undefined,
+  )
 
   return {
     proof: encodeProof(proof),

@@ -54,6 +54,9 @@ export async function generateSwapFairnessProof(
   witness:  SwapFairnessWitness,
   wasmPath: string,
   zkeyPath: string,
+  // See generateShieldProof's `singleThread` doc comment: pass `true` when
+  // calling this from inside a worker_threads.Worker.
+  singleThread?: boolean,
 ): Promise<SwapFairnessProofResult> {
   if (witness.amountOut < witness.minAmountOut) {
     throw new Error(
@@ -86,7 +89,10 @@ export async function generateSwapFairnessProof(
     min_amount_out:    witness.minAmountOut.toString(),
   }
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath)
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    input, wasmPath, zkeyPath, undefined, undefined,
+    singleThread ? { singleThread: true } : undefined,
+  )
 
   return {
     proof: encodeProof(proof),

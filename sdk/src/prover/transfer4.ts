@@ -72,6 +72,9 @@ export async function generateTransfer4Proof(
   publicInputs: Transfer4PublicInputs,
   wasmPath:     string,
   zkeyPath:     string,
+  // See generateShieldProof's `singleThread` doc comment: pass `true` when
+  // calling this from inside a worker_threads.Worker.
+  singleThread?: boolean,
 ): Promise<Transfer4ProofResult> {
   for (const [i, input] of witness.inputs.entries()) {
     if (input.note.leafIndex < 0) {
@@ -173,7 +176,10 @@ export async function generateTransfer4Proof(
     asset_id:          assetIdField,
   }
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath)
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    input, wasmPath, zkeyPath, undefined, undefined,
+    singleThread ? { singleThread: true } : undefined,
+  )
 
   return {
     proof: encodeProof(proof),

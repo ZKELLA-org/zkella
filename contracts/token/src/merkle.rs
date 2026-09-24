@@ -48,9 +48,25 @@ fn empty_subtree_root(hasher: &mut Poseidon2Hasher, level: u32) -> [u8; 32] {
     current
 }
 
+/// Returns true if the tree has reached `MAX_LEAVES` capacity and cannot
+/// accept another insert. Callers (shield/transfer/unshield) check this
+/// *before* calling `insert` so a full tree fails gracefully via
+/// `Error::MerkleTreeFull` rather than the panic `insert` itself still
+/// asserts as a defensive, should-never-happen invariant check.
+pub fn is_full(env: &Env) -> bool {
+    let index: u32 = env
+        .storage()
+        .instance()
+        .get(&StorageKey::NextLeafIndex)
+        .unwrap_or(0);
+    index >= MAX_LEAVES
+}
+
 /// Insert a new leaf into the incremental Merkle tree.
 /// Returns the leaf index assigned.
-/// Caller must have already verified the commitment is not a duplicate.
+/// Caller must have already verified the commitment is not a duplicate and,
+/// separately, that `is_full` returns false — this assert is a defensive
+/// invariant check, not the primary capacity guard.
 pub fn insert(env: &Env, commitment: BytesN<32>, hasher: &mut Poseidon2Hasher) -> u32 {
     let index: u32 = env
         .storage()

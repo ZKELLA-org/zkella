@@ -39,3 +39,17 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.test.json
       - name: Unit tests
         run: npm test -- --maxWorkers=2
+
+  fuzz:
+    name: Fuzz smoke (token + verifier, 60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - name: Run fuzz targets
+        working-directory: contracts/token
+        run: |
+          for t in shield_arbitrary transfer_arbitrary verifier_arbitrary; do
+            cargo fuzz run "$t" -- -max_total_time=60 -max_len=1024
+          done

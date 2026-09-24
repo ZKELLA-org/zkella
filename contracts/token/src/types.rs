@@ -14,6 +14,8 @@ pub enum StorageKey {
     Paused,
     Verifier, // address of the zkella-verifier registry contract
     ShieldedSupply(Address),
+    MinShieldAmount, // governance-settable; see `set_min_shield_amount`
+    AssetApproved(Address), // governance-controlled shield allowlist; see `set_asset_approved`
     // Persistent storage (long-lived, pays rent; TTL bumped on every write)
     MerkleLeaf(u32),
     MerkleNode(u32, u32),      // (level, index) — level 0 = leaf, level 32 = root
@@ -30,6 +32,22 @@ pub struct ShieldPublicInputs {
     pub value_commit: BytesN<32>,
     pub pub_value:    i128,
     pub pub_asset_id: Address,
+}
+
+/// One deposit within a `shield_batch()` call — the same per-deposit fields
+/// `shield()` takes, minus `asset`, which `shield_batch` fixes once for the
+/// whole batch (every item shields the same asset; see `shield_batch`'s doc
+/// comment for why).
+#[contracttype]
+#[derive(Clone)]
+pub struct ShieldBatchItem {
+    pub amount:         i128,
+    pub rho:            BytesN<32>,
+    pub rcm:            BytesN<32>,
+    pub commitment:     BytesN<32>,
+    pub encrypted_note: Bytes,
+    pub shield_proof:   Bytes,
+    pub shield_pub:     ShieldPublicInputs,
 }
 
 #[contracttype]
@@ -112,4 +130,7 @@ pub enum Error {
     InvalidInputCount    = 15, // nullifiers/commitments/notes vec length doesn't match the circuit's fixed arity
     RecipientMismatch    = 16, // unshield's recipient_hash doesn't bind the given `to` address
     DuplicateInputInCall = 17, // same nullifier or output commitment used twice within one transfer() call
+    AssetNotApproved     = 18, // asset has not been governance-approved for shielding (see `set_asset_approved`)
+    BatchLengthMismatch  = 19, // shield_batch()'s parallel input vectors have different lengths
+    EmptyBatch           = 20, // shield_batch() called with zero items
 }

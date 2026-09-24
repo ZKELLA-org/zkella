@@ -826,6 +826,67 @@ mod tests {
         assert_eq!(h, expected, "poseidon2(0,0) must match circomlibjs reference");
     }
 
+    fn hex32_le(s: &str) -> [u8; 32] {
+        let b = s.as_bytes();
+        let mut out = [0u8; 32];
+        for i in 0..32 {
+            let hi = (b[i * 2] as char).to_digit(16).unwrap() as u8;
+            let lo = (b[i * 2 + 1] as char).to_digit(16).unwrap() as u8;
+            out[i] = (hi << 4) | lo;
+        }
+        out
+    }
+
+    // The pure-Rust hashes above are checked against generic circomlibjs
+    // reference vectors, and poseidon2_native is checked against them
+    // bit-for-bit (below) — but neither, on its own, proves the *actual
+    // compiled shield.circom circuit* uses the same Poseidon parameterization
+    // as this contract, only that this contract matches circomlibjs in the
+    // abstract. This test closes that gap directly: it recomputes
+    // NoteCommitment = Poseidon2(Poseidon2(value, asset), Poseidon2(rho, rcm))
+    // purely in Rust from circuits/shield/shield_test_vectors.json's
+    // v2_shield_500stroops inputs (value=500, asset_field_decimal — the real
+    // testnet asset CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC's
+    // derived field value, rho=3, rcm=4) and checks it against that vector's
+    // expected commitment — the exact same 32 bytes embedded as
+    // SHIELD_PUBLIC_INPUTS_LE_HEX[0] in contracts/verifier's
+    // verify_accepts_real_shield_circuit_proof test, which is a public input
+    // of a real snarkjs-generated proof of the actual compiled circuit. A
+    // mismatch here would mean the circuit's Poseidon round constants/S-box/
+    // MDS diverge from this contract's, even though both independently claim
+    // to implement "the same" hash — exactly the kind of silent
+    // parameterization drift that would make every on-chain commitment
+    // permanently unreachable by real circuit proofs, undetectable by
+    // comparing either side only to circomlibjs in isolation.
+    #[test]
+    fn note_commitment_matches_real_shield_circuit_v2_500stroops_vector() {
+        let mut value_bytes = [0u8; 32];
+        value_bytes[0] = 0xf4;
+        value_bytes[1] = 0x01; // 500 = 0x01f4, little-endian.
+
+        let mut rho_bytes = [0u8; 32];
+        rho_bytes[0] = 3;
+        let mut rcm_bytes = [0u8; 32];
+        rcm_bytes[0] = 4;
+
+        // asset_field_decimal from shield_test_vectors.json, LE bytes.
+        let asset_bytes =
+            hex32_le("d7928b72c2703ccfeaf7eb9ff4ef4d504a55a8b979fc9b450ea2c842b4d1ce61");
+        // expected.commitment from the same vector (also
+        // SHIELD_PUBLIC_INPUTS_LE_HEX[0] in contracts/verifier's tests).
+        let expected =
+            hex32_le("34e0b1164d8115f16361db88db58197334127310d50ed897e3ca979f403b302c");
+
+        let h1 = poseidon2_bytes(&value_bytes, &asset_bytes);
+        let h2 = poseidon2_bytes(&rho_bytes, &rcm_bytes);
+        let commitment = poseidon2_bytes(&h1, &h2);
+
+        assert_eq!(
+            commitment, expected,
+            "Rust NoteCommitment must match the real compiled shield.circom's own commitment output"
+        );
+    }
+
     // ── Native/pure-Rust equivalence gate ─────────────────────────────────────
     //
     // Phase-2 validation gate: poseidon2_native must reproduce poseidon2_bytes

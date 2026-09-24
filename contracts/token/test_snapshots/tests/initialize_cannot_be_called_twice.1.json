@@ -52,6 +52,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "MinShieldAmount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "1000"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "NextLeafIndex"
                           }
                         ]

@@ -2,7 +2,7 @@
 // that file is the contract this server implements.
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
-import { SorobanRpc, Contract, Account, Keypair, TransactionBuilder, Networks, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
+import { rpc, Contract, Account, Keypair, TransactionBuilder, Networks, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
 import { IndexerDb } from './db.ts'
 
 // A read-only simulation needs *some* syntactically valid source account —
@@ -61,7 +61,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
  * (historical note/nullifier events past Stellar RPC's retention window).
  */
 async function callView(config: HttpConfig, method: string, args: ReturnType<typeof nativeToScVal>[]): Promise<unknown> {
-  const server = new SorobanRpc.Server(config.rpcUrl)
+  const server = new rpc.Server(config.rpcUrl)
   // A read-only simulation doesn't need a real funded account — any valid
   // account ID works as the simulation's nominal source.
   const dummyAccount = new Account(SIMULATION_KEYPAIR.publicKey(), '0')
@@ -74,10 +74,10 @@ async function callView(config: HttpConfig, method: string, args: ReturnType<typ
     .build()
 
   const sim = await server.simulateTransaction(tx)
-  if (SorobanRpc.Api.isSimulationError(sim)) {
+  if (rpc.Api.isSimulationError(sim)) {
     throw new Error(`${method} simulation error: ${sim.error}`)
   }
-  return scValToNative((sim as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval)
+  return scValToNative((sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval)
 }
 
 export function startHttpServer(config: HttpConfig): ReturnType<typeof createServer> {
@@ -87,8 +87,8 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
 
       if (req.method === 'GET' && url.pathname === '/health') {
         const synced = config.db.getLastSyncedLedger(config.startLedger)
-        const rpc = new SorobanRpc.Server(config.rpcUrl)
-        const tip = (await rpc.getLatestLedger()).sequence
+        const server = new rpc.Server(config.rpcUrl)
+        const tip = (await server.getLatestLedger()).sequence
         sendJson(res, 200, { syncedLedger: synced, tipLedger: tip, lag: Math.max(0, tip - synced) })
         return
       }

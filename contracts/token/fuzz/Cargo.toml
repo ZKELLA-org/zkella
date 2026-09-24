@@ -1,0 +1,34 @@
+[package]
+name = "zkella-token-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+soroban-sdk = { version = "27.0.0", features = ["hazmat-crypto", "testutils"] }
+zkella-token = { path = "..", features = ["testutils"] }
+zkella-verifier = { path = "../../verifier" }
+
+[workspace]
+
+[[bin]]
+name = "shield_arbitrary"
+path = "fuzz_targets/shield_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "transfer_arbitrary"
+path = "fuzz_targets/transfer_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "verifier_arbitrary"
+path = "fuzz_targets/verifier_arbitrary.rs"
+test = false
+doc = false
