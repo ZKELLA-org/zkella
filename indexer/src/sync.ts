@@ -4,7 +4,7 @@
 // (a few days), so anything a wallet needs to recover note history or
 // nullifier-spent status beyond that window has to live somewhere durable.
 
-import { SorobanRpc, scValToNative, xdr } from '@stellar/stellar-sdk'
+import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { IndexerDb } from './db.ts'
 
 function toHex(buf: Uint8Array): string {
@@ -24,13 +24,13 @@ export interface SyncConfig {
 }
 
 export class Syncer {
-  private server: SorobanRpc.Server
+  private server: rpc.Server
   private stopped = false
   private config: SyncConfig
 
   constructor(config: SyncConfig) {
     this.config = config
-    this.server = new SorobanRpc.Server(config.rpcUrl)
+    this.server = new rpc.Server(config.rpcUrl)
   }
 
   stop(): void {
@@ -103,7 +103,7 @@ export class Syncer {
       }
 
       const lastEvent = response.events[response.events.length - 1]
-      pagingToken = lastEvent.pagingToken
+      pagingToken = lastEvent.id
       // The db's persisted cursor stays ledger-based (not the RPC paging
       // token) — safe across a restart because re-fetching from the start
       // of a ledger already partially processed just re-upserts the same

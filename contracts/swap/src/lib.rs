@@ -570,7 +570,10 @@ mod tests {
         VerifierContractClient::new(&env, &verifier).initialize(&admin);
 
         let token_contract = env.register(ShieldedToken, ());
-        ShieldedTokenClient::new(&env, &token_contract).initialize(&admin, &verifier);
+        let token_client_setup = ShieldedTokenClient::new(&env, &token_contract);
+        token_client_setup.initialize(&admin, &verifier);
+        token_client_setup.set_asset_approved(&asset_in, &true);
+        token_client_setup.set_asset_approved(&asset_out, &true);
 
         let swap = env.register(ShieldedSwap, ());
         ShieldedSwapClient::new(&env, &swap).initialize(&admin, &verifier, &token_contract);

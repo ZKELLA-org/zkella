@@ -63,6 +63,16 @@ pub enum CircuitType {
     SwapFairness = 5,
 }
 
+/// One proof within a `verify_batch` call: the same `(public_inputs, proof)`
+/// pair `verify` takes, minus `circuit`, which `verify_batch` fixes once for
+/// the whole batch since every item is checked against the same VK.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchProofItem {
+    pub public_inputs: Vec<BytesN<32>>,
+    pub proof:         Bytes,
+}
+
 // `token`/`governance`/`compliance` test modules construct proofs and
 // register VKs against this crate's own generated `VerifierContractClient`
 // (dev-dependency, for a real verifier in-process) while their *production*
@@ -95,6 +105,7 @@ pub enum Error {
     InvalidVkLength          = 5,
     InvalidProofLength       = 6,
     PublicInputCountMismatch = 7,
+    EmptyBatch               = 8,
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -104,7 +115,22 @@ pub enum Error {
 pub enum StorageKey {
     Admin,
     VerifyingKey(CircuitType),
+    /// The key `VerifyingKey(circuit)` held immediately before the most
+    /// recent `update_verifying_key` rotation, retained until
+    /// `PreviousVkExpiry(circuit)` — see `update_verifying_key`'s doc comment.
+    PreviousVerifyingKey(CircuitType),
+    /// Ledger sequence after which `PreviousVerifyingKey(circuit)` is no
+    /// longer honored by `verify`.
+    PreviousVkExpiry(CircuitType),
 }
+
+/// How long a just-replaced verifying key stays valid for verification
+/// alongside its replacement, in ledgers (~5s each). This is deliberately
+/// short relative to `contracts/governance`'s 7-day rotation timelock — it
+/// exists only to cover proofs already generated against the outgoing key
+/// but not yet submitted at the moment rotation executes, not to make the
+/// old key a standing, long-lived alternative.
+const VK_RETENTION_WINDOW_LEDGERS: u32 = 17_280; // ~1 day
 
 // ── Wire-format constants ────────────────────────────────────────────────────
 
@@ -149,13 +175,28 @@ impl VerifierContract {
     /// makes the affected circuit accept forged proofs. Callers should gate this
     /// behind a timelock (see `contracts/governance`), not call it directly in
     /// steady state.
+    ///
+    /// The outgoing key is retained (see `PreviousVerifyingKey`) for
+    /// `VK_RETENTION_WINDOW_LEDGERS` after this call: without it, a proof
+    /// generated against the pre-rotation key, but not yet submitted at the
+    /// moment this executes, would simply fail the instant the new key takes
+    /// effect, even though the proof itself is genuine. `verify` checks the
+    /// new key first — it always verifies immediately — and only falls back
+    /// to the retained old key if the new key rejects the proof.
     pub fn update_verifying_key(env: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error> {
         Self::require_admin(&env)?;
         let key = StorageKey::VerifyingKey(circuit);
-        if !env.storage().instance().has(&key) {
-            return Err(Error::VkNotRegistered);
-        }
+        let old_vk: Bytes = env
+            .storage()
+            .instance()
+            .get(&key)
+            .ok_or(Error::VkNotRegistered)?;
         Self::validate_vk_shape(&new_vk)?;
+
+        let expiry = env.ledger().sequence() + VK_RETENTION_WINDOW_LEDGERS;
+        env.storage().instance().set(&StorageKey::PreviousVerifyingKey(circuit), &old_vk);
+        env.storage().instance().set(&StorageKey::PreviousVkExpiry(circuit), &expiry);
+
         env.storage().instance().set(&key, &new_vk);
         Ok(())
     }
@@ -172,30 +213,69 @@ impl VerifierContract {
     /// cryptographically checks out or not; returns `Err` only for malformed
     /// input (wrong lengths, missing VK) that indicates a caller bug rather
     /// than an invalid proof.
+    ///
+    /// Tries the current verifying key first — it always verifies
+    /// immediately after a rotation. If that check doesn't succeed (either a
+    /// clean `Ok(false)`, or a shape mismatch because the proof was built
+    /// against a different-arity VK), and a just-replaced previous key is
+    /// still within its retention window, retries against that key before
+    /// giving up. See `update_verifying_key`'s doc comment for why.
     pub fn verify(
         env: Env,
         circuit: CircuitType,
         public_inputs: Vec<BytesN<32>>,
         proof: Bytes,
     ) -> Result<bool, Error> {
+        if proof.len() != PROOF_LEN {
+            return Err(Error::InvalidProofLength);
+        }
+
         let vk_bytes: Bytes = env
             .storage()
             .instance()
             .get(&StorageKey::VerifyingKey(circuit))
             .ok_or(Error::VkNotRegistered)?;
 
-        if proof.len() != PROOF_LEN {
-            return Err(Error::InvalidProofLength);
+        let current_result = Self::verify_against_vk(&env, &vk_bytes, &public_inputs, &proof);
+        if let Ok(true) = current_result {
+            return Ok(true);
         }
 
-        let (alpha_g1, beta_g2, gamma_g2, delta_g2, ic) = Self::parse_vk(&env, &vk_bytes)?;
+        let expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PreviousVkExpiry(circuit))
+            .unwrap_or(0);
+        if env.ledger().sequence() > expiry {
+            return current_result;
+        }
+        let prev_vk_bytes: Option<Bytes> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PreviousVerifyingKey(circuit));
+        match prev_vk_bytes {
+            Some(prev_vk_bytes) => Self::verify_against_vk(&env, &prev_vk_bytes, &public_inputs, &proof),
+            None => current_result,
+        }
+    }
+
+    /// The actual Groth16 pairing check against one specific VK — factored
+    /// out of `verify` so it can be tried against both the current key and,
+    /// within its retention window, the just-replaced previous one.
+    fn verify_against_vk(
+        env: &Env,
+        vk_bytes: &Bytes,
+        public_inputs: &Vec<BytesN<32>>,
+        proof: &Bytes,
+    ) -> Result<bool, Error> {
+        let (alpha_g1, beta_g2, gamma_g2, delta_g2, ic) = Self::parse_vk(env, vk_bytes)?;
         if ic.len() != public_inputs.len() + 1 {
             return Err(Error::PublicInputCountMismatch);
         }
 
-        let (a, b, c) = Self::parse_proof(&env, &proof);
+        let (a, b, c) = Self::parse_proof(env, proof);
         let bn254 = env.crypto().bn254();
-        let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
+        let one = Bn254Fr::from_u256(U256::from_u32(env, 1));
 
         // vk_x = IC[0] + Σ x_i · IC[i+1], computed as a single batched
         // multi-scalar-multiplication (one `bn254_g1_msm` host call for all
@@ -203,8 +283,8 @@ impl VerifierContract {
         // g1_mul/g1_add pairs. This is the dominant cost in this function for
         // any circuit with more than a couple of public inputs — transfer4x4's
         // 19 inputs previously meant 19 g1_mul + 19 g1_add calls here alone.
-        let mut msm_points = Vec::new(&env);
-        let mut msm_scalars = Vec::new(&env);
+        let mut msm_points = Vec::new(env);
+        let mut msm_scalars = Vec::new(env);
         msm_points.push_back(ic.get(0).unwrap());
         msm_scalars.push_back(one.clone());
         for i in 0..public_inputs.len() {
@@ -212,22 +292,127 @@ impl VerifierContract {
             // U256/Bn254Fr are big-endian, so reverse before constructing.
             let mut xi_be: [u8; 32] = public_inputs.get(i).unwrap().into();
             xi_be.reverse();
-            let xi_bytes = Bytes::from_array(&env, &xi_be);
-            let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(&env, &xi_bytes));
+            let xi_bytes = Bytes::from_array(env, &xi_be);
+            let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(env, &xi_bytes));
             msm_points.push_back(ic.get(i + 1).unwrap());
             msm_scalars.push_back(xi_fr);
         }
         let vk_x = bn254.g1_msm(msm_points, msm_scalars);
 
         // -A = A · (r - 1), the group-order negation trick (no dedicated negate host call).
-        let zero = Bn254Fr::from_u256(U256::from_u32(&env, 0));
+        let zero = Bn254Fr::from_u256(U256::from_u32(env, 0));
         let neg_one = bn254.fr_sub(&zero, &one);
         let neg_a = bn254.g1_mul(&a, &neg_one);
 
         // e(-A,B) * e(alpha,beta) * e(vk_x,gamma) * e(C,delta) == 1
         //   <=>  e(A,B) == e(alpha,beta) * e(vk_x,gamma) * e(C,delta)
-        let g1_points = Vec::from_array(&env, [neg_a, alpha_g1, vk_x, c]);
-        let g2_points = Vec::from_array(&env, [b, beta_g2, gamma_g2, delta_g2]);
+        let g1_points = Vec::from_array(env, [neg_a, alpha_g1, vk_x, c]);
+        let g2_points = Vec::from_array(env, [b, beta_g2, gamma_g2, delta_g2]);
+
+        Ok(bn254.pairing_check(g1_points, g2_points))
+    }
+
+    /// Verifies every item in `items` against `circuit`'s current verifying
+    /// key with a single combined pairing check, real batching rather than
+    /// calling `verify` once per item. Useful during Tranche 3's
+    /// redeployment step, when many proofs might need re-checking at once.
+    /// All items must be for the currently-registered VK; this does not
+    /// extend `verify`'s retention-window fallback, to keep the batching
+    /// itself straightforward to reason about.
+    ///
+    /// Standard Groth16 batch verification: rather than checking each
+    /// proof's own `e(-A,B)·e(α,β)·e(vk_x,γ)·e(C,δ) = 1` separately (4 pairings
+    /// each, 4K total for K proofs), every equation is raised to a random
+    /// power `r_j` and multiplied together. Since `α`, `β`, `γ`, `δ` are the
+    /// same across all items (one VK), the `e(α,β)`, `e(vk_x,γ)`, and
+    /// `e(C,δ)` terms collapse into one combined pairing each via linearity,
+    /// leaving K + 3 total pairings instead of 4K. This is only sound if the
+    /// `r_j` weights are unpredictable to whoever constructed the proofs —
+    /// otherwise a forged proof could be crafted to cancel out against a
+    /// genuine one under a known combination. Each `r_j` is therefore a
+    /// Fiat-Shamir challenge, SHA-256 over that item's own proof bytes and
+    /// its index in the batch, fixed only after every proof is already
+    /// committed to, not caller-supplied.
+    pub fn verify_batch(
+        env: Env,
+        circuit: CircuitType,
+        items: Vec<BatchProofItem>,
+    ) -> Result<bool, Error> {
+        if items.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+
+        let vk_bytes: Bytes = env
+            .storage()
+            .instance()
+            .get(&StorageKey::VerifyingKey(circuit))
+            .ok_or(Error::VkNotRegistered)?;
+        let (alpha_g1, beta_g2, gamma_g2, delta_g2, ic) = Self::parse_vk(&env, &vk_bytes)?;
+        let bn254 = env.crypto().bn254();
+        let zero = Bn254Fr::from_u256(U256::from_u32(&env, 0));
+        let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
+
+        let mut g1_points = Vec::new(&env); // per-item -r_j·A_j terms, then the 3 combined terms
+        let mut g2_points = Vec::new(&env); // matching B_j terms, then beta/gamma/delta
+        let mut alpha_weight_sum = zero.clone();
+        let mut vkx_points = Vec::new(&env);
+        let mut vkx_scalars = Vec::new(&env);
+        let mut c_points = Vec::new(&env);
+        let mut c_scalars = Vec::new(&env);
+
+        for (idx, item) in items.iter().enumerate() {
+            if item.proof.len() != PROOF_LEN {
+                return Err(Error::InvalidProofLength);
+            }
+            if ic.len() != item.public_inputs.len() + 1 {
+                return Err(Error::PublicInputCountMismatch);
+            }
+
+            let (a, b, c) = Self::parse_proof(&env, &item.proof);
+
+            // Fiat-Shamir challenge: hash(this item's proof bytes || its index).
+            let mut challenge_input = item.proof.clone();
+            challenge_input.extend_from_array(&(idx as u32).to_be_bytes());
+            let digest: Bytes = env.crypto().sha256(&challenge_input).into();
+            let r_j = Bn254Fr::from_u256(U256::from_be_bytes(&env, &digest));
+
+            // vk_x_j = IC[0] + Σ x_i·IC[i+1] for this item, same MSM as verify_against_vk.
+            let mut msm_points = Vec::new(&env);
+            let mut msm_scalars = Vec::new(&env);
+            msm_points.push_back(ic.get(0).unwrap());
+            msm_scalars.push_back(one.clone());
+            for i in 0..item.public_inputs.len() {
+                let mut xi_be: [u8; 32] = item.public_inputs.get(i).unwrap().into();
+                xi_be.reverse();
+                let xi_bytes = Bytes::from_array(&env, &xi_be);
+                let xi_fr = Bn254Fr::from_u256(U256::from_be_bytes(&env, &xi_bytes));
+                msm_points.push_back(ic.get(i + 1).unwrap());
+                msm_scalars.push_back(xi_fr);
+            }
+            let vk_x_j = bn254.g1_msm(msm_points, msm_scalars);
+
+            let neg_r_j = bn254.fr_sub(&zero, &r_j);
+            let neg_rj_a = bn254.g1_mul(&a, &neg_r_j);
+            g1_points.push_back(neg_rj_a);
+            g2_points.push_back(b);
+
+            vkx_points.push_back(vk_x_j);
+            vkx_scalars.push_back(r_j.clone());
+            c_points.push_back(c);
+            c_scalars.push_back(r_j.clone());
+            alpha_weight_sum = bn254.fr_add(&alpha_weight_sum, &r_j);
+        }
+
+        let combined_vk_x = bn254.g1_msm(vkx_points, vkx_scalars);
+        let combined_c = bn254.g1_msm(c_points, c_scalars);
+        let combined_alpha = bn254.g1_mul(&alpha_g1, &alpha_weight_sum);
+
+        g1_points.push_back(combined_alpha);
+        g2_points.push_back(beta_g2);
+        g1_points.push_back(combined_vk_x);
+        g2_points.push_back(gamma_g2);
+        g1_points.push_back(combined_c);
+        g2_points.push_back(delta_g2);
 
         Ok(bn254.pairing_check(g1_points, g2_points))
     }
@@ -310,7 +495,7 @@ impl VerifierContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Env};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -943,4 +1128,160 @@ mod tests {
         "cd81010000000000000000000000000000000000000000000000000000000000", // PUBASSETID
         "2a00000000000000000000000000000000000000000000000000000000000000", // RECIPIENTHASH
     ];
+
+    // ── Deliverable 3: VK retention window ────────────────────────────────
+
+    #[test]
+    fn update_verifying_key_retains_old_key_within_window_then_expires() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+
+        // Two genuinely distinct, independently-valid (VK, proof) pairs —
+        // borrowing the real unshield and real swap_fairness fixtures purely
+        // as two unrelated valid Groth16 instances, not for their real
+        // circuit semantics, to exercise key rotation mechanics. Both share
+        // the same 5-public-input arity, matching how a real rotation always
+        // replaces a VK with another for the *same* circuit (same arity) —
+        // unlike a shield(4)/transfer2x2(11) pair, which would make `verify`
+        // return a `PublicInputCountMismatch` `Err` against the wrong key
+        // rather than a clean `Ok(false)`, a case that can't arise from a
+        // real same-circuit rotation and would otherwise make this test
+        // exercise a scenario `update_verifying_key` was never meant to
+        // handle.
+        let mut vk_a = Bytes::new(&env);
+        hex_push(UNSHIELD_VK_HEX, &mut vk_a);
+        let mut proof_a = Bytes::new(&env);
+        hex_push(UNSHIELD_PROOF_HEX, &mut proof_a);
+        let mut inputs_a = Vec::new(&env);
+        for input_hex in UNSHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs_a.push_back(b.try_into().unwrap());
+        }
+
+        let mut vk_b = Bytes::new(&env);
+        hex_push(SWAP_FAIRNESS_VK_HEX, &mut vk_b);
+        let mut proof_b = Bytes::new(&env);
+        hex_push(SWAP_FAIRNESS_PROOF_HEX, &mut proof_b);
+        let mut inputs_b = Vec::new(&env);
+        for input_hex in SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs_b.push_back(b.try_into().unwrap());
+        }
+
+        client.register_verifying_key(&CircuitType::Shield, &vk_a);
+        assert!(client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must verify against key A before any rotation");
+
+        // Rotate to key B. The new key must verify immediately...
+        client.update_verifying_key(&CircuitType::Shield, &vk_b);
+        assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "proof B must verify against key B immediately after rotation");
+        // ...and proof A, built against the now-retired key A, must still
+        // verify too, within the retention window.
+        assert!(client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must still verify against retained key A within the retention window");
+
+        // Advance past the retention window.
+        env.ledger().with_mut(|li| {
+            li.sequence_number += VK_RETENTION_WINDOW_LEDGERS + 1;
+        });
+
+        assert!(!client.verify(&CircuitType::Shield, &inputs_a, &proof_a), "proof A must no longer verify once the retention window has expired");
+        assert!(client.verify(&CircuitType::Shield, &inputs_b, &proof_b), "proof B, the current key, must still verify after the old key expires");
+    }
+
+    // ── Deliverable 3: batch verification ─────────────────────────────────
+
+    #[test]
+    fn verify_batch_accepts_multiple_valid_proofs_in_one_combined_check() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+
+        let mut proof = Bytes::new(&env);
+        hex_push(SHIELD_PROOF_HEX, &mut proof);
+        let mut inputs = Vec::new(&env);
+        for input_hex in SHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs.push_back(b.try_into().unwrap());
+        }
+
+        // The same genuine proof, submitted three times in one batch — a
+        // real, independent test of the combined-pairing math (three -r_j·A_j
+        // terms plus the three collapsed alpha/vk_x/C terms), not just a
+        // single-item pass-through.
+        let items = Vec::from_array(&env, [
+            BatchProofItem { public_inputs: inputs.clone(), proof: proof.clone() },
+            BatchProofItem { public_inputs: inputs.clone(), proof: proof.clone() },
+            BatchProofItem { public_inputs: inputs.clone(), proof: proof.clone() },
+        ]);
+        let ok = client.verify_batch(&CircuitType::Shield, &items);
+        assert!(ok, "a batch of three genuine, identical valid proofs must verify");
+    }
+
+    #[test]
+    fn verify_batch_rejects_when_any_item_is_tampered() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+
+        let mut proof = Bytes::new(&env);
+        hex_push(SHIELD_PROOF_HEX, &mut proof);
+        let mut inputs = Vec::new(&env);
+        for input_hex in SHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs.push_back(b.try_into().unwrap());
+        }
+
+        // Same real proof, but the second item claims a tampered public
+        // input (pub_value off by one, same tamper the single-proof
+        // `verify_rejects_real_shield_circuit_proof_with_wrong_public_input`
+        // test above uses) — the batch as a whole must reject, not silently
+        // accept because two of the three items are individually genuine.
+        let mut tampered_inputs = Vec::new(&env);
+        for (i, input_hex) in SHIELD_PUBLIC_INPUTS_LE_HEX.iter().enumerate() {
+            let mut b = Bytes::new(&env);
+            if i == 2 {
+                hex_push("f501000000000000000000000000000000000000000000000000000000000000", &mut b);
+            } else {
+                hex_push(input_hex, &mut b);
+            }
+            tampered_inputs.push_back(b.try_into().unwrap());
+        }
+
+        let items = Vec::from_array(&env, [
+            BatchProofItem { public_inputs: inputs.clone(), proof: proof.clone() },
+            BatchProofItem { public_inputs: tampered_inputs, proof: proof.clone() },
+        ]);
+        let ok = client.verify_batch(&CircuitType::Shield, &items);
+        assert!(!ok, "a batch containing one item with a tampered public input must not verify");
+    }
+
+    #[test]
+    fn verify_batch_rejects_empty_batch() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+
+        let empty: Vec<BatchProofItem> = Vec::new(&env);
+        let result = client.try_verify_batch(&CircuitType::Shield, &empty);
+        assert_eq!(result, Err(Ok(Error::EmptyBatch)));
+    }
 }

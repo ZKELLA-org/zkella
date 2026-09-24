@@ -10,7 +10,7 @@
  * Run: npx jest tests/e2e/shield.test.ts --testTimeout=60000
  */
 
-import { Account, Contract, Keypair, Networks, SorobanRpc, TransactionBuilder, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
+import { Account, Contract, Keypair, Networks, rpc, TransactionBuilder, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { ZKELLAKeys }     from '../../sdk/src/keys/keys'
 import { buildNote }       from '../../sdk/src/notes/builder'
 import { encryptNote }     from '../../sdk/src/notes/encrypt'
@@ -28,7 +28,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
   const maybeTest = SKIP ? test.skip : test
 
   maybeTest('full shield flow: key gen → note → commitment → submit → verify', async () => {
-    const server  = new SorobanRpc.Server(RPC_URL)
+    const server  = new rpc.Server(RPC_URL)
     const keypair = Keypair.fromSecret(SECRET)
     const account = await server.getAccount(keypair.publicKey())
 
@@ -72,7 +72,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
           nativeToScVal(note.commitment,       { type: 'bytes' }),
           nativeToScVal(encryptedNote,         { type: 'bytes' }),
           nativeToScVal(new Uint8Array(0),     { type: 'bytes' }), // proof placeholder
-          nativeToScVal(shieldPubInputs,       { type: 'map' }),
+          nativeToScVal(shieldPubInputs as any, { type: 'map' } as any),
         )
       )
       .setTimeout(30)
@@ -85,7 +85,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
     expect(response.status).not.toBe('ERROR')
 
     // 7. Wait for confirmation
-    let result: SorobanRpc.Api.GetTransactionResponse | null = null
+    let result: rpc.Api.GetTransactionResponse | null = null
     for (let i = 0; i < 20; i++) {
       await sleep(3000)
       const r = await server.getTransaction(response.hash)
@@ -124,7 +124,7 @@ describe('Shield — end-to-end on Stellar Testnet', () => {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function callView(
-  server:  SorobanRpc.Server,
+  server:  rpc.Server,
   account: Account,
   keypair: Keypair,
   contract: Contract,
@@ -140,10 +140,10 @@ async function callView(
     .build()
 
   const sim = await server.simulateTransaction(tx)
-  if (SorobanRpc.Api.isSimulationError(sim)) {
+  if (rpc.Api.isSimulationError(sim)) {
     throw new Error(`simulation error: ${sim.error}`)
   }
-  return scValToNative((sim as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval)
+  return scValToNative((sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval)
 }
 
 function sleep(ms: number) {

@@ -1,5 +1,5 @@
 import {
-  Contract, Keypair, Networks, SorobanRpc,
+  Contract, Keypair, Networks, rpc,
   TransactionBuilder, nativeToScVal, scValToNative, xdr,
 } from '@stellar/stellar-sdk'
 import { ZKELLAKeys }      from '../keys/keys'
@@ -328,8 +328,8 @@ export class ZKELLAWallet {
 
   // ── Soroban RPC ──────────────────────────────────────────────────────────────
 
-  private getServer(): SorobanRpc.Server {
-    return new SorobanRpc.Server(this.config.sorobanRpc)
+  private getServer(): rpc.Server {
+    return new rpc.Server(this.config.sorobanRpc)
   }
 
   private getNetworkPassphrase(): string {
@@ -346,10 +346,10 @@ export class ZKELLAWallet {
       .build()
 
     const sim = await server.simulateTransaction(tx)
-    if (SorobanRpc.Api.isSimulationError(sim)) {
+    if (rpc.Api.isSimulationError(sim)) {
       throw new Error(`${method} simulation error: ${sim.error}`)
     }
-    return scValToNative((sim as SorobanRpc.Api.SimulateTransactionSuccessResponse).result!.retval)
+    return scValToNative((sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval)
   }
 
   /**
@@ -384,7 +384,7 @@ export class ZKELLAWallet {
       throw new Error(`${method} submission error: ${JSON.stringify(response.errorResult)}`)
     }
 
-    let result: SorobanRpc.Api.GetTransactionResponse | null = null
+    let result: rpc.Api.GetTransactionResponse | null = null
     const deadline = Date.now() + 60_000
     while (Date.now() < deadline) {
       await sleep(2000)
@@ -432,14 +432,13 @@ function structScVal(obj: Record<string, unknown>, fields: Record<string, FieldK
   // Built by hand (rather than nativeToScVal's own struct type-hint shape)
   // because `vec-bytes` fields (Vec<BytesN<32>>) aren't expressible in that
   // shape — `nativeToScVal`'s per-field hints only cover scalar leaf types.
-  const entries = Object.entries(fields).map(([key, kind]) => {
+  const entries = Object.entries(fields).sort(([a], [b]) => a.localeCompare(b)).map(([key, kind]) => {
     const value = obj[key]
     const scVal = kind === 'vec-bytes'
       ? vecScVal(value as Uint8Array[], 'bytes')
       : nativeToScVal(value, { type: kind })
     return new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val: scVal })
   })
-  entries.sort((a, b) => a.key().sym().toString().localeCompare(b.key().sym().toString()))
   return xdr.ScVal.scvMap(entries)
 }
 

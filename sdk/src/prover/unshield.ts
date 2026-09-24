@@ -62,6 +62,9 @@ export async function generateUnshieldProof(
   publicInputs: UnshieldPublicInputs,
   wasmPath:     string,
   zkeyPath:     string,
+  // See generateShieldProof's `singleThread` doc comment: pass `true` when
+  // calling this from inside a worker_threads.Worker.
+  singleThread?: boolean,
 ): Promise<UnshieldProofResult> {
   if (witness.note.leafIndex < 0) {
     throw new Error('unshield proof: note.leafIndex must be a real on-chain leaf index')
@@ -96,7 +99,10 @@ export async function generateUnshieldProof(
     recipient_hash: bufferToBigInt(recipientHash).toString(),
   }
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, wasmPath, zkeyPath)
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    input, wasmPath, zkeyPath, undefined, undefined,
+    singleThread ? { singleThread: true } : undefined,
+  )
 
   return {
     proof: encodeProof(proof),

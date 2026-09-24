@@ -14,11 +14,18 @@ declare module 'snarkjs' {
 
   type CircuitSignal = string | string[] | string[][]
 
+  interface Groth16ProverOptions {
+    singleThread?: boolean
+  }
+
   export const groth16: {
     fullProve(
       input: Record<string, CircuitSignal>,
       wasmFile: string,
       zkeyFileName: string,
+      logger?: unknown,
+      wtnsCalcOptions?: unknown,
+      proverOptions?: Groth16ProverOptions,
     ): Promise<Groth16FullProveResult>
     prove(zkeyFileName: string, witness: unknown): Promise<Groth16FullProveResult>
     verify(
