@@ -82,6 +82,13 @@ fn compute_commitment(
     hasher.hash(&h3, &owner_pk_bytes)
 }
 
+/// Largest `shield_batch` the network can execute. Each item costs about one
+/// full `shield()` (~116M instructions measured on the real WASM), so 3 items
+/// use ~347M of the 400M limit and 4 would exceed it — see
+/// `shield_batch_real_wasm_instruction_cost`. Rejecting larger batches up
+/// front gives a clean error instead of a failed, fee-burning transaction.
+const MAX_SHIELD_BATCH: u32 = 3;
+
 /// BN254 scalar-field modulus r, big-endian.
 const FR_MODULUS_BE: [u8; 32] = [
     0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
@@ -419,6 +426,9 @@ impl ShieldedToken {
 
         if items.is_empty() {
             return Err(Error::EmptyBatch);
+        }
+        if items.len() > MAX_SHIELD_BATCH {
+            return Err(Error::BatchTooLarge);
         }
 
         let min_amount = Self::min_shield_amount(env.clone());
@@ -2849,12 +2859,22 @@ mod tests {
 
         // Leaf 0 is always the left child, so fold upward hashing (current, sibling).
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let mut current: [u8; 32] = leaf.into();
+        let mut current: [u8; 32] = leaf.clone().into();
+        let mut siblings = [[0u8; 32]; 32];
         for i in 0..path.len() {
             let sibling: [u8; 32] = path.get(i).unwrap().into();
+            siblings[i as usize] = sibling;
             current = hasher.hash(&current, &sibling);
         }
         assert_eq!(BytesN::from_array(&env, &current), client.merkle_root());
+
+        // The pure-Rust reference verifier agrees, and the direction bits for
+        // leaf 0 are all "left" (the SDK derives the same bits from the index).
+        let leaf_bytes: [u8; 32] = leaf.into();
+        assert!(merkle::verify_path(&leaf_bytes, &siblings, 0, &current));
+        assert!(merkle::get_path_indices(0).iter().all(|b| !*b));
+        let bits = merkle::get_path_indices(0b1011);
+        assert_eq!(&bits[..5], &[true, true, false, true, false]);
     }
 
     /// Closes the last real-WASM instruction-budget gap among the
@@ -2945,6 +2965,84 @@ mod tests {
         assert!(
             used < 400_000_000,
             "unshield() (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
+        );
+    }
+
+    /// Real-WASM cost of `shield_batch`, the last Groth16-verifying entrypoint
+    /// without a measured budget. Each item costs about one full `shield()`
+    /// (its own proof verification, commitment recomputation and Merkle
+    /// insert); only the auth check and the token transfer are shared. The
+    /// batch is therefore bounded by the 400M instruction limit at roughly
+    /// `400M / per-item cost` items.
+    ///
+    /// Measured when written: 3 items used 347,231,269 instructions (about
+    /// 116M each, 87% of the limit), so 4 items would not fit; that is why
+    /// `MAX_SHIELD_BATCH` is 3 and larger batches are rejected up front.
+    #[test]
+    fn shield_batch_real_wasm_instruction_cost() {
+        const ITEMS: usize = 3;
+        let env = Env::default();
+        env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token = env.register(TOKEN_WASM, ());
+        let verifier = env.register(VERIFIER_WASM, ());
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&admin);
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let asset = env.register_stellar_asset_contract_v2(token_admin).address();
+        client.set_asset_approved(&asset, &true);
+        let user = Address::generate(&env);
+        soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&user, &1_000_000_000);
+
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let mut items = Vec::new(&env);
+        for i in 0..ITEMS {
+            let amount: i128 = 10_000 * (i as i128 + 1);
+            let rho = BytesN::from_array(&env, &canon(60 + 2 * i as u8));
+            let rcm = BytesN::from_array(&env, &canon(61 + 2 * i as u8));
+            let commitment = BytesN::from_array(
+                &env,
+                &compute_commitment(&env, amount, &asset, &rho, &rcm, &test_pk(&env), &mut hasher),
+            );
+            let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+            let mut value_bytes = [0u8; 32];
+            value_bytes[..16].copy_from_slice(&(amount as u128).to_le_bytes());
+            let (vk, proof) = test_groth16::build_valid_shield_proof(
+                &env,
+                [commitment.clone().into(), value_commit.clone().into(), value_bytes, address_to_field_bytes(&env, &asset)],
+            );
+            if i == 0 {
+                // The fixed-seed proof builder yields the same VK every call,
+                // so one registration covers every item's proof.
+                zkella_verifier::VerifierContractClient::new(&env, &verifier)
+                    .register_verifying_key(&CircuitType::Shield.into(), &vk);
+            }
+            items.push_back(ShieldBatchItem {
+                amount,
+                rho,
+                rcm,
+                owner_pk: test_pk(&env),
+                commitment: commitment.clone(),
+                encrypted_note: Bytes::from_array(&env, &[0u8; 176]),
+                shield_proof: proof,
+                shield_pub: ShieldPublicInputs {
+                    commitment,
+                    value_commit,
+                    pub_value: amount,
+                    pub_asset_id: asset.clone(),
+                },
+            });
+        }
+
+        env.cost_estimate().budget().reset_tracker();
+        client.shield_batch(&user, &asset, &items);
+        let used = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            used < 400_000_000,
+            "shield_batch({ITEMS}) (real WASM) used {used} instructions, exceeding the 400M mainnet budget"
         );
     }
 
@@ -3236,6 +3334,38 @@ mod tests {
 
         let balance_after = soroban_sdk::token::TokenClient::new(&env, &asset).balance(&user);
         assert_eq!(balance_before - balance_after, total, "batch must move exactly the summed amount in one transfer");
+    }
+
+    #[test]
+    fn shield_batch_rejects_batches_larger_than_the_network_can_execute() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+        let asset = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        client.set_asset_approved(&asset, &true);
+        let user = Address::generate(&env);
+
+        let item = ShieldBatchItem {
+            amount: 10_000,
+            rho: BytesN::from_array(&env, &canon(1)),
+            rcm: BytesN::from_array(&env, &canon(2)),
+            owner_pk: test_pk(&env),
+            commitment: BytesN::from_array(&env, &canon(3)),
+            encrypted_note: Bytes::from_array(&env, &[0u8; 176]),
+            shield_proof: Bytes::new(&env),
+            shield_pub: ShieldPublicInputs {
+                commitment: BytesN::from_array(&env, &canon(3)),
+                value_commit: BytesN::from_array(&env, &[0u8; 32]),
+                pub_value: 10_000,
+                pub_asset_id: asset.clone(),
+            },
+        };
+        let mut items = Vec::new(&env);
+        for _ in 0..(MAX_SHIELD_BATCH + 1) {
+            items.push_back(item.clone());
+        }
+        let result = client.try_shield_batch(&user, &asset, &items);
+        assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
     }
 
     #[test]

@@ -134,4 +134,5 @@ pub enum Error {
     AssetNotApproved     = 18, // asset has not been governance-approved for shielding (see `set_asset_approved`)
     BatchLengthMismatch  = 19, // shield_batch()'s parallel input vectors have different lengths
     EmptyBatch           = 20, // shield_batch() called with zero items
+    BatchTooLarge        = 21, // shield_batch() item count exceeds MAX_SHIELD_BATCH
 }

@@ -3,10 +3,10 @@
  * witness generation off the main JavaScript thread via a Web Worker" work).
  *
  * What this file does NOT do, and why: `worker.ts`'s intended runtime is a
- * real browser Web Worker (loaded by a bundler via `new Worker(new
- * URL(...))`). This repository has no browser wallet UI and no bundler
- * configured, so there is no page whose responsiveness could be checked,
- * and no way to execute this file as an actual Worker from Jest/Node.
+ * real browser Web Worker, and Jest/Node cannot execute it as one. Real-
+ * browser behaviour (bundling, the Worker running, main-thread
+ * responsiveness) is checked separately by `scripts/browser_worker_check.mjs`
+ * (`npm run check:browser-worker`), which drives headless Chromium.
  *
  * Node's own `worker_threads` was tried first and found to be a dead end,
  * not just untested: `snarkjs`'s `ffjavascript` dependency pulls in the
@@ -26,9 +26,8 @@
  * logic is correct (the right generate*Proof function runs for each
  * `ProverWorkerRequest.kind`, and its result matches a direct call), and
  * `self.onmessage`/`postMessage` are wired correctly under a minimal mock
- * of a Worker global scope. That leaves genuine off-thread execution and
- * real-browser compatibility unverified — flagged here rather than
- * silently assumed.
+ * of a Worker global scope. Genuine off-thread execution in a real browser
+ * is covered by `scripts/browser_worker_check.mjs`, not by this file.
  */
 
 import { buildNote, computeOwnerKey } from '../../sdk/src/notes/builder'

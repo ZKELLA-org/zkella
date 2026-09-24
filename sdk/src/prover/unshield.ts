@@ -35,6 +35,14 @@ export interface UnshieldWitness {
 export interface UnshieldPublicInputs {
   anchor:    Uint8Array  // current token.merkle_root(), as 32-byte LE
   recipient: string      // Stellar address `to` — the withdrawal destination
+  /**
+   * 32-byte tag folded into `recipient_hash` (`Poseidon2(address_field(to), tag)`).
+   * Zero for a plain withdrawal; `contracts/swap::commit_swap` uses
+   * `Poseidon2(intent_commitment, address_field(refund_to))` so the ownership
+   * proof only works for that one swap. Must equal the `binding_tag` passed to
+   * `unshield()`.
+   */
+  bindingTag?: Uint8Array
 }
 
 export interface UnshieldProofResult {
@@ -84,7 +92,7 @@ export async function generateUnshieldProof(
   const nullifier = await computeNullifier(witness.nk, witness.note.rho)
   const recipientHash = await poseidon2(
     addressToField(publicInputs.recipient),
-    new Uint8Array(32),
+    publicInputs.bindingTag ?? new Uint8Array(32),
   )
 
   const assetIdField = bufferToBigInt(addressToField(witness.note.assetId)).toString()
