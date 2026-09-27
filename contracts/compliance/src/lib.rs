@@ -224,6 +224,48 @@ mod tests {
         (env, owner, contract, verifier)
     }
 
+    const COMPLIANCE_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_compliance.wasm");
+    const VERIFIER_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_verifier.wasm");
+
+    /// Instruction cost of one `publish_compliance_proof` (on-chain Groth16 verification plus
+    /// storage), on the native contracts or on the compiled WASM artefacts.
+    fn publish_cost(wasm: bool) -> u64 {
+        extern crate std;
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
+        let owner = Address::generate(&env);
+        let (contract, verifier) = if wasm {
+            (env.register(COMPLIANCE_WASM, ()), env.register(VERIFIER_WASM, ()))
+        } else {
+            (env.register(ComplianceContract, ()), env.register(zkella_verifier::VerifierContract, ()))
+        };
+        zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&owner);
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.initialize(&verifier);
+        let sanctions_root = BytesN::from_array(&env, &[3u8; 32]);
+        let tk_commitment = BytesN::from_array(&env, &[4u8; 32]);
+        let pub_inputs = CompliancePublicInputs { sanctions_root: sanctions_root.clone(), tk_commitment: tk_commitment.clone() };
+        let (vk, proof, _bad) = build_proofs(&env, [sanctions_root.into(), tk_commitment.into()]);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::NonMembership.into(), &vk);
+        let mut budget = env.cost_estimate().budget();
+        budget.reset_limits(2_000_000_000, 100_000_000);
+        client.publish_compliance_proof(&owner, &proof, &pub_inputs);
+        env.cost_estimate().budget().cpu_instruction_cost()
+    }
+
+    /// Real-WASM vs native cost of `publish_compliance_proof`; fails above the 400M limit or
+    /// more than 25% over native (same rule as the token's parity tests).
+    #[test]
+    fn cost_parity_publish_compliance_proof() {
+        extern crate std;
+        let (n, w) = (publish_cost(false), publish_cost(true));
+        std::println!("PARITY compliance publish_compliance_proof native={n} wasm={w}");
+        assert!(w <= 400_000_000, "WASM cost {w} is over the 400M limit");
+        assert!(w * 100 <= n * 125, "WASM {w} is more than 25% above native {n}");
+    }
+
     #[test]
     fn rejects_when_no_vk_registered() {
         let (env, owner, contract, _verifier) = setup();

@@ -571,6 +571,7 @@ impl ShieldedSwap {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     /// Filler bytes for public inputs must be canonical field elements (< r).
     fn canon(b: u8) -> [u8; 32] {
         let mut a = [b; 32];
@@ -585,6 +586,9 @@ mod tests {
 
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
+    const TOKEN_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_token.wasm");
+    const VERIFIER_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_verifier.wasm");
+    const SWAP_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_swap.wasm");
     use zkella_verifier::{VerifierContract, VerifierContractClient};
     use zkella_token::{
         ShieldedToken, ShieldedTokenClient,
@@ -643,6 +647,11 @@ mod tests {
     /// circuit-level soundness is proven once, at the circuit level, in
     /// `zkella-verifier`'s real-circuit tests.
     fn setup() -> Setup {
+        setup_with(false)
+    }
+
+    /// `wasm = true` deploys the compiled `wasm32v1-none` artefacts of all three contracts.
+    fn setup_with(wasm: bool) -> Setup {
         let env = Env::default();
         env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
         // `mock_all_auths()` only covers the root call's own authorization
@@ -661,16 +670,16 @@ mod tests {
         let asset_in  = env.register_stellar_asset_contract_v2(asset_in_admin).address();
         let asset_out = env.register_stellar_asset_contract_v2(asset_out_admin).address();
 
-        let verifier = env.register(VerifierContract, ());
+        let verifier = if wasm { env.register(VERIFIER_WASM, ()) } else { env.register(VerifierContract, ()) };
         VerifierContractClient::new(&env, &verifier).initialize(&admin);
 
-        let token_contract = env.register(ShieldedToken, ());
+        let token_contract = if wasm { env.register(TOKEN_WASM, ()) } else { env.register(ShieldedToken, ()) };
         let token_client_setup = ShieldedTokenClient::new(&env, &token_contract);
         token_client_setup.initialize(&admin, &verifier);
         token_client_setup.set_asset_approved(&asset_in, &true);
         token_client_setup.set_asset_approved(&asset_out, &true);
 
-        let swap = env.register(ShieldedSwap, ());
+        let swap = if wasm { env.register(SWAP_WASM, ()) } else { env.register(ShieldedSwap, ()) };
         ShieldedSwapClient::new(&env, &swap).initialize(&admin, &verifier, &token_contract);
         ShieldedSwapClient::new(&env, &swap).set_relayer(&relayer, &true);
 
@@ -802,6 +811,63 @@ mod tests {
         // call (fresh randomness), so only register if not already present.
         let _ = key;
         proof
+    }
+
+    /// Instruction cost of `commit_swap` and `reveal_and_claim` (the two proof-verifying swap
+    /// entrypoints), measured per call.
+    fn swap_costs(wasm: bool) -> (u64, u64) {
+        let s = setup_with(wasm);
+        let shielder = Address::generate(&s.env);
+        let amount_in = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
+        let nullifier_in = BytesN::from_array(&s.env, &canon(99));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(42));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let mut budget = s.env.cost_estimate().budget();
+        budget.reset_limits(2_000_000_000, 100_000_000);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+        );
+        let commit_cost = s.env.cost_estimate().budget().cpu_instruction_cost();
+
+        let amount_out = 950_000i128;
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &amount_out);
+        swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
+        let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, 900_000);
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
+        let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
+        let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
+        let fairness_pub = SwapFairnessPublicInputs {
+            intent_commitment, asset_in: s.asset_in.clone(), asset_out: s.asset_out.clone(), amount_out, min_amount_out: 900_000,
+        };
+        s.env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
+        swap_client.reveal_and_claim(
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
+            &Bytes::from_array(&s.env, &[0u8; 176]), &fairness_proof, &fairness_pub, &shield_proof,
+        );
+        let reveal_cost = s.env.cost_estimate().budget().cpu_instruction_cost();
+        (commit_cost, reveal_cost)
+    }
+
+    /// Real-WASM vs native cost of the swap entrypoints; fails above the 400M limit or more than
+    /// 25% over native (same rule as the token's parity tests).
+    #[test]
+    fn cost_parity_swap_commit_and_reveal() {
+        let (nc, nr) = swap_costs(false);
+        let (wc, wr) = swap_costs(true);
+        std::println!("PARITY swap commit_swap native={nc} wasm={wc}; reveal_and_claim native={nr} wasm={wr}");
+        for (name, n, w) in [("commit_swap", nc, wc), ("reveal_and_claim", nr, wr)] {
+            assert!(w <= 400_000_000, "{name} on WASM uses {w}, over the 400M limit");
+            assert!(w * 100 <= n * 125, "{name}: WASM {w} is more than 25% above native {n}");
+        }
     }
 
     #[test]

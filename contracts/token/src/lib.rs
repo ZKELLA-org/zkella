@@ -82,12 +82,15 @@ fn compute_commitment(
     hasher.hash(&h3, &owner_pk_bytes)
 }
 
-/// Largest `shield_batch` the network can execute. Each item costs about one
-/// full `shield()` (~116M instructions measured on the real WASM), so 3 items
-/// use ~347M of the 400M limit and 4 would exceed it — see
-/// `shield_batch_real_wasm_instruction_cost`. Rejecting larger batches up
-/// front gives a clean error instead of a failed, fee-burning transaction.
-const MAX_SHIELD_BATCH: u32 = 3;
+/// Largest `shield_batch` accepted. Each item costs about 35M instructions on the
+/// compiled WASM (its own Groth16 verification and commitment check; the tree
+/// hashing is shared across the batch), so 8 items use about 314M of the 400M
+/// limit (79%). Measured by `shield_batch_size_sweep_on_real_wasm`, which also
+/// fails the build if this constant is raised past what fits. Rejecting larger
+/// batches up front gives a clean error instead of a failed, fee-burning
+/// transaction.
+const MAX_SHIELD_BATCH: u32 = 8;
+const _: () = assert!(MAX_SHIELD_BATCH as usize <= merkle::MAX_INSERT_BATCH);
 
 /// BN254 scalar-field modulus r, big-endian.
 const FR_MODULUS_BE: [u8; 32] = [
@@ -431,6 +434,14 @@ impl ShieldedToken {
         if items.len() > MAX_SHIELD_BATCH {
             return Err(Error::BatchTooLarge);
         }
+        // The whole batch must fit in the tree; checked before any state changes.
+        if !merkle::has_capacity(&env, items.len()) {
+            return Err(Error::MerkleTreeFull);
+        }
+        let first_leaf = merkle::next_leaf_index(&env);
+        let mut batch_cms: [BytesN<32>; MAX_SHIELD_BATCH as usize] =
+            core::array::from_fn(|_| BytesN::from_array(&env, &[0u8; 32]));
+        let mut batch_len: u32 = 0;
 
         let min_amount = Self::min_shield_amount(env.clone());
         let verifier: Address = env
@@ -497,16 +508,13 @@ impl ShieldedToken {
                 return Err(Error::InvalidProof);
             }
 
-            // ── 7.5. Merkle tree capacity check ──────────────────────────────
-            if merkle::is_full(&env) {
-                return Err(Error::MerkleTreeFull);
-            }
-
-            // ── 8. Effects: record commitment, insert into tree ──────────────
+            // ── 8. Effects: record commitment; the tree insert happens once, below ──
             env.storage().persistent().set(&seen_key, &true);
             env.storage().persistent().extend_ttl(&seen_key, 17_280 * 30, 17_280 * 365);
 
-            let leaf_index = merkle::insert(&env, item.commitment.clone(), &mut hasher);
+            let leaf_index = first_leaf + batch_len;
+            batch_cms[batch_len as usize] = item.commitment.clone();
+            batch_len += 1;
             leaf_indices.push_back(leaf_index);
 
             env.events().publish(
@@ -528,6 +536,10 @@ impl ShieldedToken {
 
             total_amount = total_amount.checked_add(item.amount).ok_or(Error::AmountMismatch)?;
         }
+
+        // All items validated: insert every commitment as one batch (same stored
+        // tree as inserting them one by one, at a fraction of the hashing).
+        merkle::insert_many(&env, &batch_cms[..batch_len as usize], &mut hasher);
 
         let prev_supply: i128 = env
             .storage()
@@ -707,11 +719,9 @@ impl ShieldedToken {
         }
 
         // ── 7.5. Merkle tree capacity check ──────────────────────────────────
-        // This call inserts `n` output commitments; `is_full` only checks the
-        // immediate next slot, but at `MAX_LEAVES = u32::MAX` a false negative
-        // here (accepting a call that would overflow mid-loop) is not a
-        // practical concern for any real value of `n`.
-        if merkle::is_full(&env) {
+        // This call inserts `n` output commitments; `has_capacity(n)` checks that
+        // all of them fit before any state is written.
+        if !merkle::has_capacity(&env, n) {
             return Err(Error::MerkleTreeFull);
         }
 
@@ -727,6 +737,15 @@ impl ShieldedToken {
             );
         }
 
+        // One batched insert for all n outputs (identical stored tree to n sequential
+        // inserts; each tree level is hashed once for the whole group).
+        let first_leaf = merkle::next_leaf_index(&env);
+        let mut batch: [BytesN<32>; 4] = core::array::from_fn(|_| BytesN::from_array(&env, &[0u8; 32]));
+        for i in 0..n {
+            batch[i as usize] = commitments.get(i).unwrap();
+        }
+        merkle::insert_many(&env, &batch[..n as usize], &mut hasher);
+
         let mut leaf_indices = Vec::new(&env);
         for i in 0..n {
             let cm = commitments.get(i).unwrap();
@@ -734,7 +753,7 @@ impl ShieldedToken {
             env.storage().persistent().set(&seen_key, &true);
             env.storage().persistent().extend_ttl(&seen_key, 17_280 * 30, 17_280 * 365);
 
-            let leaf_index = merkle::insert(&env, cm.clone(), &mut hasher);
+            let leaf_index = first_leaf + i;
             leaf_indices.push_back(leaf_index);
 
             env.events().publish(
@@ -910,11 +929,14 @@ impl ShieldedToken {
         let payout = if balance_before >= prev_supply {
             pub_inputs.pub_value
         } else {
-            pub_inputs
-                .pub_value
-                .checked_mul(balance_before)
-                .ok_or(Error::AmountMismatch)?
-                / prev_supply
+            // 256-bit intermediate so `value * balance` cannot overflow i128 for
+            // 18-decimal or very large supplies. Rounds down, so the pool never
+            // overpays. `0 < value <= prev_supply` was checked above, so the
+            // result is at most `balance_before` and fits an i128.
+            let num = soroban_sdk::U256::from_u128(&env, pub_inputs.pub_value as u128)
+                .mul(&soroban_sdk::U256::from_u128(&env, balance_before as u128));
+            let q = num.div(&soroban_sdk::U256::from_u128(&env, prev_supply as u128));
+            q.to_u128().ok_or(Error::AmountMismatch)? as i128
         };
         token_client.transfer(&env.current_contract_address(), &to, &payout);
 
@@ -2446,7 +2468,7 @@ mod tests {
         assert!(!client.is_spent(&nullifier));
     }
 
-    /// Regression test for the reviewers' central "budget viability" concern
+    /// Regression test for the central "budget viability" concern
     /// (docs/POC_IMPLEMENTATION.md's documented `HostError: Error(Budget,
     /// ExceededLimit)` testnet failure): a full shield() call — commitment
     /// computation, Merkle insert, and a genuine on-chain Groth16
@@ -2561,7 +2583,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the reviewers' follow-up "budget viability" concern:
+    /// Regression test for the follow-up "budget viability" concern:
     /// shield() is measured above, but the heavier transfer path (Merkle-anchor
     /// check, two nullifier-spent checks, and a genuine on-chain Groth16
     /// verification with an 11-signal public input vs shield's 4) had never
@@ -2820,7 +2842,7 @@ mod tests {
     /// Rust compatible with this workspace's pinned `soroban-sdk` version
     /// (1.92.0, 1.93.0, 1.94.1), this same call measured marginally *over*
     /// the 400M budget on all three (400,000,643 / 400,000,211 / 400,001,136
-    /// respectively) — see `docs/SCF_READINESS.md` for the full comparison.
+    /// respectively) — see `docs/PERFORMANCE_OPTIMISATION.md` for the measurements.
     /// Source and `Cargo.lock` were unchanged from when the 388,076,971
     /// figure was recorded, so the swing was real but small (a few hundred
     /// to ~1,100 instructions across compiler versions), not large enough on
@@ -2830,11 +2852,15 @@ mod tests {
     /// multiplication optimization, see `contracts/verifier/src/lib.rs`),
     /// not a flake.
     ///
+    /// **Update 3 (current): after the Merkle and verifier optimisations this
+    /// call measures 80.8M instructions (20% of the limit); see
+    /// `docs/PERFORMANCE_OPTIMISATION.md`. Update 2 below is historic.**
+    ///
     /// **Update 2, after the verifier's `g1_msm` optimization landed:**
-    /// this call now measures **396,688,826 instructions, 99.17% of the
+    /// this call measured **396,688,826 instructions, 99.17% of the
     /// 400M mainnet budget**. Un-ignored and re-verified: this is back
     /// under the line, and the optimization is real, correct (all 17
-    /// verifier tests, covering every real circuit's actual proof, still
+    /// verifier tests at the time (28 now), covering every real circuit's actual proof, still
     /// pass unchanged), and worth roughly 3.3M instructions relative to the
     /// over-budget, unoptimized measurement above. It is not, however, the
     /// comfortable margin the note above was hoping to confirm: ~0.83%
@@ -3105,12 +3131,13 @@ mod tests {
     /// batch is therefore bounded by the 400M instruction limit at roughly
     /// `400M / per-item cost` items.
     ///
-    /// Measured when written: 3 items used 347,231,269 instructions (about
-    /// 116M each, 87% of the limit), so 4 items would not fit; that is why
-    /// `MAX_SHIELD_BATCH` is 3 and larger batches are rejected up front.
+    /// Measured when written: 8 items (the maximum) used about 314.4M instructions
+    /// (79% of the limit, about 34M per item; a single shield is about 76.4M because
+    /// the fixed tree-hashing cost is shared across a batch). See
+    /// `shield_batch_size_sweep_on_real_wasm` for every size from 1 to 8.
     #[test]
     fn shield_batch_real_wasm_instruction_cost() {
-        const ITEMS: usize = 3;
+        const ITEMS: usize = MAX_SHIELD_BATCH as usize;
         let env = Env::default();
         env.cost_estimate().budget().reset_limits(400_000_000, 41_943_040);
         env.mock_all_auths();
@@ -3643,7 +3670,7 @@ mod tests {
         let user = Address::generate(&env);
         soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&user, &1_000_000_000);
 
-        // Directly set the tree to one slot below capacity rather than
+        // Directly set the tree to the last slot (index MAX_LEAVES - 1) rather than
         // actually inserting `MAX_LEAVES` real notes — the point of this
         // test is the boundary behavior, which is identical whether the
         // tree got there via 4 billion real inserts or a direct storage

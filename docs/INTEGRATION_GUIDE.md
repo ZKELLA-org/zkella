@@ -289,7 +289,7 @@ API is available at `http://localhost:8787` — `GET /health`, `GET /notes`, `GE
 
 ## 15. Contract Addresses
 
-The Testnet addresses below are the legacy August stack, which predates owner-key notes, the canonical-input check, batch transcript challenges and `revoke_previous_vk`; they do not match the current SDK and circuits. The current-source validation stack (verifier `CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22`, token `CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM`, swap `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3`; the swap address predates the `commit_swap` binding change) is recorded as `testnet_tranche1` in `deployments.json`. Addresses (redeployed whenever a contract/circuit change requires it — always check `deployments.json` at the repository root for the latest, since addresses in a static doc go stale):
+The Testnet addresses below are the legacy August stack, which predates owner-key notes, the canonical-input check, batch transcript challenges and `revoke_previous_vk`; they do not match the current SDK and circuits. The current-source validation stack (verifier `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY`, token `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`, swap `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY`; the swap address predates the `commit_swap` binding change) is recorded as `testnet_tranche1` in `deployments.json`. Addresses (redeployed whenever a contract/circuit change requires it — always check `deployments.json` at the repository root for the latest, since addresses in a static doc go stale):
 
 | Network | Contract | Address |
 |---|---|---|

@@ -677,21 +677,23 @@ impl<'a> Poseidon2Hasher<'a> {
     /// introducing a stricter validation the rest of the protocol doesn't
     /// expect.
     pub fn hash(&mut self, a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
-        use soroban_sdk::{Bytes, Vec, U256};
+        use soroban_sdk::{Vec, U256};
 
-        let mut a_be = Fr::from_bytes(a).to_bytes();
-        a_be.reverse();
-        let mut b_be = Fr::from_bytes(b).to_bytes();
-        b_be.reverse();
-
-        let a_u256 = U256::from_be_bytes(self.env, &Bytes::from_array(self.env, &a_be));
-        let b_u256 = U256::from_be_bytes(self.env, &Bytes::from_array(self.env, &b_be));
+        // `Fr::from_bytes` fully reduces mod r (a single compare for the
+        // already-canonical inputs Merkle nodes are). Its four little-endian
+        // u64 limbs go straight to the host as the four U256 pieces, most
+        // significant first, so no byte reversal, `Bytes` object or
+        // `from_be_bytes` round trip is needed per input.
+        let fa = Fr::from_bytes(a).0;
+        let fb = Fr::from_bytes(b).0;
+        let a_u256 = U256::from_parts(self.env, fa[3], fa[2], fa[1], fa[0]);
+        let b_u256 = U256::from_parts(self.env, fb[3], fb[2], fb[1], fb[0]);
 
         let inputs = Vec::from_array(self.env, [a_u256, b_u256]);
         let out_u256 = self.sponge.compute_hash(&inputs);
 
-        let out_be_bytes: Bytes = out_u256.to_be_bytes();
-        let mut out: [u8; 32] = out_be_bytes.try_into().expect("poseidon output is 32 bytes");
+        let mut out = [0u8; 32];
+        out_u256.to_be_bytes().copy_into_slice(&mut out);
         out.reverse();
         out
     }

@@ -180,6 +180,54 @@ mod tests {
         b
     }
 
+    const GOVERNANCE_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_governance.wasm");
+    const VERIFIER_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zkella_verifier.wasm");
+
+    /// Instruction costs of `queue_vk_update` and `execute_vk_update` (which forwards a real
+    /// 768-byte Shield VK to the verifier), native or on the compiled WASM artefacts.
+    fn governance_costs(wasm: bool) -> (u64, u64) {
+        extern crate std;
+        let env = Env::default();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
+        let admin = Address::generate(&env);
+        let (gov_id, verifier_id) = if wasm {
+            (env.register(GOVERNANCE_WASM, ()), env.register(VERIFIER_WASM, ()))
+        } else {
+            (env.register(ZKELLAGovernance, ()), env.register(VerifierContract, ()))
+        };
+        VerifierContractClient::new(&env, &verifier_id).initialize(&gov_id);
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.initialize(&admin, &verifier_id);
+        let vk = vk_bytes(&env, 768);
+        let mut budget = env.cost_estimate().budget();
+        budget.reset_limits(2_000_000_000, 100_000_000);
+        gov.queue_vk_update(&CircuitType::Shield, &vk);
+        let queue = env.cost_estimate().budget().cpu_instruction_cost();
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        let mut budget = env.cost_estimate().budget();
+        budget.reset_limits(2_000_000_000, 100_000_000);
+        gov.execute_vk_update(&CircuitType::Shield);
+        let exec = env.cost_estimate().budget().cpu_instruction_cost();
+        (queue, exec)
+    }
+
+    /// Real-WASM vs native cost of the governance entrypoints; fails above the 400M limit or
+    /// more than 25% plus 2M over native. These calls cost under 2M, so the fixed WASM
+    /// instantiation overhead (about 0.3M to 1.3M) dominates and a purely relative rule would
+    /// be meaningless; the 2M allowance covers it.
+    #[test]
+    fn cost_parity_governance_queue_and_execute() {
+        extern crate std;
+        let (nq, ne) = governance_costs(false);
+        let (wq, we) = governance_costs(true);
+        std::println!("PARITY governance queue_vk_update native={nq} wasm={wq}; execute_vk_update native={ne} wasm={we}");
+        for (name, n, w) in [("queue_vk_update", nq, wq), ("execute_vk_update", ne, we)] {
+            assert!(w <= 400_000_000, "{name} on WASM uses {w}, over the 400M limit");
+            assert!(w * 100 <= n * 125 + 2_000_000 * 100, "{name}: WASM {w} is more than 25% + 2M above native {n}");
+        }
+    }
+
     /// Queues `vk` for `circuit` and immediately executes it, fast-forwarding
     /// the ledger past the timelock first — the standard "just get a VK live"
     /// path most tests below only care about as a precondition, not as the

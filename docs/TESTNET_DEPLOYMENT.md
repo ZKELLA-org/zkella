@@ -92,7 +92,7 @@ That superseded instance's escrowed funds are not lost: they remain recoverable 
 
 ## Update: Transfer VK registration and a real, live transfer() transaction
 
-Direct response to reviewer feedback asking for the heavier transfer path to be proven, not just measured. `Transfer` and `Transfer4x4` had circuits, contract entrypoints, and local test coverage, but their verifying keys had never been registered on the live verifier and neither had ever been run as a live Testnet transaction. Both gaps are now closed for real.
+Proves the heavier transfer path live, not just measured. `Transfer` and `Transfer4x4` had circuits, contract entrypoints, and local test coverage, but their verifying keys had never been registered on the live verifier and neither had ever been run as a live Testnet transaction. Both gaps are now closed for real.
 
 ### VK registration, through the real timelock
 
@@ -125,58 +125,82 @@ Using the TypeScript SDK's `generateTransferProof` (`sdk/src/prover/transfer.ts`
 
 Post-run state, confirmed via real view calls: `leaf_count() = 7`, both spent nullifiers confirmed via `is_spent()`. This is the first live-Testnet evidence for the standalone `transfer()` entrypoint specifically (as opposed to `unshield`'s proof type, previously exercised only indirectly via the swap's `commit_swap`).
 
-`Transfer4x4`'s VK is now also live-registered, and a live 4-in/4-out transaction has since been run on the Tranche 1 stack (see the last section: tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`). The measured real-WASM cost is 396,688,826 instructions (99.17% of the 400M limit); see `docs/SCF_READINESS.md`, which also notes that re-measuring against current Rust toolchains puts this entrypoint marginally over budget rather than under it, a compiler-sensitivity finding, not a code change.
+`Transfer4x4`'s VK is now also live-registered, and a live 4-in/4-out transaction has since been run on the Tranche 1 stack (see the last section: tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`). The measured real-WASM cost is now 80.8M instructions (20% of the 400M limit) after the optimisation in `docs/PERFORMANCE_OPTIMISATION.md`; the live transaction on the Tranche 1 stack declared 86.3M. Before the optimisation it was 397.9M.
 
 ## Circuit trusted setup
 
 Every verifying key and proof referenced above comes from a local, single-contributor development Powers-of-Tau/Phase-2 ceremony (`circuits/*/build/`) — not a production, multi-party ceremony. This is appropriate for testnet validation but not for a deployment handling real user funds.
 
-## Update: Tranche 1 live validation stack (owner-key circuits, transfer4 and unshield)
+## Update: Tranche 1 live validation stack (optimised build)
 
-A fresh, isolated verifier + token pair (and a swap contract, see below) built from the current source and the current circuits. The verifier's admin is the deployer directly, not `governance`, so this stack validates the proving and on-chain verification path, not the governance timelock (exercised on the stack above). It is a validation deployment; the contracts listed at the top of this document were built before the fixes below and are superseded by them.
+A fresh, isolated set of contracts built from the current source and circuits. The verifier is administered directly by the deployer, not `governance`, so this stack validates the proving and on-chain verification path, not the governance timelock (exercised on the legacy stack above). It is a validation deployment; the contracts listed at the top of this document were built before the fixes and optimisations below and are superseded by them.
 
-Fixes this stack validates:
-- Every note now commits to an owner key, `pk = Poseidon2(nk, "zkella_pk")`, and the spend circuits derive `pk` from `nk`. Previously `nk` was a free private input, so one note could be spent repeatedly under fresh nullifiers.
-- The verifier rejects public inputs that are not reduced modulo the field order (`x` and `x + r` used to verify identically, aliasing a nullifier).
-- `verify_batch` derives its challenges from the whole batch transcript.
+What this stack contains that the legacy stack does not:
+- Owner-key notes (a note can only be spent with its owner's nullifier key), canonical-input rejection in the verifier, batch-transcript challenges, `revoke_previous_vk`.
+- The instruction-cost optimisations: precomputed empty-subtree roots, batched Merkle insertion, a leaner Poseidon call, and byte-level point negation in the verifier (transfer4 fell from 378.7M to 86.3M instructions on this stack; see the resource table below).
+- Swap claimant binding and persistent swap state; the rewritten compliance circuit.
 
 | Contract | Address |
 | --- | --- |
-| verifier | `CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22` |
-| token | `CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM` |
+| verifier | `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY` |
+| token | `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q` |
+| swap | `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY` |
+| compliance | `CAUZB3RTW23QQ5CT6W7KLINZDYVO56DSUZQ5AHKL56KWBH64QD5LNA3Q` |
 
-Produced by `scripts/testnet_live_validation.cjs`, each proof generated by the SDK and submitted as its own transaction:
+### Shield, transfer4 and unshield
 
-| Step | Result | Tx |
-| --- | --- | --- |
-| `shield` (leaf 0) | real Groth16 verified on-chain | https://stellar.expert/explorer/testnet/tx/2a9d480b9d2820735e0b5805de80a7e6128c187674849f3f8f9b210d56c5f152 |
-| `shield` (leaf 1) | | https://stellar.expert/explorer/testnet/tx/2c8594eb3e1eccc16958990cd15e75ab9227cf24d0a3cd6ad619af3d0fd4c99b |
-| `shield` (leaf 2) | | https://stellar.expert/explorer/testnet/tx/4de685046178d9a972630ce1b84d078de7ef4fa6a0d4928b41708a51f0ee00eb |
-| `shield` (leaf 3) | | https://stellar.expert/explorer/testnet/tx/4954a5cf4659b6a1551db7b1572579bc798b60cb3976abdf5e6f733e57864058 |
-| `transfer4` (4-in/4-out, new leaves 4-7) | real 19-signal Groth16 verified on-chain within the network's instruction limit | https://stellar.expert/explorer/testnet/tx/a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf |
-| `unshield` | real Groth16 verified on-chain; shielded supply fell from 4,000,000 to 3,000,000 | https://stellar.expert/explorer/testnet/tx/668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334 |
-
-Swap contract on the same stack: `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3`. This instance includes the claimant binding: `commit_swap` takes the claimant's owner key and folds it, the output asset and the expiry into the ownership proof's binding tag, and `reveal_and_claim` must use that key, so a copied proof cannot redirect the output. Full commit-reveal lifecycle, produced by `scripts/testnet_swap_validation.cjs` with a real unshield ownership proof, a real swap-fairness proof and a real shield proof for the output note:
+Produced by `scripts/testnet_live_validation.cjs`, each proof generated by the SDK and submitted as its own transaction. The `transfer4` and `unshield` proofs are built against Merkle paths read back from the batch-built tree, so they also confirm on-chain that batched insertion stores exactly the tree sequential insertion would.
 
 | Step | Result | Tx |
 | --- | --- | --- |
-| `shield` (input note) | | https://stellar.expert/explorer/testnet/tx/1c59166421782440607593e017dfeffd363950f4d53b8485dbd950667fc2dba5 |
-| `commit_swap` | ownership proof bound to intent, claimant key, asset and expiry verified on-chain | https://stellar.expert/explorer/testnet/tx/a90cb7781521d428b74fdb1fc99b7120f0a583f07d97758b75d35d6492e4c5f7 |
-| `execute_swap` | relayer fronts `asset_out` | https://stellar.expert/explorer/testnet/tx/578cf698ce8c05d9e19fe003f5ec893615fdea1375fd535f84b0155e7f1781cf |
-| `reveal_and_claim` | swap-fairness proof and output-note shield proof verified on-chain; new note at leaf 11 | https://stellar.expert/explorer/testnet/tx/ddc950056a3eab63a7f87f78037e199a19a5862ed380113e57ec4e173ef4a6cc |
+| `shield` (leaf 0) | real Groth16 verified on-chain | https://stellar.expert/explorer/testnet/tx/e51f3be33e335917b663cb1969a7d9812cbac1c5e97e797c7fb2cdcb43abd2b1 |
+| `shield` (leaf 1) | | https://stellar.expert/explorer/testnet/tx/048f02332f51a0f5efe99c40e01f4b80b073d61755328630c4b28637d150b084 |
+| `shield` (leaf 2) | | https://stellar.expert/explorer/testnet/tx/0ac97d14310a692a35a7a3c9da71bc84e03e96eed0dcf0c97120a52df2183700 |
+| `shield` (leaf 3) | | https://stellar.expert/explorer/testnet/tx/244b995070978701a382202355d76c352d63e1b150092541da77d8c9a4910b1c |
+| `transfer4` (4-in/4-out, new leaves 4-7) | real 19-signal Groth16 verified on-chain | https://stellar.expert/explorer/testnet/tx/15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba |
+| `unshield` | real Groth16 verified on-chain; shielded supply fell from 4,000,000 to 3,000,000 | https://stellar.expert/explorer/testnet/tx/c99b6b23dd068d3c12c77697cb614efa06c805349233716851efc85a22f80891 |
+
+### `shield_batch` at its maximum size
+
+Eight real shield proofs deposited in one transaction with one aggregated token transfer (`scripts/testnet_shield_batch.cjs`): https://stellar.expert/explorer/testnet/tx/22e3c4e31121a045f319e965a04761edca3d527f3dfb077423aaf0e5eac5964d (declared 335.0M instructions, 84% of the limit, 64 ledger entries, 58 written).
+
+### Swap lifecycle
+
+`commit_swap` takes the claimant's owner key and folds it, the output asset and the expiry into the ownership proof's binding tag; `reveal_and_claim` must use that key, so a copied proof cannot redirect the output. Produced by `scripts/testnet_swap_validation.cjs` with a real unshield ownership proof, a real swap-fairness proof and a real shield proof for the output note:
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `shield` (input note) | | https://stellar.expert/explorer/testnet/tx/ff8756d3320ae98a03abf76562e3b7fb980283624ca50700e1979c939e1d527d |
+| `commit_swap` | ownership proof bound to intent, claimant key, asset and expiry verified on-chain | https://stellar.expert/explorer/testnet/tx/96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340 |
+| `execute_swap` | relayer fronts `asset_out` | https://stellar.expert/explorer/testnet/tx/994f97fdf6b73dbcb2fd4bf8467a49be63c6d3dd2a5a7483aacfd6c314949797 |
+| `reveal_and_claim` | swap-fairness proof and output-note shield proof verified on-chain; new note at leaf 9 | https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297 |
 
 ### Compliance contract (rewritten non-membership circuit, persistent records)
 
-Compliance contract on the same stack: `CC55I2ZEZRQLZ4VZN2OLCSAPBLPCI3XPYRTHKNI7QOIKWRU652GYNTUK`, with the new `NonMembership` verifying key registered on the verifier. Produced by `scripts/testnet_compliance_validation.cjs` against a sorted sanctions tree with sentinel leaves:
+Produced by `scripts/testnet_compliance_validation.cjs` against a sorted sanctions tree with sentinel leaves:
 
 | Step | Result | Tx |
 | --- | --- | --- |
 | Sanctioned address (its own leaf as a neighbour) | cannot build a witness, so no proof exists | (local, no transaction) |
-| `publish_compliance_proof` | real non-membership proof verified on-chain; record stored in persistent storage and read back with `get_compliance_proof` | https://stellar.expert/explorer/testnet/tx/87f4a34619e03df9e228cf4790ef06961473e86664b6ce6d3c26194351d3f529 |
+| `publish_compliance_proof` | real non-membership proof verified on-chain; record stored in persistent storage and read back | https://stellar.expert/explorer/testnet/tx/514b9abca55beeb41d56f739f11d83ee9cb8d3a5be90f33cb0736318e3eb5385 |
+
+### Resource profile of the live transactions
+
+Declared Soroban resources of each transaction (from the transaction envelope, printed by `scripts/tx_resource_profile.cjs`). The instruction figure is the simulation result plus the safety margin the client adds, so it sits a few percent above the measured cost; every figure is well under the 400M limit. The four shields on a fresh deployment stayed within 80.6M to 81.2M each, consistent across all four.
+
+| Transaction | Instructions | Before the optimisation | Ledger entries (footprint) | Written entries | Write bytes |
+| --- | --- | --- | --- | --- | --- |
+| `shield` #0 to #3 | 80.6M, 81.1M, 81.1M, 81.2M | 126.1M to 126.3M | 41 to 43 | 37 | 5,980 to 6,100 |
+| `shield_batch` (8 items) | 335.0M | not possible (3 items was the maximum) | 64 | 58 | 9,256 |
+| `transfer4` | 86.3M | 378.7M | 50 | 46 | 7,312 |
+| `unshield` | 34.4M | 35.5M | 8 | 4 | 1,384 |
+| swap `commit_swap` | 42.9M | 44.0M | 11 | 5 | 2,192 |
+| swap `reveal_and_claim` | 112.2M | 158.5M | 47 | 39 | 7,168 |
+| compliance `publish_compliance_proof` | 29.1M | 30.4M | 5 | 1 | 336 |
 
 ### Governance-settable minimum shield amount, changed live without a redeploy
 
-On the validation token (`CDQ53BGU...`), the minimum was read (1,000), raised to 2,000,000 and read back, a shield below it was rejected, and the minimum was restored. No contract was redeployed.
+Run on the previous validation token (`CDQ53BGU...`; the behaviour is unchanged in the current build): the minimum was read (1,000), raised to 2,000,000 and read back, a shield below it was rejected, and the minimum was restored. No contract was redeployed.
 
 | Step | Tx |
 | --- | --- |
@@ -185,17 +209,3 @@ On the validation token (`CDQ53BGU...`), the minimum was read (1,000), raised to
 | `set_min_shield_amount(1000)` (restore) | https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25 |
 
 `scripts/testnet_min_shield_check.cjs` performs the rejected shield.
-
-### Resource profile of the live transactions
-
-Declared Soroban resources of each transaction (from the transaction envelope, printed by `scripts/tx_resource_profile.cjs`). The instruction figure is the simulation result plus the safety margin the client adds, so it sits a few percent above the measured cost; every figure is well under the 400M limit. Four shields on a fresh deployment stayed within 126.1M to 126.3M each, consistent across all four.
-
-| Transaction | Instructions | Ledger entries (footprint) | Written entries | Write bytes |
-| --- | --- | --- | --- | --- |
-| `shield` #0 to #3 | 126.1M, 126.3M, 126.3M, 126.3M | 73 | 37 | 5,980 to 6,100 |
-| `transfer4` | 378.7M | 79 | 46 | 7,432 |
-| `unshield` | 35.5M | 8 | 4 | 1,504 |
-| swap `commit_swap` | 44.0M | 11 | 5 | 2,392 |
-| swap `reveal_and_claim` | 158.5M | 77 | 39 | 7,368 |
-| compliance `publish_compliance_proof` | 30.4M | 5 | 1 | 336 |
-

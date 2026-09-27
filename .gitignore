@@ -54,4 +54,5 @@ Cargo.lock
 *.local
 contracts/token/fuzz/target/
 contracts/token/fuzz/artifacts/
-contracts/token/fuzz/corpus/
+# Corpus is committed, minimized (`cargo +nightly fuzz cmin`), so new fuzzing runs and CI's
+# smoke job start from real coverage instead of nothing.

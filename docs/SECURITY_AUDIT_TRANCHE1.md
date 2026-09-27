@@ -11,7 +11,7 @@ An internal review of the verifier and token contracts, the circuits, and the SD
 | High | `verify_batch` derived its challenges from each proof alone, so public inputs could be chosen after the challenges were known and invalid items could cancel. | Challenges hash the circuit and every item's public inputs and proof. |
 | Medium | A rotated-out verifying key stayed acceptable for the retention window with no way to revoke it. | `revoke_previous_vk`; saturating expiry arithmetic. |
 | Low | Negative transfer fee not rejected at the contract boundary; fee and swap remainder lacked in-circuit range checks. | Contract check added; `Num2Bits` range checks added in the circuits. |
-| Low | `shield_batch` was unbounded, but 3 items already use 347M of the 400M instruction limit. | `MAX_SHIELD_BATCH = 3`, with a real-WASM cost test. |
+| Low | `shield_batch` was unbounded, and each item costs real instructions. | `MAX_SHIELD_BATCH = 8` (314M of the 400M limit), with a real-WASM size sweep that fails the build if the constant is raised past 85%. |
 
 ## Accepted and documented
 

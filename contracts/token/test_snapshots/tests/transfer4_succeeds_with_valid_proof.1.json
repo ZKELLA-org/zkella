@@ -1538,15 +1538,6 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "b38aff93cf2460deecd0b8a0b7337c5cf8478172233cf75283b5649e1c63d92b"
-                          },
-                          {
-                            "bytes": "6e6b1ed97c2241d97203c50f974d7358521ce5471e403597e498bf6c4162e100"
-                          },
-                          {
-                            "bytes": "2f640caffc56129f0bb274d528cd07dc8f4e5c1923de2fb9fe273adde065572e"
-                          },
-                          {
                             "bytes": "5b606a4621d889ddccede208e1b2df6b112c1e20755ccb579048593f9195b611"
                           }
                         ]

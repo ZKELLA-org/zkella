@@ -12,7 +12,7 @@ The full ZKELLA protocol specification is documented separately in:
 - `docs/CIRCUIT_SPEC.md` — circuit-level design and proof structure
 - `docs/INTEGRATION_GUIDE.md` — SDK and integration details
 
-This document does not replace the full spec. It only describes current PoC implementation status so reviewers and contributors can distinguish existing code from the remaining delivery scope.
+This document does not replace the full spec. It only describes current PoC implementation status so readers and contributors can distinguish existing code from the remaining delivery scope.
 
 For a single, chronological ledger of every real on-chain transaction referenced throughout this document — across every deployment epoch, including superseded ones — see `docs/POC_TESTNET_VALIDATION.md`.
 
@@ -78,13 +78,13 @@ This is an important PoC engineering finding: deployment, initialization, admin 
 Two root causes were identified and fixed:
 
 1. **Poseidon was pure-Rust field arithmetic**, not the native host function — Soroban's `poseidon_permutation` host function (protocol 25+) didn't exist yet when this code was first written, so `contracts/token/src/poseidon.rs` hand-rolled BN254 field arithmetic in `#![no_std]` Rust. A `shield()` call runs ~35 of these hashes (3 for the commitment + 32 for the Merkle insert) entirely in WASM-interpreted bignum math. `poseidon.rs` now also has a `Poseidon2Hasher` that calls the official `soroban-poseidon` crate's native permutation, sharing one sponge instance across all hashes in a call (the crate's own docs flag that constructing a fresh sponge per hash — the naive approach — rebuilds its parameter tables every time, which is itself significant avoidable overhead).
-2. **`merkle.rs`'s empty-subtree-root lookup was O(depth²)** on a sparse/fresh tree: it recomputed the whole empty-hash chain from scratch on every tree level instead of tracking it incrementally across the one loop that already walks levels in order. Fixed to O(depth) — 32 extra hashes total instead of up to 496 on the very first insert (the worst case, and exactly the scenario this documented failure hit).
+2. **`merkle.rs`'s empty-subtree-root lookup was O(depth²)** on a sparse/fresh tree: it recomputed the whole empty-hash chain from scratch on every tree level instead of tracking it incrementally across the one loop that already walks levels in order. (Historic; since replaced by the precomputed `EMPTY_ROOTS` table, see `docs/PERFORMANCE_OPTIMISATION.md`.) Fixed to O(depth) — 32 extra hashes total instead of up to 496 on the very first insert (the worst case, and exactly the scenario this documented failure hit).
 
 `contracts/token/shield()` now also performs **real on-chain Groth16/BN254 proof verification** via a cross-contract call to a new `contracts/verifier` registry contract (see "Implemented components" below), rather than the `TODO(M2)` stub this section originally described.
 
 **Locally measured** (Soroban's real host environment via `soroban-sdk`'s test harness, with `InvocationResourceLimits::mainnet()` explicitly enforced — the SDK's own snapshot of the current Testnet/Mainnet instruction limit, 400M, as of 2026-07-10 — rather than the SDK's more conservative built-in local-test default of 100M, which is what this document's original failure was actually hitting):
 
-- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **118.6M instructions** on the real WASM, about 28% of the 400M budget (an earlier measurement of ~104M predates the owner-key commitment and the canonical-input check). Other real-WASM costs: transfer 2x2 ~228M (57%), transfer4 396,688,826 (99.17%), unshield 33,887,174 (8.5%), `shield_batch` of 3 items 347,231,269 (~116M per item, 87%).
+- Full `shield()` call (commitment computation + Merkle insert + real Groth16 verification): **76.4M instructions** on the real WASM, about 19% of the 400M budget. Other real-WASM costs: transfer 2x2 74.9M, transfer4 80.8M (20%), unshield 32.8M (8%), `shield_batch` of 8 items 314.4M (79%). Before the Merkle-insert optimisation (see `docs/TECHNICAL_SPEC.md`, "Where the cost went") these were shield 118.6M, transfer 233.8M, transfer4 397.9M (99.5%) and `shield_batch` of 3 items 347.2M; earlier still, ~104M for shield before the owner-key commitment and the canonical-input check.
 - The verifier's cross-contract Groth16 check alone: **~30M instructions** of that total.
 - Regression test: `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget`.
 
@@ -168,9 +168,9 @@ Every proof above (ownership, fairness, output-shield) is a genuine `circom`/`sn
 
 This closes the delivery-roadmap item "a dedicated audit of the swap primitive... and a live-Testnet run of its full lifecycle" from `README.md`'s "Planned implementation scope" — the swap primitive has now been audited, fixed, and run end-to-end on live Testnet with real proofs and real value movement throughout.
 
-## Reviewer-readiness milestones
+## Readiness milestones
 
-The next phase of the repository work is explicitly organized around the main reviewer feedback:
+The next phase of the repository work is explicitly organized around the main open gaps:
 
 1. Budget-viability milestone — **complete: real shield() transactions on live Testnet, repeated 3×**
    - real shield transactions on Stellar Testnet reaching on-chain Groth16 verification and completing within Soroban budget — see "Update: live Testnet run completed" above,
@@ -294,11 +294,11 @@ Cross-calling `ShieldedToken` from `swap` needed a new `contracts/token-interfac
 
 **Update, August 3, 2026:** the swap primitive has since been through a senior-auditor pass (two additional fixes: an `intent_commitment`-collision fund-orphaning bug, and a CEI-ordering reentrancy risk in `execute_swap`) and a full real-circuit live-Testnet run of the entire lifecycle — commit, execute, reveal-and-claim — with genuine `circom`/`snarkjs` proofs for ownership, fairness, and the output shield, not the synthetic-relation proofs used in the local tests described above. See "Update: senior audit, contract-stack redeployment, and a real live-Testnet swap lifecycle" below for the fixes, addresses, and transaction hashes. `commit_swap`'s reused unshield proof establishing ownership of a note worth `amount_in`: the on-chain equality check `pub_inputs.pub_value == amount_in` is a plain argument, not something the proof itself independently re-derives, but the unshield proof fixes `pub_value` as a public input the verifier checks, so it can't be spoofed independently of the proof — this held up under the live run and is not considered open any further.
 
-### Update: Merkle root-history window closes a reviewer-flagged reliability gap
+### Update: Merkle root-history window closes a reliability gap
 
 `transfer()` and `unshield()` originally required `pub_inputs.anchor` to equal `merkle_root()` **exactly** — the current root and nothing else. This was flagged in an external technical review: since one `ShieldedToken` instance shares a single Merkle tree across every asset it wraps, *any* shield/transfer/unshield call — including on a completely unrelated asset — advances the root and invalidates every proof still in flight against the previous one. Nothing was insecure about this (no invalid proof was ever accepted), but it was a real, self-inflicted liveness problem: a proof could easily go stale between generation and submission under ordinary concurrent usage, forcing a rebuild.
 
-Fixed by adding a root-history ring buffer (`contracts/token/src/merkle.rs`'s `is_known_root()`, `StorageKey::RootHistory`): every insertion appends the new root and evicts the oldest once more than `ROOT_HISTORY_SIZE` (32) are held, and `transfer()`/`unshield()` now accept any root still in that window instead of only the newest one. This is the standard mitigation used by Tornado Cash/Zcash-style shielded pools — it narrows the problem, it does not eliminate it: a proof anchored to a root that falls out of the last 32 insertions still needs to be rebuilt. Two dedicated regression tests (`transfer_accepts_anchor_still_within_root_history_window`, `transfer_rejects_anchor_evicted_from_root_history_window`) cover both edges of the window. `cargo test --workspace` is at 64/64 passing after this change (was 62/62).
+Fixed by adding a root-history ring buffer (`contracts/token/src/merkle.rs`'s `is_known_root()`, `StorageKey::RootHistory`): every call that inserts leaves appends its final root and evicts the oldest once more than `ROOT_HISTORY_SIZE` (32) are held, and `transfer()`/`unshield()` now accept any root still in that window instead of only the newest one. This is the standard mitigation used by Tornado Cash/Zcash-style shielded pools — it narrows the problem, it does not eliminate it: a proof anchored to a root that falls out of the last 32 leaf-inserting calls still needs to be rebuilt. Two dedicated regression tests (`transfer_accepts_anchor_still_within_root_history_window`, `transfer_rejects_anchor_evicted_from_root_history_window`) cover both edges of the window. `cargo test --workspace` is at 64/64 passing after this change (was 62/62).
 
 Per-asset Merkle trees were considered and not adopted here: they would only remove *cross-asset* collisions, not same-asset ones, at the cost of extra per-asset instance-storage state — see `docs/TECHNICAL_SPEC.md` §12.1 for the full tradeoff writeup.
 
