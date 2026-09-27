@@ -1799,12 +1799,6 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "e57306a4b4afa8e4d07682c968259111c9b73457b1f388cc31671ec2e1f75f17"
-                          },
-                          {
-                            "bytes": "0efabc655a0afe66a049f4a6c724b5123b5faa880d11fd6580bb7282c896dc2e"
-                          },
-                          {
                             "bytes": "11dee77c0ed9561cc7ea71f311f4d44be05baa1e72922658f9ba29346ed22f06"
                           }
                         ]

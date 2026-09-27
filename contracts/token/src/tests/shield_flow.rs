@@ -712,3 +712,40 @@ fn shield_rejects_unapproved_asset_exact_error() {
     fx.client().set_asset_approved(&fx.asset, &false);
     fx.assert_shield_err(&it, Error::AssetNotApproved);
 }
+
+/// Fills a tree to its capacity with real inserts (single shields and batches, no direct write of
+/// the leaf counter), then checks every further insert is refused with exactly `MerkleTreeFull`
+/// and changes nothing. Capacity is lowered to 20 for the test through the per-thread test
+/// override, because 2^32 - 1 real inserts are not possible; the boundary logic is the same code.
+#[test]
+fn tree_filled_to_capacity_by_real_inserts_then_rejects_every_insert() {
+    let fx = Fx::new();
+    merkle::TEST_CAPACITY.with(|c| c.set(20));
+
+    // 8 + 8 via two batches, then 3 singles: 19 leaves, one slot left.
+    let b1: std::vec::Vec<_> = (1..=8u8).map(|s| fx.item(s, 5_000)).collect();
+    let b2: std::vec::Vec<_> = (9..=16u8).map(|s| fx.item(s, 5_000)).collect();
+    assert_eq!(fx.try_batch(&b1), Ok(Ok(soroban_sdk::vec![&fx.env, 0u32, 1, 2, 3, 4, 5, 6, 7])));
+    assert_eq!(fx.try_batch(&b2).is_ok(), true);
+    for s in 17..=19u8 {
+        let it = fx.item(s, 5_000);
+        assert_eq!(fx.try_shield(&it), Ok(Ok(u32::from(s) - 1)));
+    }
+    assert_eq!(fx.client().leaf_count(), 19);
+
+    // A batch of 2 does not fit into the single remaining slot: refused, nothing written.
+    let over = [fx.item(30, 5_000), fx.item(31, 5_000)];
+    fx.assert_batch_err(&over, Error::MerkleTreeFull);
+
+    // The last slot is still usable.
+    assert_eq!(fx.try_shield(&fx.item(20, 5_000)), Ok(Ok(19)));
+    assert_eq!(fx.client().leaf_count(), 20);
+    let full_root = fx.client().merkle_root();
+
+    // Now full: single shield and batch of one are both refused with the exact error.
+    fx.assert_shield_err(&fx.item(40, 5_000), Error::MerkleTreeFull);
+    fx.assert_batch_err(&[fx.item(41, 5_000)], Error::MerkleTreeFull);
+    assert_eq!(fx.client().leaf_count(), 20);
+    assert_eq!(fx.client().merkle_root(), full_root);
+    merkle::TEST_CAPACITY.with(|c| c.set(u32::MAX));
+}

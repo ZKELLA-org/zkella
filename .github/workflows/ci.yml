@@ -41,6 +41,12 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.test.json
       - name: Unit tests
         run: npm test -- --maxWorkers=2
+      - name: Build circuits and SDK for the browser-worker check
+        run: |
+          npm run build --workspace=sdk
+          npx playwright-core install --with-deps chromium
+      - name: Real-browser Web Worker responsiveness check
+        run: npm run check:browser-worker
 
   fuzz:
     name: Fuzz smoke (token + verifier, 60s per target)

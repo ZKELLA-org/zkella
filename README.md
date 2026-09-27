@@ -44,7 +44,7 @@ Planned implementation scope:
 - review and improvement of all existing PoC contracts, SDK modules, and circuit integrations before any production deployment
 - an external, independent security review — the audit pass documented in `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, not a third party
 
-See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol design. See `docs/POC_IMPLEMENTATION.md` for the dedicated PoC/current implementation status, including transaction hashes and contract addresses. See `docs/TESTNET_DEPLOYMENT.md` for the current live deployment record, and `docs/POC_TESTNET_VALIDATION.md` for the complete chronological ledger of every real on-chain transaction across the project's history.
+See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol design, and `docs/PERFORMANCE_OPTIMISATION.md` for the instruction-cost optimisation and its measurements. See `docs/POC_IMPLEMENTATION.md` for the dedicated PoC/current implementation status, including transaction hashes and contract addresses. See `docs/TESTNET_DEPLOYMENT.md` for the current live deployment record, and `docs/POC_TESTNET_VALIDATION.md` for the complete chronological ledger of every real on-chain transaction across the project's history.
 
 ---
 

@@ -15,7 +15,7 @@ use std::vec::Vec as StdVec;
 
 const BUDGET: u64 = 400_000_000;
 /// WASM may cost at most this much more than native before the build fails.
-/// Measured gaps sit around 9-12%; 25% leaves room for compiler noise while
+/// Measured gaps sit around 9-15%; 25% leaves room for compiler noise while
 /// still catching a real divergence.
 const MAX_WASM_OVER_NATIVE_PERCENT: u64 = 25;
 /// The verifier as it was before the batched-MSM optimisation (per-input
@@ -91,6 +91,10 @@ fn shield_cost(wasm: bool) -> u64 {
 }
 
 fn shield_batch_cost(wasm: bool) -> u64 {
+    shield_batch_cost_n(wasm, 3)
+}
+
+fn shield_batch_cost_n(wasm: bool, k: u8) -> u64 {
     let c = ctx(wasm, None);
     let asset = approved_asset(&c);
     let user = Address::generate(&c.env);
@@ -98,7 +102,7 @@ fn shield_batch_cost(wasm: bool) -> u64 {
     let env = &c.env;
     let mut hasher = poseidon::Poseidon2Hasher::new(env);
     let mut items = Vec::new(env);
-    for i in 0..3u8 {
+    for i in 0..k {
         let amount: i128 = 10_000 * (i as i128 + 1);
         let rho = BytesN::from_array(env, &canon(60 + 2 * i));
         let rcm = BytesN::from_array(env, &canon(61 + 2 * i));
@@ -218,6 +222,12 @@ fn cost_parity_shield() { check("shield", shield_cost(false), shield_cost(true))
 fn cost_parity_shield_batch() { check("shield_batch(3)", shield_batch_cost(false), shield_batch_cost(true)); }
 
 #[test]
+fn cost_parity_shield_batch_at_the_maximum_size() {
+    let k = MAX_SHIELD_BATCH as u8;
+    check("shield_batch(max)", shield_batch_cost_n(false, k), shield_batch_cost_n(true, k));
+}
+
+#[test]
 fn cost_parity_transfer() { check("transfer 2x2", transfer_cost(false, 2, None), transfer_cost(true, 2, None)); }
 
 #[test]
@@ -230,13 +240,32 @@ fn cost_parity_unshield() { check("unshield", unshield_cost(false), unshield_cos
 /// native batched multi-scalar-multiplication host function instead of one
 /// `g1_mul` + `g1_add` per input. Measured end to end on the real WASM for the
 /// heaviest entrypoint (19 public inputs), against the verifier as it was
-/// before the change.
+/// before the change. (When it shipped, transfer4 was dominated by tree hashing
+/// and the loop verifier pushed it over the 400M limit at 412M versus 398M with
+/// the MSM; the tree hashing has since been cut by about 80%, so both figures
+/// are now far under the limit, but the MSM still saves 15.3M.)
 #[test]
 fn msm_aggregation_is_cheaper_than_the_per_input_loop_on_transfer4() {
     let before = transfer_cost(true, 4, Some(VERIFIER_PRE_MSM_WASM));
     let after = transfer_cost(true, 4, None);
     std::println!("MSM_VS_LOOP transfer4 real WASM: per-input loop verifier={before} batched-MSM verifier={after} saved={}", before.saturating_sub(after));
     assert!(after < before, "batched MSM ({after}) must cost less than the per-input loop ({before})");
-    assert!(before >= BUDGET, "the per-input loop verifier was over the network limit for transfer4 (used {before}); if not, the baseline comment is wrong");
     assert!(after < BUDGET, "transfer4 with the MSM verifier must fit the {BUDGET} budget, used {after}");
+}
+
+/// How large a `shield_batch` the network can execute, on the compiled WASM:
+/// cost for 1 to 8 items, with panics from the network's per-transaction limits
+/// (instructions, ledger entries, write bytes) reported as "over limit".
+#[test]
+fn shield_batch_size_sweep_on_real_wasm() {
+    let mut rows = StdVec::new();
+    for k in 1..=8u8 {
+        let r = std::panic::catch_unwind(|| shield_batch_cost_n(true, k));
+        std::println!("BATCH_SWEEP k={k} {:?}", r.as_ref().map(|c| *c).map_err(|_| "over a network limit"));
+        rows.push((k, r.ok()));
+    }
+    // The configured maximum must fit with room to spare.
+    let max = MAX_SHIELD_BATCH as u8;
+    let cost = rows.iter().find(|(k, _)| *k == max).and_then(|(_, c)| *c).expect("MAX_SHIELD_BATCH must execute");
+    assert!(cost * 100 <= BUDGET * 85, "MAX_SHIELD_BATCH ({max}) uses {cost}, more than 85% of the {BUDGET} budget");
 }

@@ -35,7 +35,7 @@ full status) — this is a correct, working reference implementation of the
 API surface, not a production deployment. The planned production deployment
 (dual-provider RPC failover, containerized on AWS ECS Fargate, RDS PostgreSQL
 with Multi-AZ, and a second operator in a different region or cloud provider)
-is described in `docs/TECHNICAL_SPEC.md` §13.3 — grant-funded work, not yet
+is described in `docs/TECHNICAL_SPEC.md` §13.3 — planned work, not yet
 built. An operational runbook covering this service alongside the rest of
 the stack now exists at `docs/RUNBOOK.md` (first version, not yet exercised
 in a real incident).

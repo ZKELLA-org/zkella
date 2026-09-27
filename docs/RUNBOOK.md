@@ -1,6 +1,6 @@
 # ZKELLA — Operational Runbook and Incident Response
 
-This is the operational runbook referenced as an open item throughout `docs/POC_IMPLEMENTATION.md`, `docs/ARCHITECTURE.md`, `README.md`, and `docs/SCF_REVIEWER_RESPONSE.md` §4. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
+This is the operational runbook referenced as an open item throughout `docs/POC_IMPLEMENTATION.md`, `docs/ARCHITECTURE.md`, `README.md`, and the roadmap. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
 
 **Status of this document itself:** first version, written against the current soft-PoC deployment (single team, single indexer operator, Stellar Testnet only). It has not yet been exercised in a real incident or run through a drill. Treat it as a starting operational baseline, not a mature, battle-tested process — see "Known limitations" at the end.
 
@@ -8,7 +8,7 @@ This is the operational runbook referenced as an open item throughout `docs/POC_
 
 ## 1. System components at a glance
 
-Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. Testnet addresses below are the legacy August stack, which is not source-equivalent to current code (it predates owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`). The only stack built from current source is `testnet_tranche1` in `deployments.json`: verifier `CBBKTJ4FHPDZRVQO6OQZDRHSKPVN7NVRZRZXQQQWW6BKDR57JKQDAE22`, token `CDQ53BGUQA6K5E6VIUR23D7P4R6FUVBUOXVS6XSQ256ZB4TBDOZIEVRM`, swap `CA5S2JRD3OFNI7RZSGKPN3AUKVQRWDBNHFPWNYEOSTBCD7D4QVT6BTM3`. That verifier is administered directly by the deployer (no governance timelock), and its swap instance predates the `commit_swap` binding change. Legacy stack (see `deployments.json` `testnet` for the machine-readable version):
+Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. Testnet addresses below are the legacy August stack, which is not source-equivalent to current code (it predates owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`). The only stack built from current source is `testnet_tranche1` in `deployments.json`: verifier `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY`, token `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`, swap `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY`. That verifier is administered directly by the deployer (no governance timelock), and its swap instance predates the `commit_swap` binding change. Legacy stack (see `deployments.json` `testnet` for the machine-readable version):
 
 | Component | Address | Admin model | Has `pause()` |
 |---|---|---|---|
@@ -47,8 +47,8 @@ No automated alerting exists yet (see "Known limitations") — this section defi
 
 Watch simulation/submission failures for these specific error shapes, each pointing at a different root cause:
 
-- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~118.6M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
-- `Error(Contract, #5)` on `token` (`Error::InvalidAnchor`) — the caller's proof anchor fell outside the 32-root history window (`contracts/token/src/merkle.rs`'s `ROOT_HISTORY_SIZE`). Expected occasionally under concurrent load; a sudden spike means proofs are being generated much slower than the tree is advancing, or the window needs re-tuning.
+- `HostError: Error(Budget, ExceededLimit)` — instruction budget exhaustion. Compare against the measured baseline (~76.4M/400M for `shield()`, `contracts/token/src/lib.rs`'s `shield_fits_within_mainnet_instruction_budget` test) — a large deviation suggests a regression, not normal variance.
+- `Error(Contract, #5)` on `token` (`Error::InvalidAnchor`) — the caller's proof anchor fell outside the 32-root history window (`contracts/token/src/merkle.rs`'s `ROOT_HISTORY_SIZE`). Expected occasionally under concurrent load; a sudden spike means proofs are being generated much slower than the tree is advancing, or the window needs re-tuning. The window counts calls that inserted leaves: a `transfer`, `transfer4` or `shield_batch` adds one root history entry however many leaves it inserts (only its final root is recorded).
 - `Error(Auth, InvalidAction)` on any cross-contract call — a missing `authorize_as_current_contract` entry (see the real incident this exact error caused in `docs/POC_IMPLEMENTATION.md`'s swap audit). Treat as a code-level bug, not an operational issue, unless it appears on a code path that was previously working.
 - `Error(Contract, #3)` on `verifier` (`Error::VkAlreadyRegistered`) — an attempted `register_verifying_key` for a circuit that already has one; use `governance.queue_vk_update`/`execute_vk_update` instead (see §3).
 
@@ -88,7 +88,7 @@ Sibling nodes read during an insert are not TTL-bumped. After roughly a year wit
 ### Note format and shield limits
 
 - Notes are owner-key notes: `cm = H(H(H(value, asset), H(rho, rcm)), pk)` with `pk = H(nk, DOMAIN_PK)`, `DOMAIN_PK = int("zkella_pk") = 2258241487740017274987`. A note can only be spent with the `nk` that derives its `pk`. `shield` takes the recipient's `owner_pk` explicitly, and `ShieldBatchItem` carries an `owner_pk` after `rcm`.
-- `shield_batch` accepts at most `MAX_SHIELD_BATCH = 3` items (measured 347,231,269 instructions for 3, about 116M per item; a fourth would exceed the 400M limit).
+- `shield_batch` accepts at most `MAX_SHIELD_BATCH = 8` items (measured about 314M instructions for 8, 79% of the 400M limit, about 34M per item after a shared tree-hashing cost of about 42M; the live 8-item transaction declared 335M). The build fails if the constant is raised past 85% of the limit (`shield_batch_size_sweep_on_real_wasm`).
 - Shielding an asset requires it to be approved: `set_asset_approved(asset, approved)` / `is_asset_approved(asset)`. `set_min_shield_amount` / `min_shield_amount` set the spam floor (default 1,000 base units).
 - Token errors added: `AssetNotApproved = 18`, `BatchLengthMismatch = 19`, `EmptyBatch = 20`, `BatchTooLarge = 21`. Verifier error `NonCanonicalInput = 9`: a public input at or above the BN254 scalar modulus was submitted (asset fields are reduced mod r before use as inputs). The token also rejects a negative transfer fee.
 

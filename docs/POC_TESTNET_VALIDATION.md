@@ -1,6 +1,6 @@
 # ZKELLA — PoC Testnet Validation Report
 
-This document is a single, chronological, standalone ledger of every real on-chain transaction ZKELLA has submitted against Stellar Testnet, from the first deployment attempt through the current live deployment. It exists so a reviewer can independently verify the PoC's on-chain claims — budget viability, real Groth16 verification, real value movement in the shielded swap primitive, and every fix along the way — from transaction hashes alone, without having to reconstruct the history from several narrative documents.
+This document is a single, chronological, standalone ledger of every real on-chain transaction ZKELLA has submitted against Stellar Testnet, from the first deployment attempt through the current live deployment. It exists so a reader can independently verify the PoC's on-chain claims — budget viability, real Groth16 verification, real value movement in the shielded swap primitive, and every fix along the way — from transaction hashes alone, without having to reconstruct the history from several narrative documents.
 
 It does not replace the two documents it draws from:
 
@@ -213,7 +213,7 @@ Both fixes change what's *rejected*, not what a successful call looks like, so t
 
 ## Cryptographic values for independent reproduction (Epoch 4)
 
-For a reviewer who wants to recompute these values independently rather than trust the transaction outcomes alone:
+For a reader who wants to recompute these values independently rather than trust the transaction outcomes alone:
 
 | Value | Hex |
 | --- | --- |
@@ -236,7 +236,7 @@ Swap fairness values: `amount_in = 5000000`, `max_slippage_bps = 1000`, `min_amo
 
 ## Epoch 5 — Transfer VK registration and a real, live transfer() transaction (September 2, 2026)
 
-Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer feedback asking for the heavier transfer path to be proven live, not just measured locally.
+Same deployment as Epoch 4 (no redeployment needed). Proves the heavier transfer path live, not just measured locally.
 
 | Step | Tx hash |
 | --- | --- |
@@ -251,7 +251,7 @@ Same deployment as Epoch 4 (no redeployment needed). Direct response to reviewer
 
 Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specifically so their secret openings would be available to spend from — Epoch 1's notes had no persisted secret data. The `transfer()` proof was generated via the TypeScript SDK's own `generateTransferProof` (`sdk/src/prover/transfer.ts`), using Merkle paths fetched directly from the deployed contract's `merkle_path()` view function — the same SDK code path an application would use, not a CLI side-channel. Full narrative in `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction".
 
-`Transfer4x4`'s VK was live-registered in this epoch. A live 4-in/4-out transaction was run afterwards on the Tranche 1 stack (tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`, see `docs/TESTNET_DEPLOYMENT.md`, last section), together with a standalone `unshield` (tx `668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334`) and a swap commit/execute/reveal lifecycle. That stack is the only one built from the current owner-key circuits. The measured real-WASM cost of `transfer4` is 396,688,826 instructions (99.17% of the 400M limit), so headroom is thin; see `docs/SCF_READINESS.md`.
+`Transfer4x4`'s VK was live-registered in this epoch. A live 4-in/4-out transaction was run afterwards on the Tranche 1 stack (tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`, see `docs/TESTNET_DEPLOYMENT.md`, last section), together with a standalone `unshield` (tx `668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334`) and a swap commit/execute/reveal lifecycle. That stack is the only one built from the current owner-key circuits. The measured real-WASM cost of `transfer4` is now 80.8M instructions (20% of the 400M limit; it was 397.9M before the optimisation, see `docs/PERFORMANCE_OPTIMISATION.md`).
 
 ## What is not yet demonstrated live
 
@@ -261,7 +261,7 @@ Being explicit about the gap between "regression-tested" and "shown on a real tr
 - **SDK-level and indexer-level fixes from the external review** (`ZKELLAWallet.shield()`'s `opts.to` recipient handling, the indexer's `pagingToken`-based sync and `/notes` limit clamp) — these aren't "redeployed" the way a contract is; they ship whenever a consumer updates to the current SDK/indexer code, and haven't been separately re-demonstrated against a live two-party shield or a real high-load indexer run since the fix. Their regression tests (`tests/unit/wallet-shield-recipient.test.ts`, `tests/unit/indexer-http-limit.test.ts`) remain the evidence for those two specifically.
 - **Multi-operator indexer deployment, horizontal scaling.** Never attempted; explicitly out of scope for this PoC.
 - **A real (non-dev) Groth16 trusted-setup ceremony.** Every proof in every epoch above used a local, single-contributor development Powers-of-Tau/Phase-2 ceremony (`circuits/*/build/`), not a production, multi-party ceremony.
-- **An external, independent security review.** The "external technical review" referenced throughout this document and `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, adopting an external-reviewer standard of scrutiny — not by a genuinely independent third party. See `docs/POC_IMPLEMENTATION.md`'s "What remains in the delivery roadmap" for this same caveat stated directly.
+- **An external, independent security review.** The "external technical review" referenced throughout this document and `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, adopting an external-review standard of scrutiny — not by a genuinely independent third party. See `docs/POC_IMPLEMENTATION.md`'s "What remains in the delivery roadmap" for this same caveat stated directly.
 
 ## Reproducing this record
 

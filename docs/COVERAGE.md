@@ -13,17 +13,17 @@ cargo llvm-cov report --release --show-missing-lines     # itemised uncovered li
 
 The run compiles the crate and its dependencies with coverage instrumentation and takes several minutes on a cold build.
 
-## Result (token crate, `zkella-token`, 111 tests)
+## Result (token crate, `zkella-token`, 116 tests)
 
 | File | Regions | Lines | Functions |
 | --- | --- | --- | --- |
 | `src/lib.rs` | 99.80% | 100% | 100% |
-| `src/merkle.rs` | 99.10% | 99.26% | 92.31% |
-| `src/poseidon.rs` | 99.69% | 100% | 100% |
+| `src/merkle.rs` | 99.40% | 99.17% | 93.33% |
+| `src/poseidon.rs` | 99.68% | 100% | 100% |
 | `src/types.rs` | 0% | 0% | 0% |
-| Total | 99.66% | 99.68% | 93.15% |
+| Total | 99.66% | 99.66% | 93.33% |
 
-Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (25, 12, 4, 3 and 2), but no coverage figure exists for them.
+Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (28, 12, 4, 3 and 2), but no coverage figure exists for them.
 
 ## Independent review of adequacy
 
@@ -37,7 +37,7 @@ The first version of this report was reviewed by someone other than its author. 
 - several tests asserted only `is_err()`, which passes on an unrelated error;
 - the Merkle root was only compared with "not equal" to the previous root, never with an independently computed value.
 
-These were all closed with 49 new tests (`contracts/token/src/tests/shield_flow.rs`, 33 tests, and `tests/spend_paths.rs`, 16 tests). They assert the exact error and that leaf count, root, supply, nullifiers and balances are unchanged on failure. Together with the pause, admin-transfer and `merkle_path` tests added earlier, and the clawback, at-scale and cost-parity tests, this took the crate from 55 to 111 tests and `lib.rs` to 100% of lines.
+These were all closed with 49 new tests (`contracts/token/src/tests/shield_flow.rs`, 33 tests, and `tests/spend_paths.rs`, 16 tests). They assert the exact error and that leaf count, root, supply, nullifiers and balances are unchanged on failure. Together with the pause, admin-transfer and `merkle_path` tests added earlier, and the clawback, at-scale and cost-parity tests, this took the crate from 55 to 116 tests and `lib.rs` to 100% of lines.
 
 ## What remains uncovered
 

@@ -151,6 +151,38 @@ const VK_FIXED_LEN: u32 = G1_LEN + G2_LEN * 3;
 /// A (G1) + B (G2) + C (G1).
 const PROOF_LEN: u32 = G1_LEN * 2 + G2_LEN;
 
+/// BN254 base-field modulus q (big-endian): the coordinates of G1 points live in F_q.
+const FQ_MODULUS_BE: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+];
+
+/// Negates a G1 point given in the host's 64-byte `be(X) || be(Y)` encoding: `(x, y)` becomes
+/// `(x, q - y)`. `y == 0` and `y >= q` are returned unchanged: neither is a valid coordinate of
+/// a curve point (the curve has no point with y = 0, and coordinates are reduced), so the host's
+/// point validation in the pairing check rejects them exactly as the previous scalar-
+/// multiplication negation rejected them, rather than this function inventing a valid-looking
+/// value.
+fn negate_g1_bytes(point: &[u8; 64]) -> [u8; 64] {
+    let mut out = *point;
+    let y = &point[32..64];
+    if y.iter().all(|b| *b == 0) || y >= &FQ_MODULUS_BE[..] {
+        return out;
+    }
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let mut d = FQ_MODULUS_BE[i] as i16 - y[i] as i16 - borrow;
+        if d < 0 {
+            d += 256;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out[32 + i] = d as u8;
+    }
+    out
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -294,7 +326,7 @@ impl VerifierContract {
             return Err(Error::PublicInputCountMismatch);
         }
 
-        let (a, b, c) = Self::parse_proof(env, proof);
+        let (b, c) = Self::parse_proof_b_c(proof);
         let bn254 = env.crypto().bn254();
         let one = Bn254Fr::from_u256(U256::from_u32(env, 1));
 
@@ -316,10 +348,13 @@ impl VerifierContract {
         }
         let vk_x = bn254.g1_msm(msm_points, msm_scalars);
 
-        // -A = A · (r - 1), the group-order negation trick (no dedicated negate host call).
-        let zero = Bn254Fr::from_u256(U256::from_u32(env, 0));
-        let neg_one = bn254.fr_sub(&zero, &one);
-        let neg_a = bn254.g1_mul(&a, &neg_one);
+        // -A = (x, q - y): negating a G1 point flips its y coordinate. Done on the
+        // encoded bytes (a 32-byte borrow subtraction) instead of a full scalar
+        // multiplication by r - 1, which was the single most expensive step apart
+        // from the pairing and the MSM. See `negate_g1_bytes` for the edge cases.
+        let mut a_bytes = [0u8; 64];
+        proof.slice(0..G1_LEN).copy_into_slice(&mut a_bytes);
+        let neg_a = Bn254G1Affine::from_bytes(BytesN::from_array(env, &negate_g1_bytes(&a_bytes)));
 
         // e(-A,B) * e(alpha,beta) * e(vk_x,gamma) * e(C,delta) == 1
         //   <=>  e(A,B) == e(alpha,beta) * e(vk_x,gamma) * e(C,delta)
@@ -523,6 +558,13 @@ impl VerifierContract {
         }
 
         Ok((alpha_g1, beta_g2, gamma_g2, delta_g2, ic))
+    }
+
+    /// B and C of a proof (A is handled separately as bytes, see `negate_g1_bytes`).
+    fn parse_proof_b_c(proof: &Bytes) -> (Bn254G2Affine, Bn254G1Affine) {
+        let b = Bn254G2Affine::from_bytes(proof.slice(G1_LEN..G1_LEN + G2_LEN).try_into().unwrap());
+        let c = Bn254G1Affine::from_bytes(proof.slice(G1_LEN + G2_LEN..PROOF_LEN).try_into().unwrap());
+        (b, c)
     }
 
     fn parse_proof(env: &Env, proof: &Bytes) -> (Bn254G1Affine, Bn254G2Affine, Bn254G1Affine) {
@@ -812,6 +854,32 @@ mod tests {
         "fcb8cc071cd8261e2250cb43775ad177b4f73c39850d7d85d8cc1e5a5381f807",
         "2b0a0ab5d86942b81c38e99c402c056398fb75a23605e1b082b4ac584af6b118",
         "f401000000000000000000000000000000000000000000000000000000000000",
+        "d5928b929a857847c81679ac631fe6ff8fa4a5b60c71fbd4ba616580ce340601",
+    ];
+
+    // Two more genuine shield.circom proofs for the *same* verifying key above
+    // (a circuit's VK does not depend on the witness), freshly generated with
+    // `snarkjs.groth16.fullProve` against the current owner-key circuit and
+    // `shield.zkey` from different (rho, rcm, value) inputs — not reused from
+    // the older, pre-owner-key `proof_testnet_2`/`_3.json` fixtures, which
+    // predate the `pk` signal and no longer verify against this VK. Used to
+    // batch-verify genuinely distinct proofs, not the same proof repeated —
+    // `verify_batch_accepts_multiple_valid_proofs_in_one_combined_check`
+    // above already covers the repeated-proof case (a real test of the
+    // combined-pairing math itself); this covers the case that matters for
+    // production, where every item in a batch differs.
+    const SHIELD_PROOF2_HEX: &str = "1f503494f59b9bcc376170ab6c5490d74f9b1341bbaadaa944d910a1f0ecc37000b14f073a0a9017fd610936717b62092c735de47900c8d17a1e177a5c3f0f0d27be1dddcd7fb0e32b20fa243140fed08b12bbd0a49c1538e1582bb1b34661570e8d051b9d7e4b4530717d5b6667433006ad946855c50bfe29bd1b83666cbc002ede22da83ec0fb5ba9d3b1e7375e14643a0edb9be981c9edf16f80335100af92a34d0242c9b2fd3c1f4f4fb220501707cf6a89491e69d009fa59343ae73b31a2f3ee34d5fc8e6fe2784beb0be6fdcbcbde31d85f3042f005c5ebb5dc2271eb421a47e44e7c96d330f08813d406f59d371226094b738ff2503e2db06836cc299";
+    const SHIELD_PUBLIC_INPUTS2_LE_HEX: [&str; 4] = [
+        "d8936008a4113cd7085de2769bd765302167af6a47956a1b381ca3e46e6ffa27",
+        "8b311ab0fe835eb8cf47195bf6deea73aa3dff5916c99aa38dd1aab9b6df5d2d",
+        "c0cf6a0000000000000000000000000000000000000000000000000000000000",
+        "d5928b929a857847c81679ac631fe6ff8fa4a5b60c71fbd4ba616580ce340601",
+    ];
+    const SHIELD_PROOF3_HEX: &str = "301317bcfe6c1844f6ddbeeeabb23cb9d07b5d57005134ec9518629d89b4b9e726545be794c2a57af6c7ab13e2418750aef20a5988be8e7a73bf6daa70de740712fd7ef458fcbbe58b9edc97f37f84a51c9a8a34e07744b6e46d088659c81a532db094b47b803bc84349b1f87173e55f6c4b07988714eb76b05aa6008cb5513c16766b8d8f978c6fcfbb7aae6203b7eeb2e2a1a074853834a4a499b92a39680513c57599ee41342dbd18e9fe01e6c73bf0e62dde7c2f2ab1424b0df4fc65bc1d2c632179abf21a77bed7cfdacb2e932113d4f94d4b34c49dd42d59be1b8be04401db80534181c1a7b9d357484da7aeb559aec491318bdb562ab75c2e2bdf9717";
+    const SHIELD_PUBLIC_INPUTS3_LE_HEX: [&str; 4] = [
+        "411dadf81b8ad16702e385d32a4d40706eb64043807816b55063a99ca5332708",
+        "b99c19cddd86e2efe8179be720816d02a8f3d0cabfd801341d732e6880b9b323",
+        "60f5900000000000000000000000000000000000000000000000000000000000",
         "d5928b929a857847c81679ac631fe6ff8fa4a5b60c71fbd4ba616580ce340601",
     ];
 
@@ -1429,6 +1497,76 @@ mod tests {
         }
     }
 
+    /// Negation on encoded bytes must equal the scalar-multiplication negation it
+    /// replaced, on real curve points, and must leave invalid coordinates alone so the
+    /// host rejects them.
+    #[test]
+    fn byte_negation_matches_scalar_multiplication_negation() {
+        let env = Env::default();
+        let bn254 = env.crypto().bn254();
+        let zero = Bn254Fr::from_u256(U256::from_u32(&env, 0));
+        let one = Bn254Fr::from_u256(U256::from_u32(&env, 1));
+        let neg_one = bn254.fr_sub(&zero, &one);
+        // Points: the generator, and multiples of it (real curve points).
+        let mut p = Bn254G1Affine::from_bytes(BytesN::from_array(&env, &{
+            let mut g = [0u8; 64];
+            g[31] = 1;
+            g[63] = 2;
+            g
+        }));
+        for k in 0..12u32 {
+            let bytes: [u8; 64] = p.to_bytes().to_array();
+            let by_bytes = Bn254G1Affine::from_bytes(BytesN::from_array(&env, &negate_g1_bytes(&bytes)));
+            let by_mul = bn254.g1_mul(&p, &neg_one);
+            assert_eq!(by_bytes, by_mul, "negation differs for multiple {}", k + 1);
+            p = bn254.g1_mul(&p, &Bn254Fr::from_u256(U256::from_u32(&env, 7 + k)));
+        }
+    }
+
+    #[test]
+    fn byte_negation_leaves_invalid_y_coordinates_unchanged() {
+        let mut zero_y = [0u8; 64];
+        zero_y[31] = 1;
+        assert_eq!(negate_g1_bytes(&zero_y), zero_y, "y = 0 must be left for the host to reject");
+        let mut big_y = [0u8; 64];
+        big_y[31] = 1;
+        big_y[32..64].copy_from_slice(&FQ_MODULUS_BE);
+        assert_eq!(negate_g1_bytes(&big_y), big_y, "y = q must be left for the host to reject");
+        let mut huge_y = [0xffu8; 64];
+        huge_y[0..32].copy_from_slice(&[0u8; 32]);
+        assert_eq!(negate_g1_bytes(&huge_y), huge_y, "y > q must be left for the host to reject");
+    }
+
+    /// A proof whose A has a non-canonical or zero y must not verify (it traps in the
+    /// host or returns false; it must never verify).
+    #[test]
+    fn verify_rejects_a_proof_with_an_invalid_a_point() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+        let mut inputs = Vec::new(&env);
+        for input_hex in SHIELD_PUBLIC_INPUTS_LE_HEX {
+            let mut b = Bytes::new(&env);
+            hex_push(input_hex, &mut b);
+            inputs.push_back(b.try_into().unwrap());
+        }
+        let mut good = Bytes::new(&env);
+        hex_push(SHIELD_PROOF_HEX, &mut good);
+        assert!(client.verify(&CircuitType::Shield, &inputs, &good));
+        for y in [[0u8; 32], FQ_MODULUS_BE] {
+            let mut bad = good.clone();
+            for i in 0..32u32 {
+                bad.set(32 + i, y[i as usize]);
+            }
+            let res = client.try_verify(&CircuitType::Shield, &inputs, &bad);
+            assert!(!matches!(res, Ok(Ok(true))), "a proof with an invalid A point verified");
+        }
+    }
+
     // ── Deliverable 3: batch verification ─────────────────────────────────
 
     #[test]
@@ -1462,6 +1600,72 @@ mod tests {
         ]);
         let ok = client.verify_batch(&CircuitType::Shield, &items);
         assert!(ok, "a batch of three genuine, identical valid proofs must verify");
+    }
+
+    /// Builds a `BatchProofItem` from a proof/public-inputs hex fixture pair.
+    fn item_from_hex(env: &Env, proof_hex: &str, inputs_hex: [&str; 4]) -> BatchProofItem {
+        let mut proof = Bytes::new(env);
+        hex_push(proof_hex, &mut proof);
+        let mut inputs = Vec::new(env);
+        for input_hex in inputs_hex {
+            let mut b = Bytes::new(env);
+            hex_push(input_hex, &mut b);
+            inputs.push_back(b.try_into().unwrap());
+        }
+        BatchProofItem { public_inputs: inputs, proof }
+    }
+
+    /// Three genuinely distinct real `shield.circom` proofs (different rho,
+    /// rcm and amount each time, see the fixtures' doc comment), not the same
+    /// proof repeated — the production case, where `shield_batch` submits a
+    /// different proof per item and the aggregated MSM must combine them
+    /// correctly rather than happening to work because every C/A/vk_x term
+    /// was identical.
+    #[test]
+    fn verify_batch_accepts_three_distinct_genuine_proofs() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+
+        let items = Vec::from_array(&env, [
+            item_from_hex(&env, SHIELD_PROOF_HEX, SHIELD_PUBLIC_INPUTS_LE_HEX),
+            item_from_hex(&env, SHIELD_PROOF2_HEX, SHIELD_PUBLIC_INPUTS2_LE_HEX),
+            item_from_hex(&env, SHIELD_PROOF3_HEX, SHIELD_PUBLIC_INPUTS3_LE_HEX),
+        ]);
+        assert!(
+            client.verify_batch(&CircuitType::Shield, &items),
+            "a batch of three genuinely distinct, individually valid proofs must verify"
+        );
+    }
+
+    /// Same three distinct proofs, but the second one's public inputs are
+    /// swapped for the third's (a tampered/mismatched item) — the batch must
+    /// reject even though two of the three items are individually genuine.
+    #[test]
+    fn verify_batch_rejects_when_one_of_several_distinct_proofs_is_mismatched() {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        let mut vk = Bytes::new(&env);
+        hex_push(SHIELD_VK_HEX, &mut vk);
+        client.register_verifying_key(&CircuitType::Shield, &vk);
+
+        let items = Vec::from_array(&env, [
+            item_from_hex(&env, SHIELD_PROOF_HEX, SHIELD_PUBLIC_INPUTS_LE_HEX),
+            // proof 2 paired with proof 3's public inputs: individually invalid.
+            item_from_hex(&env, SHIELD_PROOF2_HEX, SHIELD_PUBLIC_INPUTS3_LE_HEX),
+            item_from_hex(&env, SHIELD_PROOF3_HEX, SHIELD_PUBLIC_INPUTS3_LE_HEX),
+        ]);
+        let result = client.try_verify_batch(&CircuitType::Shield, &items);
+        assert!(
+            !matches!(result, Ok(Ok(true))),
+            "a batch with one mismatched item among distinct proofs must not verify"
+        );
     }
 
     #[test]
