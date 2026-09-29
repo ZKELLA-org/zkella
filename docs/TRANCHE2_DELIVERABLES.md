@@ -70,14 +70,17 @@ https://stellar.expert/explorer/testnet/tx/96733979922ee1dfe1d1f276818c5b1931550
 
 **1.5 A live 4-in/4-out transfer transaction executes successfully on Testnet after the
 Tranche 1 Deliverable 3 verifier optimization lands, with its real compiled-WASM instruction
-cost measured and published against the mainnet budget. Met (carried over from Tranche 1).**
-Already live-validated: tx
+cost measured and published against the mainnet budget. Met.**
+Originally live-validated on the Tranche 1 stack: tx
 `15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba` (see
 `docs/TESTNET_DEPLOYMENT.md`), 86.3M declared instructions (was 378.7M before the
-optimisation — see `docs/PERFORMANCE_OPTIMISATION.md`), 20% of the 400M mainnet budget. The
-relayer-fee addition is backward compatible (`relayer: None` reproduces the prior behavior
-exactly, at `fee == 0`) and doesn't change `transfer4`'s own proof-verification or Merkle-tree
-cost; it was not re-measured on the Tranche 2 stack specifically.
+optimisation — see `docs/PERFORMANCE_OPTIMISATION.md`), 20% of the 400M mainnet budget. Also
+re-run live on the Tranche 2 stack itself (`relayer: None`, reproducing the pre-Tranche-2
+behavior exactly at `fee == 0`, as designed): tx
+`12c13856c7acc058802abd8b1a5acefac8e8579bee1b054b48a70cd6447d440b`, 89,787,377 declared
+instructions (22.4% of the 400M budget) — consistent with the Tranche 1 figure, confirming the
+relayer-fee addition doesn't materially change `transfer4`'s own proof-verification or
+Merkle-tree cost.
 
 ---
 
@@ -141,11 +144,14 @@ describes (commit `21c4380b...`/execute `5bfef119...`/reveal `88aebe0e...`, and 
 commit `bdb127a5...`/execute `d25a676c...`/reveal `dbb10c1b...`) both independently decode to
 two *different*, earlier addresses (`CBGG3UND7P6...`, the legacy pre-Tranche-1 stack, and
 `CCQH2YIZ4GKL...`, an untracked intermediate one — neither is in `deployments.json`), not the
-Tranche 1 stack; `docs/ARCHITECTURE.md` should be corrected to stop calling the second of those
-"the Tranche 1 stack". Not re-run end-to-end on the Tranche 2 stack specifically —
-this tranche's own live evidence targets its *new* criteria (3.6, below) instead, and the
-full-lifecycle path is exercised by `full_swap_lifecycle_moves_real_value` against the current
-source.
+Tranche 1 stack; `docs/ARCHITECTURE.md` was corrected to stop calling the second of those
+"the Tranche 1 stack". Also since re-run end-to-end on the Tranche 2 stack itself, with
+`min_amount_out` (this tranche's own addition) genuinely exercised end-to-end for the first
+time: commit `fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c`, execute
+`4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7`, reveal
+`065e89fa8070965b1be0ea867a2fb00be681332056930654fda3fa4e7d627d9c`, all three independently
+confirmed against `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D` (`testnet_tranche2`'s
+swap address).
 
 **3.3 Associated unit and integration tests pass. Met.** 17 swap tests (up from 13 before this
 deliverable's additions): `cost_parity_swap_commit_and_reveal`,
@@ -269,14 +275,18 @@ number of synthetic note/nullifier events, in two shapes: "sustained" (one event
 time, simulating steady-state arrival) and "backfill" (the same total count inserted in
 parallel batches, simulating a fresh indexer catching up from an early ledger).
 
-Measured at 5,000 events per run, SQLite in-memory vs. a real local PostgreSQL server over a
-loopback TCP connection:
+Measured at 5,000 events per run, SQLite in-memory vs. a real local PostgreSQL 14 server over a
+loopback TCP connection, on an idle 4-core Intel i7-8565U @ 1.80GHz (no other CPU-bound process
+running — an independent audit's first attempt at this reproduction ran on a machine with a
+concurrent heavy build and got numbers 3.6–8x slower across the board than the ones below,
+confirming these figures are environment-sensitive and worth re-measuring on real target
+hardware rather than trusted as an absolute, portable benchmark):
 
 | | SQLite (baseline) | PostgreSQL | Ratio |
 | --- | --- | --- | --- |
-| Sustained (one at a time) | 584ms (8,566 events/s) | 46,762ms (107 events/s) | 80x slower |
-| Backfill (parallel batch) | 453ms (11,027 events/s) | 4,806ms (1,040 events/s) | 11x slower |
-| Query pass (11 pages) | 31ms | 108ms | 3.5x slower |
+| Sustained (one at a time) | 491ms (10,190 events/s) | 68,377ms (73 events/s) | 139x slower |
+| Backfill (parallel batch) | 300ms (16,691 events/s) | 6,795ms (736 events/s) | 23x slower |
+| Query pass (11 pages) | 31ms | 60ms | 1.9x slower |
 
 PostgreSQL is genuinely, substantially slower per write here — this is not hidden or
 explained away. The reason is structural, not a PostgreSQL weakness: SQLite's `:memory:`
@@ -288,7 +298,7 @@ operational tooling (`pg_dump`, replication, managed hosting) a production deplo
 none of which raw single-writer throughput on localhost measures, and none of which SQLite's
 single-file model provides at all. The realistic ingestion rate this indexer ever needs (a
 handful of events every few seconds) is nowhere near either backend's throughput ceiling;
-9.35ms of real latency per event, sustained, is not a practical concern for that load. The
+13.7ms of real latency per event, sustained, is not a practical concern for that load. The
 "backfill" figure is closer to what a real bulk catch-up would look like in practice (batched,
 not fully serial), and it narrows the gap to 11x.
 
@@ -355,14 +365,13 @@ creator, never a relayer or third party, so a wrong value only ever harms its ow
 
 ## What is not done, and what is thin
 
-- **Transfer4's live cost was not re-measured on the Tranche 2 stack.** The relayer-fee
-  addition doesn't touch `transfer4`'s proof-verification or Merkle path, but the exact figure
-  cited (86.3M, from Tranche 1) is from a build predating this tranche's changes.
-- **The full commit → execute → reveal swap lifecycle was not re-run live on the Tranche 2
-  stack.** `commit_swap`'s new `min_amount_out` parameter was exercised live only through
-  `cancel_swap`'s recovery path (3.6), not through a full successful claim.
 - **`reclaim_expired_swap` (the post-execution recovery path) has no live transaction**, only
-  `cancel_swap` (the pre-execution path) does.
+  `cancel_swap` (the pre-execution path) does — not for lack of trying: `reclaim_expired_swap`
+  requires `env.ledger().sequence() > expiry_ledger + CLAIM_WINDOW_LEDGERS`, and
+  `CLAIM_WINDOW_LEDGERS` is a hardcoded constant (17,280 ledgers, about a day at Testnet's real
+  ledger-close rate) independent of the swap creator's chosen `expiry_ledger` — unlike
+  `cancel_swap`'s wait, which is bounded only by however short `expiry_ledger` itself is set,
+  this one cannot be made short for a live demonstration without changing the contract.
 - **The concurrent-swap and min-bound-rejection criteria (3.5, 3.7) are unit-tested against
   the real compiled contract, not exercised as separate live Testnet transactions.**
 - **The indexer's rate limiter and multi-operator design are both single-process,
