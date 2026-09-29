@@ -245,6 +245,33 @@ for (not a sub-step of swap's commit flow).
 | --- | --- | --- |
 | `unshield` (withdraw half of a note's value) | `leaf_count` grew from 15 to 16 — the change note landed at leaf 15, a real new commitment, not a no-op | https://stellar.expert/explorer/testnet/tx/cacc35d885681328978b2841449883af363ee6f6ec805dad35ff598291abe56c |
 
+### Deliverable 3: the full commit → execute → reveal swap lifecycle, live, with min_amount_out
+
+Same lifecycle as Tranche 1's own live run, but against the Tranche 2 stack itself, so
+`commit_swap`'s new `min_amount_out` parameter is genuinely exercised end-to-end for the first
+time (not just through `cancel_swap`'s recovery path below).
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `shield` (input note) | | https://stellar.expert/explorer/testnet/tx/1db61e599589b61ebd42e43e8b6dcb60f8f73996d2fedc572756aa3d17746688 |
+| `commit_swap` | ownership proof + `min_amount_out` verified on-chain | https://stellar.expert/explorer/testnet/tx/fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c |
+| `execute_swap` | relayer fronts `asset_out`, `amount_out >= min_amount_out` checked | https://stellar.expert/explorer/testnet/tx/4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7 |
+| `reveal_and_claim` | swap-fairness proof verified, `min_amount_out` consistency check passed, new note at leaf 31 | https://stellar.expert/explorer/testnet/tx/065e89fa8070965b1be0ea867a2fb00be681332056930654fda3fa4e7d627d9c |
+
+All three transactions independently confirmed (by decoding the invoked contract address from
+each transaction's own envelope, not just trusting the citation) to target
+`CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D`, `deployments.json`'s
+`testnet_tranche2` swap address.
+
+### Deliverable 1: transfer4, re-measured on the Tranche 2 stack
+
+`relayer: None` (reproducing the pre-Tranche-2 behavior exactly, since `fee == 0`), confirming
+the relayer-fee addition doesn't materially change `transfer4`'s own cost.
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `transfer4` | 89,787,377 declared instructions (22.4% of the 400M budget), consistent with the 86.3M figure from the Tranche 1 stack | https://stellar.expert/explorer/testnet/tx/12c13856c7acc058802abd8b1a5acefac8e8579bee1b054b48a70cd6447d440b |
+
 ### Deliverable 3: the stalled-swap recovery path (cancel_swap), live
 
 A swap committed and never executed by any relayer; once its `expiry_ledger` passed, the
