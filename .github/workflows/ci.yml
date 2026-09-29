@@ -31,6 +31,22 @@ jobs:
   sdk:
     name: SDK and circuits (npm test + typecheck)
     runs-on: ubuntu-latest
+    services:
+      # Backs the indexer's PostgreSQL tests (tests/unit/indexer-db-postgres.test.ts) —
+      # the grant-funded stack, run for real rather than mocked. See indexer/src/db.ts.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: zkella
+          POSTGRES_PASSWORD: zkella
+          POSTGRES_DB: zkella_indexer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zkella -d zkella_indexer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +56,8 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.test.json
       - name: Unit tests
+        env:
+          DATABASE_URL: postgres://zkella:zkella@localhost:5432/zkella_indexer
         run: npm test -- --maxWorkers=2
       - name: Build circuits and SDK for the browser-worker check
         run: |

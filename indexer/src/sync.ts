@@ -5,7 +5,7 @@
 // nullifier-spent status beyond that window has to live somewhere durable.
 
 import { rpc, scValToNative, xdr } from '@stellar/stellar-sdk'
-import { IndexerDb } from './db.ts'
+import type { IndexerDb } from './db.ts'
 
 function toHex(buf: Uint8Array): string {
   return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -54,7 +54,7 @@ export class Syncer {
   }
 
   private async syncOnce(): Promise<void> {
-    const ledgerCursor = this.config.db.getLastSyncedLedger(this.config.startLedger)
+    const ledgerCursor = await this.config.db.getLastSyncedLedger(this.config.startLedger)
     const filters = [
       { type: 'contract' as const, contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NOTE]] },
       { type: 'contract' as const, contractIds: [this.config.tokenAddress], topics: [[TOPIC_ZKELLA, TOPIC_NF]] },
@@ -88,17 +88,17 @@ export class Syncer {
           const leafIndex     = Number(value.leaf_index)
           const commitment    = toHex(value.commitment as Uint8Array)
           const encryptedNote = toHex(value.encrypted_note as Uint8Array)
-          this.config.db.upsertNote({ leafIndex, commitment, encryptedNote, ledger: event.ledger })
+          await this.config.db.upsertNote({ leafIndex, commitment, encryptedNote, ledger: event.ledger })
         } else if (topic1 === 'nf') {
           const nullifier = toHex(value.nullifier as Uint8Array)
-          this.config.db.markNullifierSpent(nullifier, event.ledger)
+          await this.config.db.markNullifierSpent(nullifier, event.ledger)
         }
       }
 
       // response.latestLedger is the RPC node's own current tip — once our
       // cursor reaches it, we're caught up for this tick.
       if (response.events.length === 0) {
-        this.config.db.setLastSyncedLedger(response.latestLedger + 1)
+        await this.config.db.setLastSyncedLedger(response.latestLedger + 1)
         break
       }
 
@@ -110,7 +110,7 @@ export class Syncer {
       // an error or restart would drop that ledger's remaining events.
       // Re-fetching the ledger is safe — `upsertNote`/`markNullifierSpent`
       // are idempotent.
-      this.config.db.setLastSyncedLedger(lastEvent.ledger)
+      await this.config.db.setLastSyncedLedger(lastEvent.ledger)
 
       if (response.events.length < 1000) break
     }

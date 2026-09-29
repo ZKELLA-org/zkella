@@ -162,16 +162,16 @@ fn transfer_cost(wasm: bool, n: u32, verifier_wasm: Option<&[u8]>) -> u64 {
     zkella_verifier::VerifierContractClient::new(env, &c.verifier).register_verifying_key(&circuit.into(), &vk);
     env.cost_estimate().budget().reset_tracker();
     if n == 2 {
-        client(&c).transfer(&nullifiers, &outs, &encs, &proof, &pub_inputs);
+        client(&c).transfer(&nullifiers, &outs, &encs, &proof, &pub_inputs, &None);
     } else if verifier_wasm.is_some() {
         // The baseline verifier is expected to exceed the network limit, which
         // aborts the call; the instructions consumed up to that point are the figure.
         let cl = client(&c);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            cl.transfer4(&nullifiers, &outs, &encs, &proof, &pub_inputs)
+            cl.transfer4(&nullifiers, &outs, &encs, &proof, &pub_inputs, &None)
         }));
     } else {
-        client(&c).transfer4(&nullifiers, &outs, &encs, &proof, &pub_inputs);
+        client(&c).transfer4(&nullifiers, &outs, &encs, &proof, &pub_inputs, &None);
     }
     cost(&c)
 }
@@ -189,19 +189,23 @@ fn unshield_cost(wasm: bool) -> u64 {
     let mut hasher = poseidon::Poseidon2Hasher::new(env);
     let recipient_hash_bytes = hasher.hash(&address_to_field_bytes(env, &recipient), &[0u8; 32]);
     let pub_value: i128 = 500_000;
+    let change_commitment = BytesN::from_array(env, &[0u8; 32]);
+    let change_value_commit = BytesN::from_array(env, &[0u8; 32]);
     let pub_inputs = UnshieldPublicInputs {
         anchor: anchor.clone(), nullifier: nullifier.clone(), pub_value, pub_asset_id: asset.clone(),
         recipient_hash: BytesN::from_array(env, &recipient_hash_bytes),
+        change_commitment: change_commitment.clone(), change_value_commit: change_value_commit.clone(),
     };
     let mut value_bytes = [0u8; 32];
     value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
-    let public_inputs_le: [[u8; 32]; 5] = [
+    let public_inputs_le: [[u8; 32]; 7] = [
         anchor.into(), nullifier.clone().into(), value_bytes, address_to_field_bytes(env, &asset), recipient_hash_bytes,
+        change_commitment.clone().into(), change_value_commit.clone().into(),
     ];
     let (vk, proof) = test_groth16::build_valid_groth16_proof(env, &public_inputs_le);
     zkella_verifier::VerifierContractClient::new(env, &c.verifier).register_verifying_key(&CircuitType::Unshield.into(), &vk);
     env.cost_estimate().budget().reset_tracker();
-    client(&c).unshield(&nullifier, &recipient, &BytesN::from_array(env, &[0u8; 32]), &proof, &pub_inputs);
+    client(&c).unshield(&nullifier, &recipient, &BytesN::from_array(env, &[0u8; 32]), &change_commitment, &Bytes::from_array(env, &[0u8; 176]), &proof, &pub_inputs);
     cost(&c)
 }
 

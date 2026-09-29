@@ -41,6 +41,15 @@ export interface TransferOptions {
   toOwnerKey: string // recipient owner key (hex) — committed into the new note
   asset:  string   // SEP-41 contract
   amount: bigint
+  /**
+   * Paid to `relayer` out of the transferred value (Tranche 2 Deliverable 1)
+   * — required together with `relayer` when submitting your own transaction
+   * would expose a funded public account; omit both for a self-submitted,
+   * fee-free transfer. `relayer` must already be on `token`'s
+   * admin-controlled allowlist (see `contracts/token::set_relayer`).
+   */
+  fee?:     bigint
+  relayer?: string  // Stellar address of the approved relayer being paid `fee`
 }
 
 export interface SwapOptions {

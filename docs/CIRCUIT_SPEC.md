@@ -197,7 +197,7 @@ template ValueCommit() {
 **Purpose:** Proves a valid note commitment for a publicly known amount being moved into the shielded pool.  
 **Constraints:** 1,264 (measured via `snarkjs r1cs info` against the compiled circuit; 1,270 wires, 6 private and 4 public inputs). The recipient's owner key `pk` is a private input bound into the commitment.  
 
-**Expected shape, and why 1,264 is the right number.** The circuit is five Poseidon2 hashes plus a 64-bit range check plus three equalities: the commitment is four hashes (`H(value, asset)`, `H(rho, rcm)`, their combination, then the combination with `pk`), the value commitment is one (`H(value, rcv)`), and `Range64` is a 64-bit decomposition. A two-input circomlib Poseidon costs about 240 constraints, so 5 x ~240 = ~1,200, plus 64 for the bit decomposition, plus the equality and public-binding constraints, gives about 1,264. If a constraint were dropped (one of the hashes or the range check) the count would fall by roughly 240 or 64, and if one were added it would rise by the same, so the measured figure matches the design and rules out a missing hash or range check. There is no Merkle membership proof (shield creates a note, it does not spend one), which is why this is the smallest circuit in the set (unshield 9,277, transfer 2x2 21,391, transfer4 42,489).  
+**Expected shape, and why 1,264 is the right number.** The circuit is five Poseidon2 hashes plus a 64-bit range check plus three equalities: the commitment is four hashes (`H(value, asset)`, `H(rho, rcm)`, their combination, then the combination with `pk`), the value commitment is one (`H(value, rcv)`), and `Range64` is a 64-bit decomposition. A two-input circomlib Poseidon costs about 240 constraints, so 5 x ~240 = ~1,200, plus 64 for the bit decomposition, plus the equality and public-binding constraints, gives about 1,264. If a constraint were dropped (one of the hashes or the range check) the count would fall by roughly 240 or 64, and if one were added it would rise by the same, so the measured figure matches the design and rules out a missing hash or range check. There is no Merkle membership proof (shield creates a note, it does not spend one), which is why this is the smallest circuit in the set (unshield 10,605, transfer 2x2 21,391, transfer4 42,489).  
 **Proving time:** ~200ms (unmeasured estimate — see §13.1 of `docs/TECHNICAL_SPEC.md`)
 
 ```circom
@@ -257,11 +257,13 @@ pub_asset_id    : F_p  — asset (revealed)
 ## 3. Unshield Circuit
 
 **File:** `circuits/unshield/unshield.circom`  
-**Purpose:** Proves ownership of a note in the Merkle tree and authorizes withdrawal to a public address.  
-**Constraints:** 9,277 (measured via `snarkjs r1cs info`; 9,315 wires, 69 private and 5 public inputs). The circuit derives `pk = Poseidon2(nk, DOMAIN_PK)` from the private `nk` and requires the spent note's commitment to contain it.  
-**Proving time:** ~600ms (unmeasured estimate)
+**Purpose:** Proves ownership of a note in the Merkle tree and authorizes withdrawal to a public address — since Tranche 2, of *part* of the note's value, with the remainder becoming a new change note that stays shielded (same owner key).  
+**Constraints:** 10,605 (measured via `snarkjs r1cs info`; 10,645 wires, 72 private and 7 public inputs) — up from 9,277 pre-Tranche-2, the added cost being the change note's own commitment/value-commitment hashes and its range check. The circuit derives `pk = Poseidon2(nk, DOMAIN_PK)` from the private `nk` and requires both the spent note's and the change note's commitments to contain it (same owner for both).  
+**Proving time:** ~650ms (unmeasured estimate)
 
 **Note on `recipient_hash`:** it is a public input, but the circuit itself places no R1CS constraint on it (its binding to the proof comes from the Groth16 public-input term in the verifying key, which is non-zero in the built key) — it doesn't tie it to `value`, `asset_id`, or anything else proven above. The binding is enforced at the contract layer instead: `contracts/token::unshield()` recomputes `recipient_hash` itself from the actual recipient address (plus, for swap-originated calls, a `binding_tag` — see `docs/TECHNICAL_SPEC.md`'s `unshield()` interface listing) and rejects the call if the submitted proof's public input doesn't match. Because this value is circuit-unconstrained, adding `binding_tag` to close the swap proof-replay finding (`docs/POC_IMPLEMENTATION.md`'s "Update: external audit") needed no circuit or trusted-setup change — only a contract-and-SDK-level convention change.
+
+**Note on `change` (Tranche 2):** `change = value - pub_value` is range-checked nonnegative (`Range64` on `change` via `Num2Bits`, which fails on the field-wraparound value a negative `change` would produce) — this is what actually prevents `pub_value` from exceeding the spent note's real value; there is no separate `pub_value <= value` constraint because the range check on `change` already implies it. The change note's own hidden value is never itself a public input — only `change_commitment`/`change_value_commit` are — consistent with every other note-creating circuit. A "full" unshield with no leftover produces a change note with hidden value 0; there is no separate code path whose presence would leak the split.
 
 ```circom
 pragma circom 2.0.0;
@@ -271,6 +273,7 @@ include "../common/nullifier.circom";
 include "../common/owner.circom";
 include "../common/merkle.circom";
 include "../common/range.circom";
+include "../common/value_commit.circom";
 
 template Unshield(D) {
     signal input value;
@@ -286,6 +289,13 @@ template Unshield(D) {
     signal input pub_value;
     signal input pub_asset_id;
     signal input recipient_hash;
+
+    // Change note: same owner key as the spent note, fresh (rho, rcm).
+    signal input change_rho;
+    signal input change_rcm;
+    signal input change_rcv;
+    signal input change_commitment;
+    signal input change_value_commit;
 
     // The note must commit to the owner key derived from `nk`; this is what
     // ties `nk` (and hence the nullifier) to the note being spent.
@@ -312,11 +322,31 @@ template Unshield(D) {
     nf_c.rho <== rho;
     nf_c.nf  === nullifier;
 
-    value    === pub_value;
     asset_id === pub_asset_id;
 
-    component range = Range64();
-    range.value <== value;
+    // value = pub_value + change, change >= 0.
+    signal change;
+    change <== value - pub_value;
+
+    component value_range = Range64();
+    value_range.value <== value;
+    component pub_value_range = Range64();
+    pub_value_range.value <== pub_value;
+    component change_range = Range64();
+    change_range.value <== change;
+
+    component change_cm = NoteCommitment();
+    change_cm.value    <== change;
+    change_cm.asset_id <== asset_id;
+    change_cm.rho      <== change_rho;
+    change_cm.rcm      <== change_rcm;
+    change_cm.pk       <== owner.pk;
+    change_cm.cm === change_commitment;
+
+    component change_cv = ValueCommit();
+    change_cv.value <== change;
+    change_cv.rcv   <== change_rcv;
+    change_cv.cv === change_value_commit;
 
     // recipient_hash is a public binding — not used in constraints
     // but included as public input so the contract can verify destination
@@ -324,17 +354,19 @@ template Unshield(D) {
     recipient_hash_check <== recipient_hash;
 }
 
-component main {public [anchor, nullifier, pub_value, pub_asset_id, recipient_hash]}
+component main {public [anchor, nullifier, pub_value, pub_asset_id, recipient_hash, change_commitment, change_value_commit]}
   = Unshield(32);
 ```
 
-**Public inputs (5 field elements):**
+**Public inputs (7 field elements):**
 ```
-anchor          : F_p  — Merkle root
-nullifier       : F_p  — note nullifier
-pub_value       : F_p  — amount (revealed)
-pub_asset_id    : F_p  — asset (revealed)
-recipient_hash  : F_p  — Poseidon2(address_field(recipient), binding_tag); binding_tag = 0 for a direct unshield
+anchor               : F_p  — Merkle root
+nullifier            : F_p  — note nullifier
+pub_value            : F_p  — amount leaving the pool publicly (revealed)
+pub_asset_id         : F_p  — asset (revealed)
+recipient_hash       : F_p  — Poseidon2(address_field(recipient), binding_tag); binding_tag = 0 for a direct unshield
+change_commitment    : F_p  — commitment of the change note staying shielded (Tranche 2)
+change_value_commit  : F_p  — Poseidon2(change, change_rcv); change's own value is not revealed (Tranche 2)
 ```
 
 ---
@@ -927,7 +959,7 @@ Measured via `snarkjs r1cs info` against the circuits as currently built (`circu
 | Circuit | R1CS Constraints | Wires | Labels |
 |---|---|---|---|
 | Shield | 1,264 | 1,270 | 3,936 |
-| Unshield | 9,277 | 9,315 | 29,512 |
+| Unshield | 10,605 | 10,645 | 33,509 |
 | Transfer 2x2 | 21,391 | 21,470 | 67,733 |
 | Transfer 4x4 | 42,489 | 42,644 | 134,645 |
 | Swap Fairness | 941 | 943 | 2,559 |

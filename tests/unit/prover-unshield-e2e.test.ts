@@ -69,10 +69,14 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
       { anchor, recipient: ASSET_ADDR },
       WASM_PATH,
       ZKEY_PATH,
+      async () => new Uint8Array(0), // encryptNote stub — this test doesn't check the ciphertext
     )
 
     expect(result.proof.length).toBe(256)
-    expect(result.publicInputsLE).toHaveLength(5)
+    expect(result.publicInputsLE).toHaveLength(7)
+    // A full withdrawal's change note has a hidden value of 0, same owner as the spent note.
+    expect(result.changeNote.value).toBe(0n)
+    expect(result.changeNote.ownerPk).toEqual(ownerPk)
 
     // nullifier = Poseidon2(nk, rho) — independently recomputed.
     const expectedNullifier = await computeNullifier(nk, rho)
@@ -108,6 +112,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
         { anchor: new Uint8Array(32), recipient: ASSET_ADDR },
         WASM_PATH,
         ZKEY_PATH,
+        async () => new Uint8Array(0),
       ),
     ).rejects.toThrow('leafIndex')
   })
@@ -129,6 +134,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
         { anchor: new Uint8Array(32), recipient: ASSET_ADDR },
         WASM_PATH,
         ZKEY_PATH,
+        async () => new Uint8Array(0),
       ),
     ).rejects.toThrow('merklePath')
   })

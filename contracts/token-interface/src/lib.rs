@@ -41,11 +41,13 @@ pub struct ShieldPublicInputs {
 #[contracttype]
 #[derive(Clone)]
 pub struct UnshieldPublicInputs {
-    pub anchor:         BytesN<32>,
-    pub nullifier:      BytesN<32>,
-    pub pub_value:      i128,
-    pub pub_asset_id:   Address,
-    pub recipient_hash: BytesN<32>,
+    pub anchor:              BytesN<32>,
+    pub nullifier:           BytesN<32>,
+    pub pub_value:           i128,
+    pub pub_asset_id:        Address,
+    pub recipient_hash:      BytesN<32>,
+    pub change_commitment:   BytesN<32>,
+    pub change_value_commit: BytesN<32>,
 }
 
 #[contracterror]
@@ -73,6 +75,8 @@ pub enum Error {
     BatchLengthMismatch   = 19,
     EmptyBatch            = 20,
     BatchTooLarge         = 21,
+    RelayerRequired       = 22,
+    RelayerNotApproved    = 23,
 }
 
 /// Mirrors `zkella_token::ShieldedToken`'s public interface (the subset
@@ -95,12 +99,15 @@ pub trait Token {
         shield_pub:     ShieldPublicInputs,
     ) -> Result<u32, Error>;
 
+    #[allow(clippy::too_many_arguments)]
     fn unshield(
-        env:         Env,
-        nullifier:   BytesN<32>,
-        to:          Address,
-        binding_tag: BytesN<32>,
-        proof:       Bytes,
-        pub_inputs:  UnshieldPublicInputs,
-    ) -> Result<(), Error>;
+        env:                   Env,
+        nullifier:             BytesN<32>,
+        to:                    Address,
+        binding_tag:           BytesN<32>,
+        change_commitment:     BytesN<32>,
+        encrypted_change_note: Bytes,
+        proof:                 Bytes,
+        pub_inputs:            UnshieldPublicInputs,
+    ) -> Result<u32, Error>;
 }

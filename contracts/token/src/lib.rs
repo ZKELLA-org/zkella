@@ -15,7 +15,7 @@ use soroban_sdk::{
 use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 use types::{
-    NoteCommitmentEvent, NullifierEvent, ShieldBatchItem, ShieldEvent,
+    NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldBatchItem, ShieldEvent,
     StorageKey, UnshieldEvent,
 };
 // Re-exported for downstream crates that deploy a real `ShieldedToken` in
@@ -223,6 +223,27 @@ impl ShieldedToken {
         Self::require_admin(&env)?;
         env.storage().instance().set(&StorageKey::AssetApproved(asset), &approved);
         Ok(())
+    }
+
+    /// Admin-controlled allowlist of addresses `transfer()`/`transfer4()` may
+    /// pay a positive `pub_inputs.fee` to. Mirrors `contracts/swap`'s
+    /// `set_relayer`/`ApprovedRelayer` exactly (same name, same shape) — a
+    /// deliberate, small, curated set rather than "whoever submits the
+    /// transaction", so the fee can't be paid to an address the relayer's own
+    /// operator doesn't recognize as theirs.
+    pub fn set_relayer(env: Env, relayer: Address, approved: bool) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        if approved {
+            env.storage().instance().set(&StorageKey::ApprovedRelayer(relayer), &true);
+        } else {
+            env.storage().instance().remove(&StorageKey::ApprovedRelayer(relayer));
+        }
+        Ok(())
+    }
+
+    /// Returns true if `relayer` is on the fee-relayer allowlist (see `set_relayer`).
+    pub fn is_approved_relayer(env: Env, relayer: Address) -> bool {
+        env.storage().instance().get(&StorageKey::ApprovedRelayer(relayer)).unwrap_or(false)
     }
 
     // ── Shield ────────────────────────────────────────────────────────────────
@@ -575,6 +596,11 @@ impl ShieldedToken {
     /// point of a note-based (not account-based) shielded pool. Any account
     /// can submit the underlying transaction (e.g. a relayer).
     ///
+    /// `relayer` is who gets paid `pub_inputs.fee`, if it's positive — see
+    /// `transfer_internal`'s step 7.5 for the full mechanism. Pass `None`
+    /// when `pub_inputs.fee == 0` (e.g. the note owner submits their own
+    /// transaction and needs no relayer).
+    ///
     /// Public input order matches the circuit's `component main {public
     /// [anchor, nullifiers, out_commitments, in_value_commits,
     /// out_value_commits, fee, asset_id]}`.
@@ -585,8 +611,9 @@ impl ShieldedToken {
         encrypted_notes: Vec<Bytes>,
         proof:           Bytes,
         pub_inputs:      TransferPublicInputs,
+        relayer:         Option<Address>,
     ) -> Result<Vec<u32>, Error> {
-        Self::transfer_internal(env, 2, CircuitType::Transfer, nullifiers, commitments, encrypted_notes, proof, pub_inputs)
+        Self::transfer_internal(env, 2, CircuitType::Transfer, nullifiers, commitments, encrypted_notes, proof, pub_inputs, relayer)
     }
 
     /// Same as `transfer()`, against `circuits/transfer_4in4out/transfer.circom`
@@ -601,8 +628,9 @@ impl ShieldedToken {
         encrypted_notes: Vec<Bytes>,
         proof:           Bytes,
         pub_inputs:      TransferPublicInputs,
+        relayer:         Option<Address>,
     ) -> Result<Vec<u32>, Error> {
-        Self::transfer_internal(env, 4, CircuitType::Transfer4x4, nullifiers, commitments, encrypted_notes, proof, pub_inputs)
+        Self::transfer_internal(env, 4, CircuitType::Transfer4x4, nullifiers, commitments, encrypted_notes, proof, pub_inputs, relayer)
     }
 
     fn transfer_internal(
@@ -614,12 +642,26 @@ impl ShieldedToken {
         encrypted_notes: Vec<Bytes>,
         proof:           Bytes,
         pub_inputs:      TransferPublicInputs,
+        relayer:         Option<Address>,
     ) -> Result<Vec<u32>, Error> {
         Self::assert_not_paused(&env)?;
 
         if pub_inputs.fee < 0 {
             return Err(Error::AmountMismatch);
         }
+        // Resolved and authorized up front, before any state is touched, so a
+        // bad relayer fails the whole call cleanly rather than after
+        // nullifiers/commitments are already written.
+        let relayer = if pub_inputs.fee > 0 {
+            let relayer = relayer.ok_or(Error::RelayerRequired)?;
+            relayer.require_auth();
+            if !env.storage().instance().get(&StorageKey::ApprovedRelayer(relayer.clone())).unwrap_or(false) {
+                return Err(Error::RelayerNotApproved);
+            }
+            Some(relayer)
+        } else {
+            None
+        };
 
         // ── 1. Arity checks ───────────────────────────────────────────────────
         if nullifiers.len() != n || commitments.len() != n || encrypted_notes.len() != n {
@@ -766,6 +808,39 @@ impl ShieldedToken {
             );
         }
 
+        // ── 8.5. Pay the relayer its proof-declared fee ───────────────────────
+        // `fee` was already proven correct by the circuit (part of
+        // `sum_in = sum_out + fee`) and `relayer` already authorized and
+        // allowlist-checked above, before any state was touched. That fee's
+        // value left the note graph (it's in `sum_in` but not in any output
+        // note), so `shielded_supply` must decrease by it symmetrically —
+        // exactly the same accounting `unshield` does for its payout — or
+        // `shielded_supply()` would overstate the pool's real backing by the
+        // total fees ever paid.
+        if pub_inputs.fee > 0 {
+            let relayer = relayer.expect("fee > 0 implies relayer was resolved above");
+            let prev_supply: i128 = env
+                .storage()
+                .instance()
+                .get(&StorageKey::ShieldedSupply(pub_inputs.asset_id.clone()))
+                .unwrap_or(0);
+            let new_supply = prev_supply.checked_sub(pub_inputs.fee).ok_or(Error::AmountMismatch)?;
+            if new_supply < 0 {
+                return Err(Error::AmountMismatch);
+            }
+            env.storage()
+                .instance()
+                .set(&StorageKey::ShieldedSupply(pub_inputs.asset_id.clone()), &new_supply);
+            env.events().publish(
+                (symbol_short!("zkella"), symbol_short!("relay_fee")),
+                RelayerFeeEvent { relayer: relayer.clone(), amount: pub_inputs.fee, asset: pub_inputs.asset_id.clone() },
+            );
+            // Interaction last (checks-effects-interactions), same convention
+            // as shield's and unshield's own token transfers.
+            token::Client::new(&env, &pub_inputs.asset_id)
+                .transfer(&env.current_contract_address(), &relayer, &pub_inputs.fee);
+        }
+
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 
         Ok(leaf_indices)
@@ -797,18 +872,29 @@ impl ShieldedToken {
     /// expired. A direct (non-swap) unshield passes `binding_tag =
     /// [0u8; 32]`, preserving the original `Poseidon2(address_field(to), 0)`
     /// formula exactly.
+    /// `change_commitment`/`encrypted_change_note` describe the note that
+    /// keeps whatever value doesn't leave the pool as `pub_value` (see
+    /// `UnshieldPublicInputs::change_commitment`'s doc comment and
+    /// `circuits/unshield/unshield.circom`) — always present, even for a
+    /// "full" withdrawal, where the change note's hidden value is 0. Returns
+    /// that note's leaf index.
     pub fn unshield(
-        env:         Env,
-        nullifier:   BytesN<32>,
-        to:          Address,
-        binding_tag: BytesN<32>,
-        proof:       Bytes,
-        pub_inputs:  UnshieldPublicInputs,
-    ) -> Result<(), Error> {
+        env:                   Env,
+        nullifier:             BytesN<32>,
+        to:                    Address,
+        binding_tag:           BytesN<32>,
+        change_commitment:     BytesN<32>,
+        encrypted_change_note: Bytes,
+        proof:                 Bytes,
+        pub_inputs:            UnshieldPublicInputs,
+    ) -> Result<u32, Error> {
         Self::assert_not_paused(&env)?;
 
         // ── 1. Public inputs must match the call's actual parameters ─────────
         if pub_inputs.nullifier != nullifier {
+            return Err(Error::CommitmentMismatch);
+        }
+        if pub_inputs.change_commitment != change_commitment {
             return Err(Error::CommitmentMismatch);
         }
 
@@ -861,6 +947,8 @@ impl ShieldedToken {
                 BytesN::from_array(&env, &value_bytes),
                 BytesN::from_array(&env, &asset_bytes),
                 pub_inputs.recipient_hash.clone(),
+                pub_inputs.change_commitment.clone(),
+                pub_inputs.change_value_commit.clone(),
             ],
         );
 
@@ -871,6 +959,17 @@ impl ShieldedToken {
         );
         if !proof_ok {
             return Err(Error::InvalidProof);
+        }
+
+        // ── 6.5. Change-note pre-checks ────────────────────────────────────────
+        // Same two checks shield()/transfer() run before writing any state:
+        // room in the tree, and the commitment hasn't been inserted before
+        // (replay / pollution).
+        if !merkle::has_capacity(&env, 1) {
+            return Err(Error::MerkleTreeFull);
+        }
+        if env.storage().persistent().has(&StorageKey::CommitmentSeen(change_commitment.clone())) {
+            return Err(Error::DuplicateCommitment);
         }
 
         // ── 7. Effects: mark nullifier spent, update shielded supply ─────────
@@ -901,6 +1000,14 @@ impl ShieldedToken {
             .instance()
             .set(&StorageKey::ShieldedSupply(pub_inputs.pub_asset_id.clone()), &new_supply);
 
+        // Change note: one leaf, inserted the same way shield()/transfer()
+        // insert theirs. Its value stays hidden from the contract — see
+        // `UnshieldPublicInputs::change_commitment`'s doc comment.
+        let leaf_index = merkle::insert(&env, change_commitment.clone(), &mut hasher);
+        let seen_key = StorageKey::CommitmentSeen(change_commitment.clone());
+        env.storage().persistent().set(&seen_key, &true);
+        env.storage().persistent().extend_ttl(&seen_key, 17_280 * 30, 17_280 * 365);
+
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 
         env.events().publish(
@@ -913,6 +1020,14 @@ impl ShieldedToken {
                 to:     to.clone(),
                 amount: pub_inputs.pub_value,
                 asset:  pub_inputs.pub_asset_id.clone(),
+            },
+        );
+        env.events().publish(
+            (symbol_short!("zkella"), symbol_short!("note")),
+            NoteCommitmentEvent {
+                leaf_index,
+                commitment:     change_commitment,
+                encrypted_note: encrypted_change_note,
             },
         );
 
@@ -940,7 +1055,7 @@ impl ShieldedToken {
         };
         token_client.transfer(&env.current_contract_address(), &to, &payout);
 
-        Ok(())
+        Ok(leaf_index)
     }
 
     // ── Read-only queries ─────────────────────────────────────────────────────
@@ -1369,7 +1484,7 @@ mod tests {
 
         // Must succeed: `anchor` (root after leaf 0) is still present in the
         // history window after exactly ROOT_HISTORY_SIZE total insertions.
-        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert_eq!(leaf_indices.len(), 2);
     }
 
@@ -1430,7 +1545,7 @@ mod tests {
 
         // Must fail: `anchor` (root after leaf 0) has aged out of the
         // ROOT_HISTORY_SIZE window by the time this call lands.
-        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert_eq!(result, Err(Ok(Error::InvalidAnchor)));
     }
 
@@ -1684,6 +1799,7 @@ mod tests {
                 fee:               0,
                 asset_id:          Address::generate(&env),
             },
+            &None,
         );
         assert!(transfer_result.is_err());
 
@@ -1691,13 +1807,17 @@ mod tests {
             &BytesN::from_array(&env, &[0u8; 32]),
             &Address::generate(&env),
             &BytesN::from_array(&env, &[0u8; 32]),
+            &BytesN::from_array(&env, &[0u8; 32]),
+            &Bytes::from_array(&env, &[0u8; 176]),
             &Bytes::new(&env),
             &types::UnshieldPublicInputs {
-                anchor:         BytesN::from_array(&env, &[0u8; 32]),
-                nullifier:      BytesN::from_array(&env, &[0u8; 32]),
-                pub_value:      0,
-                pub_asset_id:   Address::generate(&env),
-                recipient_hash: BytesN::from_array(&env, &[0u8; 32]),
+                anchor:              BytesN::from_array(&env, &[0u8; 32]),
+                nullifier:           BytesN::from_array(&env, &[0u8; 32]),
+                pub_value:           0,
+                pub_asset_id:        Address::generate(&env),
+                recipient_hash:      BytesN::from_array(&env, &[0u8; 32]),
+                change_commitment:   BytesN::from_array(&env, &[0u8; 32]),
+                change_value_commit: BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         assert!(unshield_result.is_err());
@@ -1772,7 +1892,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let leaf_indices = client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert_eq!(leaf_indices.len(), 2);
         assert!(client.is_spent(&nullifiers.get(0).unwrap()));
         assert!(client.is_spent(&nullifiers.get(1).unwrap()));
@@ -1850,7 +1970,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        let leaf_indices = client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let leaf_indices = client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert_eq!(leaf_indices.len(), 4);
         for i in 0..4 {
             assert!(client.is_spent(&nullifiers.get(i).unwrap()));
@@ -1927,7 +2047,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        let result = client.try_transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let result = client.try_transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert!(result.is_err(), "transfer4 with a duplicate nullifier across non-adjacent slots must be rejected");
         assert!(!client.is_spent(&same_nullifier));
         assert_eq!(client.leaf_count(), 0u32);
@@ -1998,7 +2118,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert!(result.is_err(), "transfer with duplicate nullifiers must be rejected");
         assert!(!client.is_spent(&same_nullifier), "the nullifier must not be marked spent by a rejected call");
         assert_eq!(client.leaf_count(), 0u32, "no notes should have been inserted");
@@ -2062,7 +2182,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        let result = client.try_transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         assert!(result.is_err(), "transfer with duplicate output commitments must be rejected");
     }
 
@@ -2116,7 +2236,7 @@ mod tests {
             Bytes::from_array(&env, &[0u8; 176]),
         ]);
 
-        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
 
         // Same nullifiers again (different output commitments, still a fresh
         // valid proof for those inputs) must fail on the spent-nullifier check.
@@ -2148,7 +2268,7 @@ mod tests {
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .update_verifying_key(&CircuitType::Transfer.into(), &vk_bytes_2);
 
-        let result = client.try_transfer(&nullifiers, &out_commitments_2, &encrypted_notes, &proof_2, &pub_inputs_2);
+        let result = client.try_transfer(&nullifiers, &out_commitments_2, &encrypted_notes, &proof_2, &pub_inputs_2, &None);
         assert!(result.is_err());
     }
 
@@ -2198,29 +2318,35 @@ mod tests {
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
 
         let pub_value: i128 = 500_000;
+        let change_commitment = BytesN::from_array(&env, &[0u8; 32]);
+        let change_value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = UnshieldPublicInputs {
             anchor: anchor.clone(),
             nullifier: nullifier.clone(),
             pub_value,
             pub_asset_id: token_addr.clone(),
             recipient_hash: recipient_hash.clone(),
+            change_commitment: change_commitment.clone(),
+            change_value_commit: change_value_commit.clone(),
         };
 
         let mut value_bytes = [0u8; 32];
         value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
-        let public_inputs_le: [[u8; 32]; 5] = [
+        let public_inputs_le: [[u8; 32]; 7] = [
             anchor.clone().into(),
             nullifier.clone().into(),
             value_bytes,
             address_to_field_bytes(&env, &token_addr),
             recipient_hash_bytes,
+            change_commitment.clone().into(),
+            change_value_commit.clone().into(),
         ];
         let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
 
         let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
-        client.unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
+        client.unshield(&nullifier, &recipient, &binding_tag, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &proof, &pub_inputs);
 
         assert!(client.is_spent(&nullifier));
         assert_eq!(stellar_asset.balance(&recipient), 500_000i128);
@@ -2289,29 +2415,35 @@ mod tests {
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
 
         let pub_value: i128 = 500_000;
+        let change_commitment = BytesN::from_array(&env, &[0u8; 32]);
+        let change_value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = UnshieldPublicInputs {
             anchor: anchor.clone(),
             nullifier: nullifier.clone(),
             pub_value,
             pub_asset_id: token_addr.clone(),
             recipient_hash: recipient_hash.clone(),
+            change_commitment: change_commitment.clone(),
+            change_value_commit: change_value_commit.clone(),
         };
 
         let mut value_bytes = [0u8; 32];
         value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
-        let public_inputs_le: [[u8; 32]; 5] = [
+        let public_inputs_le: [[u8; 32]; 7] = [
             anchor.clone().into(),
             nullifier.clone().into(),
             value_bytes,
             address_to_field_bytes(&env, &token_addr),
             recipient_hash_bytes,
+            change_commitment.clone().into(),
+            change_value_commit.clone().into(),
         ];
         let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
 
         let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
-        client.unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
+        client.unshield(&nullifier, &recipient, &binding_tag, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &proof, &pub_inputs);
 
         assert!(client.is_spent(&nullifier));
         // 500,000 of 1,000,000 supply against 600,000 actually held pays 300,000.
@@ -2349,29 +2481,35 @@ mod tests {
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
 
         let pub_value: i128 = 500_000;
+        let change_commitment = BytesN::from_array(&env, &[0u8; 32]);
+        let change_value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = UnshieldPublicInputs {
             anchor: anchor.clone(),
             nullifier: nullifier.clone(),
             pub_value,
             pub_asset_id: token_addr.clone(),
             recipient_hash,
+            change_commitment: change_commitment.clone(),
+            change_value_commit: change_value_commit.clone(),
         };
 
         let mut value_bytes = [0u8; 32];
         value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
-        let public_inputs_le: [[u8; 32]; 5] = [
+        let public_inputs_le: [[u8; 32]; 7] = [
             anchor.clone().into(),
             nullifier.clone().into(),
             value_bytes,
             address_to_field_bytes(&env, &token_addr),
             recipient_hash_bytes,
+            change_commitment.clone().into(),
+            change_value_commit.clone().into(),
         ];
         let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::Unshield.into(), &vk_bytes);
 
         let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
-        let result = client.try_unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
+        let result = client.try_unshield(&nullifier, &recipient, &binding_tag, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &proof, &pub_inputs);
         assert!(result.is_err());
         assert!(!client.is_spent(&nullifier), "a rejected unshield must not mark the nullifier spent");
     }
@@ -2407,10 +2545,13 @@ mod tests {
             pub_value,
             pub_asset_id: token_addr,
             recipient_hash,
+            change_commitment: BytesN::from_array(&env, &[0u8; 32]),
+            change_value_commit: BytesN::from_array(&env, &[0u8; 32]),
         };
 
         let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
-        let result = client.try_unshield(&nullifier, &wrong_recipient, &binding_tag, &Bytes::new(&env), &pub_inputs);
+        let change_commitment = pub_inputs.change_commitment.clone();
+        let result = client.try_unshield(&nullifier, &wrong_recipient, &binding_tag, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
     }
 
@@ -2459,11 +2600,14 @@ mod tests {
             pub_value,
             pub_asset_id: token_addr,
             recipient_hash,
+            change_commitment: BytesN::from_array(&env, &[0u8; 32]),
+            change_value_commit: BytesN::from_array(&env, &[0u8; 32]),
         };
 
         // Submitting with tag_b (a different binding_tag) must fail, even
         // though `to`/nullifier/amount/asset are all identical and correct.
-        let result = client.try_unshield(&nullifier, &recipient, &tag_b, &Bytes::new(&env), &pub_inputs);
+        let change_commitment = pub_inputs.change_commitment.clone();
+        let result = client.try_unshield(&nullifier, &recipient, &tag_b, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &Bytes::new(&env), &pub_inputs);
         assert!(result.is_err());
         assert!(!client.is_spent(&nullifier));
     }
@@ -2649,7 +2793,7 @@ mod tests {
         ]);
 
         env.cost_estimate().budget().reset_tracker();
-        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2725,7 +2869,7 @@ mod tests {
         ]);
 
         env.cost_estimate().budget().reset_tracker();
-        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        client.transfer(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2814,7 +2958,7 @@ mod tests {
         ]);
 
         env.cost_estimate().budget().reset_tracker();
-        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2945,7 +3089,7 @@ mod tests {
         ]);
 
         env.cost_estimate().budget().reset_tracker();
-        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs);
+        client.transfer4(&nullifiers, &out_commitments, &encrypted_notes, &proof, &pub_inputs, &None);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,
@@ -2963,6 +3107,8 @@ mod tests {
             BytesN::from_array(&env, &canon(1)),
             Address::generate(&env),
             BytesN::from_array(&env, &[0u8; 32]),
+            BytesN::from_array(&env, &[0u8; 32]),
+            Bytes::from_array(&env, &[0u8; 176]),
             Bytes::new(&env),
             UnshieldPublicInputs {
                 anchor: client.merkle_root(),
@@ -2970,14 +3116,16 @@ mod tests {
                 pub_value: 1,
                 pub_asset_id: Address::generate(&env),
                 recipient_hash: BytesN::from_array(&env, &[0u8; 32]),
+                change_commitment: BytesN::from_array(&env, &[0u8; 32]),
+                change_value_commit: BytesN::from_array(&env, &[0u8; 32]),
             },
         );
         client.pause();
-        let paused = client.try_unshield(&args.0, &args.1, &args.2, &args.3, &args.4);
+        let paused = client.try_unshield(&args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6);
         assert_eq!(paused.err().unwrap().unwrap(), Error::Paused);
 
         client.unpause();
-        let unpaused = client.try_unshield(&args.0, &args.1, &args.2, &args.3, &args.4);
+        let unpaused = client.try_unshield(&args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6);
         assert_ne!(unpaused.err().unwrap().unwrap(), Error::Paused);
     }
 
@@ -3092,22 +3240,28 @@ mod tests {
         let recipient_hash = BytesN::from_array(&env, &recipient_hash_bytes);
 
         let pub_value: i128 = 500_000;
+        let change_commitment = BytesN::from_array(&env, &[0u8; 32]);
+        let change_value_commit = BytesN::from_array(&env, &[0u8; 32]);
         let pub_inputs = UnshieldPublicInputs {
             anchor: anchor.clone(),
             nullifier: nullifier.clone(),
             pub_value,
             pub_asset_id: token_addr.clone(),
             recipient_hash: recipient_hash.clone(),
+            change_commitment: change_commitment.clone(),
+            change_value_commit: change_value_commit.clone(),
         };
 
         let mut value_bytes = [0u8; 32];
         value_bytes[..16].copy_from_slice(&(pub_value as u128).to_le_bytes());
-        let public_inputs_le: [[u8; 32]; 5] = [
+        let public_inputs_le: [[u8; 32]; 7] = [
             anchor.clone().into(),
             nullifier.clone().into(),
             value_bytes,
             address_to_field_bytes(&env, &token_addr),
             recipient_hash_bytes,
+            change_commitment.clone().into(),
+            change_value_commit.clone().into(),
         ];
         let (vk_bytes, proof) = test_groth16::build_valid_groth16_proof(&env, &public_inputs_le);
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
@@ -3116,7 +3270,7 @@ mod tests {
         let binding_tag = BytesN::from_array(&env, &[0u8; 32]);
 
         env.cost_estimate().budget().reset_tracker();
-        client.unshield(&nullifier, &recipient, &binding_tag, &proof, &pub_inputs);
+        client.unshield(&nullifier, &recipient, &binding_tag, &change_commitment, &Bytes::from_array(&env, &[0u8; 176]), &proof, &pub_inputs);
         let used = env.cost_estimate().budget().cpu_instruction_cost();
         assert!(
             used < 400_000_000,

@@ -121,6 +121,14 @@ pub struct SwapState {
     /// fairness proof (or who can reclaim their `asset_out` back after
     /// `CLAIM_WINDOW_LEDGERS` if the claimant never does).
     pub relayer:           Option<Address>,
+    /// Declared at `commit_swap` time by the swap creator's own wallet —
+    /// see `commit_swap`'s doc comment for why this is sound to expose in
+    /// plaintext this early (it's a deterministic function of values already
+    /// bound into `intent_commitment`, just not yet revealed there). Lets
+    /// `execute_swap` reject an economically poor `amount_out` immediately
+    /// instead of only at `reveal_and_claim`, once the fairness proof's own
+    /// `min_amount_out` is checked against this value.
+    pub min_amount_out:    i128,
 }
 
 #[contracttype]
@@ -184,20 +192,56 @@ impl ShieldedSwap {
     /// *and* atomically pulls that value into this contract's own balance
     /// (marking the note's nullifier spent on token's side) — there's no
     /// separate ownership circuit to build or maintain.
+    /// `change_commitment`/`change_value_commit`/`encrypted_change_note`
+    /// describe the change note `token::unshield` now always produces (see
+    /// its own doc comment) — the note owner's prover computes these
+    /// exactly as a direct unshield's caller would; forwarded here as-is.
+    /// A swap that escrows a note's *entire* value (the common case)
+    /// produces a change note with a hidden value of 0, no different from a
+    /// direct full-withdrawal unshield.
+    ///
+    /// `min_amount_out` is declared here, in plaintext, by the swap
+    /// creator's own wallet — not a new secret the contract trusts blindly.
+    /// `circuits/swap/swap_fairness.circom` derives it deterministically as
+    /// `floor(amount_in * (10000 - max_slippage_bps) / 10000)` from
+    /// `amount_in`/`max_slippage_bps`, both already bound into
+    /// `intent_commitment` at this same call — so the value is already
+    /// cryptographically fixed the moment `intent_commitment` was built,
+    /// only not yet revealed on-chain. Surfacing it now, rather than only at
+    /// `reveal_and_claim`, closes a real griefing path: previously a relayer
+    /// could front a technically-valid but economically poor `amount_out` at
+    /// `execute_swap`, and the claimant only found out once the fairness
+    /// proof was checked at reveal — by which point their only recourse was
+    /// waiting out `expiry_ledger` to reclaim. `execute_swap` now rejects a
+    /// bad `amount_out` immediately instead. Only the swap creator supplies
+    /// this value (it can't be front-run by a relayer, who has no say in
+    /// `commit_swap`'s parameters), so a wrong value here only ever harms
+    /// the creator themselves: too low weakens their own protection, too
+    /// high can make `execute_swap` reject genuinely fair offers, and a
+    /// value that doesn't match what `intent_commitment` actually commits to
+    /// makes `reveal_and_claim`'s own consistency check fail later (funds
+    /// recoverable via `reclaim_expired_swap` after `expiry_ledger`, same as
+    /// any other stalled swap) — never a path to steal value from anyone else.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_swap(
-        env:               Env,
-        nullifier_in:      BytesN<32>,
-        intent_commitment: BytesN<32>,
-        asset_in:          Address,
-        asset_out:         Address,
-        amount_in:         i128,
-        anchor:            BytesN<32>,
-        refund_to:         Address,
-        out_owner_pk:      BytesN<32>,
-        ownership_proof:   Bytes,
-        expiry_ledger:     u32,
+        env:                   Env,
+        nullifier_in:          BytesN<32>,
+        intent_commitment:     BytesN<32>,
+        asset_in:              Address,
+        asset_out:             Address,
+        amount_in:             i128,
+        anchor:                BytesN<32>,
+        refund_to:             Address,
+        out_owner_pk:          BytesN<32>,
+        min_amount_out:        i128,
+        change_commitment:     BytesN<32>,
+        change_value_commit:   BytesN<32>,
+        encrypted_change_note: Bytes,
+        ownership_proof:       Bytes,
+        expiry_ledger:         u32,
     ) -> BytesN<32> {
         assert!(expiry_ledger > env.ledger().sequence(), "expiry must be in the future");
+        assert!(min_amount_out >= 0, "min_amount_out must not be negative");
         // `reclaim_expired_swap` computes `expiry_ledger + CLAIM_WINDOW_LEDGERS`
         // — reject anything that would overflow that addition now, rather
         // than accepting a commit whose only unwind path (if the relayer
@@ -261,6 +305,8 @@ impl ShieldedSwap {
             &nullifier_in,
             &swap_addr,
             &binding_tag,
+            &change_commitment,
+            &encrypted_change_note,
             &ownership_proof,
             &TokenUnshieldPublicInputs {
                 anchor,
@@ -268,6 +314,8 @@ impl ShieldedSwap {
                 pub_value: amount_in,
                 pub_asset_id: asset_in.clone(),
                 recipient_hash,
+                change_commitment: change_commitment.clone(),
+                change_value_commit,
             },
         );
 
@@ -291,6 +339,7 @@ impl ShieldedSwap {
             refund_to,
             out_owner_pk,
             relayer: None,
+            min_amount_out,
         };
         save_state(&env, &swap_id, &state);
 
@@ -323,6 +372,12 @@ impl ShieldedSwap {
         let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(state.status == SwapStatus::Committed, "swap not in committed state");
         assert!(env.ledger().sequence() <= state.expiry_ledger, "swap expired");
+        // The griefing path this closes: without this, a relayer could front
+        // a technically-valid but economically poor `amount_out`, and the
+        // claimant only found out once the fairness proof was checked at
+        // reveal — see `commit_swap`'s doc comment for where
+        // `min_amount_out` comes from and why trusting it here is sound.
+        assert!(amount_out >= state.min_amount_out, "amount_out below the committed minimum");
 
         // Checks-effects-interactions: update state *before* the token
         // transfer (matching every other state-changing function in this
@@ -394,6 +449,15 @@ impl ShieldedSwap {
         assert!(fairness_pub.asset_in == state.asset_in, "asset_in mismatch");
         assert!(fairness_pub.asset_out == state.asset_out, "asset_out mismatch");
         assert!(fairness_pub.amount_out == state.amount_out, "amount_out mismatch");
+        // Defense in depth alongside the circuit's own derivation (see
+        // `swap_fairness.circom`'s doc comment): the circuit already forces
+        // `min_amount_out` to be the correct function of the values bound
+        // into `intent_commitment`, which was just checked above, so this
+        // can only fail if `commit_swap`'s declared `min_amount_out` didn't
+        // actually match what the creator committed to — their own error,
+        // recoverable via `reclaim_expired_swap` after `expiry_ledger`, per
+        // `commit_swap`'s doc comment.
+        assert!(fairness_pub.min_amount_out == state.min_amount_out, "min_amount_out mismatch");
 
         let verifier: Address = env.storage().instance().get(&StorageKey::Verifier)
             .expect("not initialized");
@@ -688,6 +752,18 @@ mod tests {
         Setup { env, admin, relayer, asset_in, asset_out, verifier, token_contract, swap }
     }
 
+    /// Registers `vk` for `circuit`, or replaces the existing key if one is
+    /// already registered — lets a test shield/prove more than once against
+    /// the same verifier without a direct second `register_verifying_key`
+    /// call failing (it only accepts a circuit's *first* key; every
+    /// subsequent key goes through `update_verifying_key`).
+    fn set_vk(env: &Env, verifier: &Address, circuit: CircuitType, vk: &Bytes) {
+        let c = VerifierContractClient::new(env, verifier);
+        if c.try_register_verifying_key(&circuit.into(), vk).is_err() {
+            c.update_verifying_key(&circuit.into(), vk);
+        }
+    }
+
     /// Shields `amount` of `asset` for `shielder` into `token`, returning the
     /// note's (rho, rcm, commitment, leaf_index) — a real shield() call with
     /// a real (synthetic-relation) proof, exactly like token's own tests.
@@ -715,8 +791,7 @@ mod tests {
             address_to_field_bytes(&s.env, asset),
         ];
         let (vk, proof) = test_groth16::build_valid_groth16_proof(&s.env, &public_inputs_le);
-        VerifierContractClient::new(&s.env, &s.verifier)
-            .register_verifying_key(&CircuitType::Shield.into(), &vk);
+        set_vk(&s.env, &s.verifier, CircuitType::Shield, &vk);
 
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
         let token_client = ShieldedTokenClient::new(&s.env, &s.token_contract);
@@ -756,17 +831,70 @@ mod tests {
         );
         let recipient_hash = hasher.hash(&to_field, &binding_tag);
 
-        let public_inputs_le: [[u8; 32]; 5] = [
+        // A swap always escrows a note's entire value, so its change note
+        // (see `token::unshield`'s doc comment) always has a hidden value of
+        // 0 — every commit_swap test below passes the matching all-zero
+        // `change_commitment`/`change_value_commit` at the call site.
+        let public_inputs_le: [[u8; 32]; 7] = [
             anchor.clone().into(),
             nullifier_in.clone().into(),
             i128_le_bytes(amount_in),
             address_to_field_bytes(&s.env, &s.asset_in),
             recipient_hash,
+            [0u8; 32],
+            [0u8; 32],
         ];
         let (vk, proof) = test_groth16::build_valid_groth16_proof(&s.env, &public_inputs_le);
-        VerifierContractClient::new(&s.env, &s.verifier)
-            .register_verifying_key(&CircuitType::Unshield.into(), &vk);
+        set_vk(&s.env, &s.verifier, CircuitType::Unshield, &vk);
         proof
+    }
+
+    /// Same as `prove_and_register_ownership`, but with an explicit,
+    /// non-zero `change_commitment` — needed only when two real `unshield`
+    /// calls happen in the same test (e.g. two concurrent swaps): each
+    /// change note's commitment must be distinct, or the second `unshield`
+    /// hits `token`'s own `DuplicateCommitment` replay check, exactly as it
+    /// would for two real, distinct notes on Testnet.
+    fn prove_and_register_ownership_with_change(
+        s: &Setup,
+        nullifier_in: &BytesN<32>,
+        amount_in: i128,
+        anchor: &BytesN<32>,
+        intent_commitment: &BytesN<32>,
+        refund_to: &Address,
+        expiry: u32,
+        change_commitment: &BytesN<32>,
+    ) -> Bytes {
+        let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
+        let to_field = address_to_field_bytes(&s.env, &s.swap);
+        let intent_commitment_bytes: [u8; 32] = intent_commitment.clone().into();
+        let refund_to_field = address_to_field_bytes(&s.env, refund_to);
+        let binding_tag = binding_tag(
+            &s.env, &mut hasher, &intent_commitment_bytes, &refund_to_field, &test_pk(&s.env), &s.asset_out, expiry,
+        );
+        let recipient_hash = hasher.hash(&to_field, &binding_tag);
+        let public_inputs_le: [[u8; 32]; 7] = [
+            anchor.clone().into(),
+            nullifier_in.clone().into(),
+            i128_le_bytes(amount_in),
+            address_to_field_bytes(&s.env, &s.asset_in),
+            recipient_hash,
+            change_commitment.clone().into(),
+            [0u8; 32],
+        ];
+        let (vk, proof) = test_groth16::build_valid_groth16_proof(&s.env, &public_inputs_le);
+        set_vk(&s.env, &s.verifier, CircuitType::Unshield, &vk);
+        proof
+    }
+
+    /// All-zero change fields for `commit_swap` calls below — see
+    /// `prove_and_register_ownership`'s doc comment.
+    fn zero_change(env: &Env) -> (BytesN<32>, BytesN<32>, Bytes) {
+        (
+            BytesN::from_array(env, &[0u8; 32]),
+            BytesN::from_array(env, &[0u8; 32]),
+            Bytes::from_array(env, &[0u8; 176]),
+        )
     }
 
     fn prove_and_register_fairness(
@@ -829,9 +957,11 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let mut budget = s.env.cost_estimate().budget();
         budget.reset_limits(2_000_000_000, 100_000_000);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
         let commit_cost = s.env.cost_estimate().budget().cpu_instruction_cost();
 
@@ -888,9 +1018,11 @@ mod tests {
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
@@ -964,9 +1096,11 @@ mod tests {
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
@@ -1053,9 +1187,11 @@ mod tests {
         );
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 350_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 380_000i128;
@@ -1115,9 +1251,11 @@ mod tests {
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );
 
-        // leaf 0 was the shielded input note from `shield_note` above; the
-        // re-shielded output note must land at the next leaf.
-        assert_eq!(leaf_index, 1);
+        // leaf 0 was the shielded input note from `shield_note` above; leaf 1
+        // is the (zero-value) change note `commit_swap`'s internal
+        // `unshield` cross-call always produces (see `zero_change`'s doc
+        // comment); the re-shielded output note must land at the next leaf.
+        assert_eq!(leaf_index, 2);
         assert_eq!(
             token::Client::new(&s.env, &s.asset_in).balance(&s.relayer),
             amount_in,
@@ -1168,9 +1306,11 @@ mod tests {
         );
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 950_000i128;
@@ -1248,9 +1388,11 @@ mod tests {
         // attacker later drain the escrow via cancel_swap/refund_to.
         let attacker_refund_to = Address::generate(&s.env);
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &attacker_refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &attacker_refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
     }
 
@@ -1279,18 +1421,22 @@ mod tests {
         let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in, &anchor_a, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_a, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &proof_a, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
         );
 
         // Same intent_commitment again — must be rejected before this
         // (deliberately unregistered/unverifiable) proof is ever checked.
         let nullifier_b = BytesN::from_array(&s.env, &canon(102));
         let bogus_proof = Bytes::from_array(&s.env, &[0u8; 4]);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_b, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &bogus_proof, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &bogus_proof, &expiry,
         );
     }
 
@@ -1323,9 +1469,11 @@ mod tests {
             &s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, bound_expiry,
         );
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &(bound_expiry + 1),
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &(bound_expiry + 1),
         );
     }
 
@@ -1350,9 +1498,11 @@ mod tests {
         // would overflow.
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
     }
 
@@ -1371,9 +1521,11 @@ mod tests {
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let asset_in_client = token::Client::new(&s.env, &s.asset_in);
@@ -1401,9 +1553,11 @@ mod tests {
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 0i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 650_000i128;
@@ -1438,9 +1592,11 @@ mod tests {
         let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
 
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 250_000i128;
+        let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 280_000i128;
@@ -1473,5 +1629,217 @@ mod tests {
             &encrypted_note, &bad_proof, &fairness_pub, &shield_proof,
         );
         assert!(result.is_err());
+    }
+
+    // ───────────────────────── min_amount_out bound ─────────────────────────
+
+    /// Tranche 2 Deliverable 3's success criterion: an economically poor
+    /// `amount_out` is rejected at `execute_swap` itself, before the relayer's
+    /// liquidity is even pulled in — not silently accepted and only caught
+    /// three steps later at `reveal_and_claim`.
+    #[test]
+    #[should_panic(expected = "amount_out below the committed minimum")]
+    fn execute_swap_rejects_an_amount_out_below_the_committed_minimum() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+        let amount_in = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 70, 71);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(200));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(201));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+        );
+
+        // A technically-positive but economically poor offer, well under the
+        // 900,000 the swap creator committed to.
+        let stingy_amount_out = 500_000i128;
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &stingy_amount_out);
+        swap_client.execute_swap(&swap_id, &stingy_amount_out, &s.relayer);
+    }
+
+    /// The bound is a floor, not an exact match: any `amount_out` at or above
+    /// the committed minimum executes normally.
+    #[test]
+    fn execute_swap_accepts_an_amount_out_at_exactly_the_committed_minimum() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+        let amount_in = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 72, 73);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(202));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(203));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+        );
+
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &min_amount_out);
+        swap_client.execute_swap(&swap_id, &min_amount_out, &s.relayer);
+        assert_eq!(
+            token::Client::new(&s.env, &s.asset_out).balance(&s.swap),
+            min_amount_out,
+            "an offer exactly at the floor must still execute"
+        );
+    }
+
+    // ───────────────────── concurrent swaps, same relayer ─────────────────────
+
+    /// Two independent swaps competing for the same relayer's liquidity
+    /// concurrently: each swap escrows its own `asset_in` and is executed
+    /// against the relayer's *own*, separately-funded `asset_out` balance —
+    /// the relayer's liquidity for one swap is never implicitly shared with
+    /// or drawn from the other, since `execute_swap` pulls exactly
+    /// `amount_out` from the relayer per call via a real SEP-41 `transfer`,
+    /// not a shared pool. Documented behavior: nothing here serializes two
+    /// swaps against the same relayer — a relayer with insufficient combined
+    /// liquidity for both simply has the second `execute_swap` fail with the
+    /// SAC's own insufficient-balance error, exactly like any other
+    /// undercapitalized token transfer; that failure is the relayer's own
+    /// capital-management problem, not a swap-contract invariant violation,
+    /// and it leaves the first swap completely unaffected.
+    #[test]
+    fn two_swaps_can_execute_concurrently_against_the_same_relayer() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+
+        // Swap A.
+        let amount_in_a = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in_a, 74, 75);
+        let nullifier_a = BytesN::from_array(&s.env, &canon(204));
+        let anchor_a = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment_a = BytesN::from_array(&s.env, &canon(205));
+        let refund_to_a = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in_a, &anchor_a, &intent_commitment_a, &refund_to_a, expiry);
+
+        // Swap B — a second, independent note, committed against the same
+        // relayer, in the same ledger, before either is executed.
+        let amount_in_b = 2_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in_b, 76, 77);
+        let nullifier_b = BytesN::from_array(&s.env, &canon(206));
+        let anchor_b = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment_b = BytesN::from_array(&s.env, &canon(207));
+        let refund_to_b = Address::generate(&s.env);
+        let change_b = BytesN::from_array(&s.env, &canon(212));
+        let proof_b = prove_and_register_ownership_with_change(&s, &nullifier_b, amount_in_b, &anchor_b, &intent_commitment_b, &refund_to_b, expiry, &change_b);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        // Swap A uses the ordinary all-zero change note; swap B uses its own
+        // distinct one — two real `unshield` calls in the same test can't
+        // both produce a change note with the same commitment (see
+        // `prove_and_register_ownership_with_change`'s doc comment).
+        let zc = zero_change(&s.env);
+        let min_a = 0i128;
+        let swap_id_a = swap_client.commit_swap(
+            &nullifier_a, &intent_commitment_a, &s.asset_in, &s.asset_out,
+            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &min_a, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
+        );
+        let min_b = 0i128;
+        let swap_id_b = swap_client.commit_swap(
+            &nullifier_b, &intent_commitment_b, &s.asset_in, &s.asset_out,
+            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &min_b, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
+        );
+        assert_ne!(swap_id_a, swap_id_b);
+
+        // Both escrows landed independently — the swap contract's asset_in
+        // balance is the sum of both, not one overwriting the other.
+        assert_eq!(token::Client::new(&s.env, &s.asset_in).balance(&s.swap), amount_in_a + amount_in_b);
+
+        // The relayer funds enough for BOTH offers up front, then executes
+        // both in the same ledger — genuinely concurrent from the relayer's
+        // point of view, not sequential with a top-up in between.
+        let amount_out_a = 950_000i128;
+        let amount_out_b = 1_900_000i128;
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &(amount_out_a + amount_out_b));
+
+        swap_client.execute_swap(&swap_id_a, &amount_out_a, &s.relayer);
+        swap_client.execute_swap(&swap_id_b, &amount_out_b, &s.relayer);
+
+        // Both executed independently: the relayer paid exactly the sum of
+        // both amounts, and the swap contract escrowed exactly that sum —
+        // neither call clobbered or double-spent the other's liquidity.
+        assert_eq!(token::Client::new(&s.env, &s.asset_out).balance(&s.relayer), 0);
+        assert_eq!(
+            token::Client::new(&s.env, &s.asset_out).balance(&s.swap),
+            amount_out_a + amount_out_b
+        );
+
+        let state_a = s.env.as_contract(&s.swap, || load_state(&s.env, &swap_id_a).unwrap());
+        let state_b = s.env.as_contract(&s.swap, || load_state(&s.env, &swap_id_b).unwrap());
+        assert!(matches!(state_a.status, SwapStatus::Executed));
+        assert!(matches!(state_b.status, SwapStatus::Executed));
+        assert_eq!(state_a.amount_out, amount_out_a);
+        assert_eq!(state_b.amount_out, amount_out_b);
+    }
+
+    /// Documents the failure mode when a relayer's liquidity genuinely can't
+    /// cover two concurrent offers: the second `execute_swap` fails with the
+    /// SAC's own error (not a swap-contract assertion), and the first swap's
+    /// already-committed state is completely untouched by the second's
+    /// failure — this is ordinary transaction atomicity, not a special case
+    /// this contract has to implement.
+    #[test]
+    #[should_panic]
+    fn a_relayer_without_enough_combined_liquidity_fails_only_the_second_execute() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+
+        let amount_in_a = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in_a, 78, 79);
+        let nullifier_a = BytesN::from_array(&s.env, &canon(208));
+        let anchor_a = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment_a = BytesN::from_array(&s.env, &canon(209));
+        let refund_to_a = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let proof_a = prove_and_register_ownership(&s, &nullifier_a, amount_in_a, &anchor_a, &intent_commitment_a, &refund_to_a, expiry);
+
+        let amount_in_b = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in_b, 82, 83);
+        let nullifier_b = BytesN::from_array(&s.env, &canon(210));
+        let anchor_b = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment_b = BytesN::from_array(&s.env, &canon(211));
+        let refund_to_b = Address::generate(&s.env);
+        let change_b = BytesN::from_array(&s.env, &canon(213));
+        let proof_b = prove_and_register_ownership_with_change(&s, &nullifier_b, amount_in_b, &anchor_b, &intent_commitment_b, &refund_to_b, expiry, &change_b);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let zc = zero_change(&s.env);
+        let min0 = 0i128;
+        let swap_id_a = swap_client.commit_swap(
+            &nullifier_a, &intent_commitment_a, &s.asset_in, &s.asset_out,
+            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &min0, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
+        );
+        let swap_id_b = swap_client.commit_swap(
+            &nullifier_b, &intent_commitment_b, &s.asset_in, &s.asset_out,
+            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &min0, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
+        );
+
+        // Only enough for ONE of the two offers.
+        let amount_out = 950_000i128;
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &amount_out);
+
+        swap_client.execute_swap(&swap_id_a, &amount_out, &s.relayer);
+        assert!(matches!(s.env.as_contract(&s.swap, || load_state(&s.env, &swap_id_a).unwrap()).status, SwapStatus::Executed), "the first execute must have gone through");
+
+        // The second fails — the relayer has no more asset_out left to front.
+        swap_client.execute_swap(&swap_id_b, &amount_out, &s.relayer);
     }
 }

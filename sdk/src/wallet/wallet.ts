@@ -231,6 +231,9 @@ export class ZKELLAWallet {
     const { to, asset, amount } = opts
     const recipientOwnerPk = parseFieldHex(opts.toOwnerKey, 'toOwnerKey')
     requireCircuit(this.config.transferCircuit, 'transferCircuit', 'transfer()')
+    if ((opts.fee !== undefined) !== (opts.relayer !== undefined)) {
+      throw new Error('transfer() requires both fee and relayer together, or neither')
+    }
 
     const candidates = this.notes
       .filter(n => n.assetId === asset)
@@ -244,7 +247,7 @@ export class ZKELLAWallet {
       )
     }
     const [inA, inB] = candidates
-    const fee = 0n
+    const fee = opts.fee ?? 0n
     const sumIn = inA.value + inB.value
     if (sumIn < amount + fee) {
       throw new Error(`transfer() insufficient balance: have ${sumIn}, need ${amount + fee}`)
@@ -301,6 +304,9 @@ export class ZKELLAWallet {
           anchor: 'bytes', nullifiers: 'vec-bytes', out_commitments: 'vec-bytes',
           in_value_commits: 'vec-bytes', out_value_commits: 'vec-bytes', fee: 'i128', asset_id: 'address',
         }),
+        // `Option<Address>` — `nativeToScVal(undefined)` encodes as `scvVoid`
+        // (Soroban's `None`), matching `token::transfer`'s signature.
+        opts.relayer !== undefined ? nativeToScVal(opts.relayer, { type: 'address' }) : nativeToScVal(undefined),
       ])
       const leafIndices = scValToNative(returned) as number[]
       outToRecipient.leafIndex = leafIndices[0]
@@ -314,40 +320,45 @@ export class ZKELLAWallet {
   }
 
   /**
-   * Unshield (withdraw) a single note's full value to a public Stellar
-   * address. Partial-amount unshielding requires a preceding `transfer()`
-   * to split the note into the exact amount first — there's no
-   * unshield-with-change entry point on `token` today.
+   * Unshield (withdraw) part or all of a single note's value to a public
+   * Stellar address. Any remainder stays shielded as a fresh change note,
+   * owned by this same wallet (Tranche 2 Deliverable 2) — `amount` no longer
+   * has to exactly match an existing note's value; the smallest note
+   * covering it is picked and split.
    */
-  async unshield(opts: { asset: string; amount: bigint; to: string }): Promise<{ submit: () => Promise<void> }> {
+  async unshield(opts: { asset: string; amount: bigint; to: string }): Promise<{ submit: () => Promise<{ changeLeafIndex: number }> }> {
     requireCircuit(this.config.unshieldCircuit, 'unshieldCircuit', 'unshield()')
 
-    const note = this.notes.find(n => n.assetId === opts.asset && n.value === opts.amount)
+    const candidates = this.notes
+      .filter(n => n.assetId === opts.asset && n.value >= opts.amount)
+      .sort((a, b) => (a.value > b.value ? 1 : -1))
+    const note = candidates[0]
     if (!note) {
-      throw new Error(
-        `unshield() found no note of ${opts.asset} worth exactly ${opts.amount}. ` +
-        `Use transfer() to split an existing note into the exact amount first.`
-      )
+      throw new Error(`unshield() found no note of ${opts.asset} worth at least ${opts.amount}.`)
     }
 
     const anchor = await this.getMerkleRoot()
     const merklePath = await this.getMerklePathBytes(note.leafIndex)
+    const changeTk = this.config.keys.transmissionKey
 
     const result = await generateUnshieldProof(
       { note, nk: this.config.keys.nullifierKey, merklePath },
-      { anchor, recipient: opts.to },
+      { anchor, recipient: opts.to, pubValue: opts.amount },
       this.config.unshieldCircuit!.wasmPath, this.config.unshieldCircuit!.zkeyPath,
+      changeNote => encryptNote(changeNote, changeTk),
     )
 
-    const submit = async (): Promise<void> => {
+    const submit = async (): Promise<{ changeLeafIndex: number }> => {
       const pubInputs = {
         anchor,
         nullifier:      result.nullifier,
-        pub_value:      note.value,
+        pub_value:      opts.amount,
         pub_asset_id:   opts.asset,
         recipient_hash: result.recipientHash,
+        change_commitment:   result.changeNote.commitment,
+        change_value_commit: result.changeValueCommit,
       }
-      await this.submitContractCall(this.config.tokenAddress, 'unshield', [
+      const returned = await this.submitContractCall(this.config.tokenAddress, 'unshield', [
         nativeToScVal(result.nullifier,      { type: 'bytes' }),
         nativeToScVal(opts.to,               { type: 'address' }),
         // Direct (non-swap) unshields don't need any extra binding beyond
@@ -357,13 +368,20 @@ export class ZKELLAWallet {
         // parameter exists (it's load-bearing for `contracts/swap`, not
         // meaningful here).
         nativeToScVal(new Uint8Array(32),    { type: 'bytes' }),
+        nativeToScVal(result.changeNote.commitment, { type: 'bytes' }),
+        nativeToScVal(result.encryptedChangeNote,   { type: 'bytes' }),
         nativeToScVal(result.proof,          { type: 'bytes' }),
         structScVal(pubInputs, {
           anchor: 'bytes', nullifier: 'bytes', pub_value: 'i128',
           pub_asset_id: 'address', recipient_hash: 'bytes',
+          change_commitment: 'bytes', change_value_commit: 'bytes',
         }),
       ])
+      const changeLeafIndex = Number(scValToNative(returned))
+      result.changeNote.leafIndex = changeLeafIndex
       this.notes = this.notes.filter(n => n !== note)
+      if (result.changeNote.value > 0n) this.notes.push(result.changeNote)
+      return { changeLeafIndex }
     }
 
     return { submit }

@@ -61,11 +61,13 @@ const struct = obj => xdr.ScVal.scvMap(
   const own = await generateUnshieldProof(
     { note, nk: keys.spendingKey.nullifierKey, merklePath },
     { anchor, recipient: SWAP_ID, bindingTag },
-    b('unshield/build/unshield_js/unshield.wasm'), b('unshield/build/unshield.zkey'))
+    b('unshield/build/unshield_js/unshield.wasm'), b('unshield/build/unshield.zkey'),
+    changeNote => encryptNote(changeNote, keys.spendingKey.transmissionKey))
   const swapId = scValToNative(await wallet.submitContractCall(SWAP_ID, 'commit_swap', [
     bytes(own.nullifier), bytes(fair.intentCommitment), addr(ASSET_ID), addr(ASSET_ID),
-    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey), bytes(own.proof),
-    nativeToScVal(expiry, { type: 'u32' }),
+    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey),
+    i128(MIN_OUT), bytes(own.changeNote.commitment), bytes(own.changeValueCommit), bytes(own.encryptedChangeNote),
+    bytes(own.proof), nativeToScVal(expiry, { type: 'u32' }),
   ]))
   console.log('   swap_id', Buffer.from(swapId).toString('hex'))
 
