@@ -713,7 +713,12 @@ pub trait ShieldedSwap {
     fn commit_swap(
         env: Env, nullifier_in: BytesN<32>, intent_commitment: BytesN<32>,
         asset_in: Address, asset_out: Address, amount_in: i128, anchor: BytesN<32>,
-        refund_to: Address, out_owner_pk: BytesN<32>, ownership_proof: Bytes, expiry_ledger: u32,
+        refund_to: Address, out_owner_pk: BytesN<32>,
+        // Tranche 2: declared here in plaintext by the swap creator — see
+        // docs/TRANCHE2_DELIVERABLES.md Deliverable 3.5 for why this is sound.
+        min_amount_out: i128, change_commitment: BytesN<32>, change_value_commit: BytesN<32>,
+        encrypted_change_note: Bytes,
+        ownership_proof: Bytes, expiry_ledger: u32,
     ) -> BytesN<32>; // swap_id = sha256(intent_commitment)
 
     // `out_owner_pk` is the claimant's owner key, committed here; `reveal_and_claim`
@@ -1197,7 +1202,7 @@ const { submit: submitTransfer } = await wallet.transfer({
 })
 await submitTransfer()
 
-// Unshield — real; full-note withdrawal only (no unshield-with-change entrypoint)
+// Unshield — real; since Tranche 2 supports partial withdrawal via a change-note output
 const { submit: submitUnshield } = await wallet.unshield({
   asset:  USDC_CONTRACT,
   amount: 25_000_000n,

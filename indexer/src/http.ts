@@ -17,6 +17,7 @@
 // Redis) instead. Documented here rather than silently assumed away.
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
+import { timingSafeEqual } from 'node:crypto'
 import { rpc, Contract, Account, Keypair, TransactionBuilder, Networks, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
 import type { IndexerDb } from './db.ts'
 
@@ -68,6 +69,27 @@ export function parseBearerToken(header: string | undefined): string | null {
   if (!header) return null
   const match = /^Bearer\s+(.+)$/.exec(header.trim())
   return match ? match[1] : null
+}
+
+/**
+ * True if `token` matches any of `apiKeys`, comparing each with
+ * `timingSafeEqual` rather than `Set.has`/`===` — a plain string comparison
+ * returns as soon as the first differing byte is found, so its timing
+ * leaks how many leading bytes of a guess were correct. Low severity (an
+ * attacker needs a very precise, repeatable timing channel against a
+ * random high-entropy key), fixed anyway since it costs nothing here: a
+ * handful of short strings compared per request, not a hot loop.
+ */
+export function matchesApiKey(token: string, apiKeys: Set<string> | string[]): boolean {
+  const tokenBuf = Buffer.from(token)
+  for (const key of apiKeys) {
+    const keyBuf = Buffer.from(key)
+    // timingSafeEqual throws on a length mismatch instead of returning
+    // false, and comparing lengths first is itself not a meaningful leak
+    // (key lengths aren't secret).
+    if (keyBuf.length === tokenBuf.length && timingSafeEqual(keyBuf, tokenBuf)) return true
+  }
+  return false
 }
 
 /**
@@ -150,6 +172,20 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
       const url = new URL(req.url ?? '/', 'http://localhost')
       requestCount += 1
 
+      // /health and /metrics stay unauthenticated by design (load balancers
+      // and monitoring tooling expect to reach them with no credentials —
+      // see this file's own doc comment), but they're still rate-limited by
+      // IP: each does a real RPC round-trip or DB query, so leaving them
+      // completely unbounded is a small, easy-to-close DoS surface.
+      if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/metrics')) {
+        const ip = req.socket.remoteAddress ?? 'unknown'
+        if (!limiter.hit(ip)) {
+          rejectedRateLimitCount += 1
+          sendJson(res, 429, { error: 'rate limit exceeded' })
+          return
+        }
+      }
+
       if (req.method === 'GET' && url.pathname === '/health') {
         const synced = await config.db.getLastSyncedLedger(config.startLedger)
         const server = new rpc.Server(config.rpcUrl)
@@ -176,7 +212,7 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
       // Every endpoint below this point is a query endpoint: authenticated
       // (when `apiKeys` is non-empty) and rate-limited (always).
       const token = parseBearerToken(req.headers.authorization)
-      if (apiKeys.size > 0 && (token === null || !apiKeys.has(token))) {
+      if (apiKeys.size > 0 && (token === null || !matchesApiKey(token, apiKeys))) {
         rejectedAuthCount += 1
         sendJson(res, 401, { error: 'unauthorized: missing or invalid bearer token' })
         return
