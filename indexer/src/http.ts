@@ -1,9 +1,24 @@
 // HTTP API matching `sdk/src/indexer/client.ts`'s `IndexerClient` exactly —
 // that file is the contract this server implements.
+//
+// Auth and rate limiting (Tranche 2 Deliverable 5): every query endpoint
+// (everything except `/health` and `/metrics`, which ops tooling and load
+// balancers expect to reach unauthenticated — see docs/RUNBOOK.md) requires
+// `Authorization: Bearer <key>` against `INDEXER_API_KEYS` when that env var
+// is set, and every request — authenticated or not — is subject to a
+// per-identity (API key, or client IP for unauthenticated deployments)
+// rate limit. Both are real, enforced checks, not just documentation: see
+// `tests/unit/indexer-http-limit.test.ts`.
+//
+// The rate limiter is an in-memory fixed-window counter — correct for a
+// single process, but each replica in a multi-instance deployment would
+// enforce its own independent budget rather than sharing one; a real
+// horizontally-scaled deployment should move this to a shared store (e.g.
+// Redis) instead. Documented here rather than silently assumed away.
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http'
 import { rpc, Contract, Account, Keypair, TransactionBuilder, Networks, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
-import { IndexerDb } from './db.ts'
+import type { IndexerDb } from './db.ts'
 
 // A read-only simulation needs *some* syntactically valid source account —
 // it never signs or submits anything, so any keypair works, funded or not.
@@ -14,6 +29,7 @@ const SIMULATION_KEYPAIR = Keypair.random()
 
 const DEFAULT_NOTES_LIMIT = 500
 const MAX_NOTES_LIMIT     = 1000
+const DEFAULT_RATE_LIMIT_PER_MINUTE = 600
 
 export interface HttpConfig {
   db:          IndexerDb
@@ -22,6 +38,10 @@ export interface HttpConfig {
   network:     'testnet' | 'mainnet'
   port:        number
   startLedger: number
+  /** Bearer tokens accepted on query endpoints. Empty/unset disables auth entirely. */
+  apiKeys?:    string[]
+  /** Requests per rolling 60s window, per API key (or per IP when unauthenticated). */
+  rateLimitPerMinute?: number
 }
 
 /**
@@ -38,6 +58,43 @@ export function parseNotesLimit(raw: string | null): number {
   const rawLimit = Number(raw ?? String(DEFAULT_NOTES_LIMIT))
   if (!Number.isFinite(rawLimit)) return DEFAULT_NOTES_LIMIT
   return Math.min(Math.max(Math.trunc(rawLimit), 1), MAX_NOTES_LIMIT)
+}
+
+/**
+ * Extracts the bearer token from an `Authorization` header, or `null` if
+ * absent/malformed. Exported for direct unit testing.
+ */
+export function parseBearerToken(header: string | undefined): string | null {
+  if (!header) return null
+  const match = /^Bearer\s+(.+)$/.exec(header.trim())
+  return match ? match[1] : null
+}
+
+/**
+ * A fixed-window request counter, one window per identity. `windowMs` and
+ * `limit` are fixed at construction; `hit(id)` returns `true` (allowed) or
+ * `false` (over budget for the current window). Exported so it has a direct
+ * unit test independent of a live HTTP server.
+ */
+export class RateLimiter {
+  private windowMs: number
+  private limit: number
+  private counts = new Map<string, { windowStart: number; count: number }>()
+
+  constructor(limitPerWindow: number, windowMs = 60_000) {
+    this.limit = limitPerWindow
+    this.windowMs = windowMs
+  }
+
+  hit(id: string, now = Date.now()): boolean {
+    const entry = this.counts.get(id)
+    if (!entry || now - entry.windowStart >= this.windowMs) {
+      this.counts.set(id, { windowStart: now, count: 1 })
+      return true
+    }
+    entry.count += 1
+    return entry.count <= this.limit
+  }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -81,22 +138,60 @@ async function callView(config: HttpConfig, method: string, args: ReturnType<typ
 }
 
 export function startHttpServer(config: HttpConfig): ReturnType<typeof createServer> {
+  const apiKeys = new Set(config.apiKeys ?? [])
+  const limiter = new RateLimiter(config.rateLimitPerMinute ?? DEFAULT_RATE_LIMIT_PER_MINUTE)
+  let requestCount = 0
+  let rejectedAuthCount = 0
+  let rejectedRateLimitCount = 0
+  const startedAt = Date.now()
+
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost')
+      requestCount += 1
 
       if (req.method === 'GET' && url.pathname === '/health') {
-        const synced = config.db.getLastSyncedLedger(config.startLedger)
+        const synced = await config.db.getLastSyncedLedger(config.startLedger)
         const server = new rpc.Server(config.rpcUrl)
         const tip = (await server.getLatestLedger()).sequence
         sendJson(res, 200, { syncedLedger: synced, tipLedger: tip, lag: Math.max(0, tip - synced) })
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/metrics') {
+        const rows = await config.db.countRows()
+        const synced = await config.db.getLastSyncedLedger(config.startLedger)
+        sendJson(res, 200, {
+          uptimeSeconds:     Math.floor((Date.now() - startedAt) / 1000),
+          syncedLedger:      synced,
+          indexedNotes:      rows.notes,
+          indexedNullifiers: rows.nullifiers,
+          requestsTotal:     requestCount,
+          rejectedAuthTotal: rejectedAuthCount,
+          rejectedRateLimitTotal: rejectedRateLimitCount,
+        })
+        return
+      }
+
+      // Every endpoint below this point is a query endpoint: authenticated
+      // (when `apiKeys` is non-empty) and rate-limited (always).
+      const token = parseBearerToken(req.headers.authorization)
+      if (apiKeys.size > 0 && (token === null || !apiKeys.has(token))) {
+        rejectedAuthCount += 1
+        sendJson(res, 401, { error: 'unauthorized: missing or invalid bearer token' })
+        return
+      }
+      const identity = token ?? (req.socket.remoteAddress ?? 'unknown')
+      if (!limiter.hit(identity)) {
+        rejectedRateLimitCount += 1
+        sendJson(res, 429, { error: 'rate limit exceeded' })
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/notes') {
         const fromLedger = Number(url.searchParams.get('from_ledger') ?? '0')
         const limit = parseNotesLimit(url.searchParams.get('limit'))
-        sendJson(res, 200, config.db.getNotesFrom(fromLedger, limit))
+        sendJson(res, 200, await config.db.getNotesFrom(fromLedger, limit))
         return
       }
 
@@ -126,14 +221,14 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
       if (req.method === 'POST' && url.pathname === '/nullifiers/batch') {
         const body = await readJsonBody(req) as { nullifiers: string[] }
         const spent: Record<string, boolean> = {}
-        for (const nf of body.nullifiers ?? []) spent[nf] = config.db.isNullifierSpent(nf)
+        for (const nf of body.nullifiers ?? []) spent[nf] = await config.db.isNullifierSpent(nf)
         sendJson(res, 200, { spent })
         return
       }
 
       const commitmentMatch = url.pathname.match(/^\/commitment\/([0-9a-f]+)$/)
       if (req.method === 'GET' && commitmentMatch) {
-        const leafIndex = config.db.getLeafByCommitment(commitmentMatch[1])
+        const leafIndex = await config.db.getLeafByCommitment(commitmentMatch[1])
         if (leafIndex === null) { sendJson(res, 404, { error: 'commitment not found' }); return }
         sendJson(res, 200, { leafIndex })
         return

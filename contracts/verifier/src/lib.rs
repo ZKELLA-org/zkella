@@ -1211,12 +1211,12 @@ mod tests {
         let mut proof = Bytes::new(&env);
         hex_push(UNSHIELD_PROOF_HEX, &mut proof);
 
-        // Same real proof, but claim pub_value = 250001 instead of 250000 (index 2).
+        // Same real proof, but claim pub_value = 100001 instead of 100000 (index 2).
         let mut inputs = Vec::new(&env);
         for (i, input_hex) in UNSHIELD_PUBLIC_INPUTS_LE_HEX.iter().enumerate() {
             let mut b = Bytes::new(&env);
             if i == 2 {
-                hex_push("91d0030000000000000000000000000000000000000000000000000000000000", &mut b);
+                hex_push("a186010000000000000000000000000000000000000000000000000000000000", &mut b);
             } else {
                 hex_push(input_hex, &mut b);
             }
@@ -1227,19 +1227,47 @@ mod tests {
         assert!(!ok, "real proof must not verify against a tampered public input");
     }
 
-    const UNSHIELD_VK_HEX: &str = "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa028dbc6d50946ff9437d5313c639902caa6ea3f0d9ee6e29bdd62b4753dee4e91190f122364363a5752b4bc8fd7aec8ec0c236eaf099e64dbb7fb60bcb05455320fcb6b768bb1d9b35ac7613310b44f94656ed5abb2760866e202634aacc882a041cdd332c6d893997436e0a9bbd4807af2cb2ab2cf125f216adce9bdc7cfa4202c369c7679f429a103a052efcab3313203a6f6b8e82c6a2ce19add77bdfc3e8206d8b89632770915133cab480bf130759db86f2569b681d4b3432cbaca9c7f22e9e9f8523925e7868673857aba734c2ca50aa02c8deb44c40792da4032affe61bc0d8c3662587ef9035e2e83f03f735af725c1700e9d36744baf92951f2cb800bad3a059a1dae4575ab11a0d943bf41304aeeca86e460aeee3857d070052af60d527d70793f946f63336b23c896d4779382858f1c52355b6768084bebc3fef22658432b1db72185e7c4501680bb94641cf70a8af2e861f19eabc5f958729f1526cbb504cc08d49409c630800e14c3b61069cf408172b807f5f362ded2d2b865170adf28043ac603ea0d3ecec766069f8d303ee75703a7cca32b494301b173ec2f798d1d6be3e3cbf1ba6298214801e727edab845a3d3a01b52ef86508e1e82e2e59431282e194d04c8a0da95a7e3c9a3c4bb897e0527ee1ced4f2c11051b56c11e28c1f1545895bd7538ad71bc99a429b32ca95df1b118c24f2537a6efb9be8";
+    const UNSHIELD_VK_HEX: &str = "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa13c97a041f8f39163652c97cc1e867d60c888585e9ec61aa6b5578ba40ca33440f1660b491d99a1f4f4ba94cd7787ec2d39028a29518edabffda1693b20246482406d7efa17f4ea6272b757d6356a61ee5dc4eac9692d1628d4ecd778db5df8022bb0b5da4e33279c693af1392b1fd2ff373506e42fc3b9bc72cb3a2555467bb263bb7d99e03990f318d0eda7881f223919f8193b1c5847fbeb57bc20d29cd2e1fe39d75230c0a5a8e899614a03f8d559d5c978d10612b2323faeb58efa7391f185ee15b0e9f203535f14fa8108d9fac90b0593a10ca09f5d3616bcdc272c8e30bb7a91fc35fe17ce717ede8bd9ad0a3500319b0ea576656cf5151a25a3fcdf00cb1ece5551b9465174699a4478c2f03d3d5c2d50d37ef2def339a16c4cd3c921dd26d8561de1fe7dc539fe43fa2aa3ecb6d7c93357c94724e475b45745a92020ee53a6a41a9fd18fe9ac770c7fd30a795ae2d15d7b0366cc59487bc133ecc1818a9f5fc02c305920ffd2d6147cf2e01293ef0c581d6fcf7fda880f396c08b221af4b37ee35585ef336f78d21f070311789984d1be595d0f5aa7294aa6f41d9e0246a198031068ddd563eedcfa3a043aa32fba49117866cf202f9d19c960eb362792efb975c4d5fd34c15e61da02ff00f5d36f285c619a34e14a07b905c8d6d3198c8e67911bce4d76a41b3d36a7bc4ce436ce65719034e1c991172d96a90b7923cb0dc85014505eaf5880698fdf41a850602ea9917680b6dda66134a3dffc482dd9468b2fc91c7190e10aa845b8ae5f9def2b902b9c2b27e54d64700899ffd1245dec06a5747c9c776e6fb4ef43e99ccdd69c974e3424369e5a40c8bfac61342d2d196d8ea6ffc75d3166236867d16cbd249b9bd92e91446457b80ca55117fc";
 
-    const UNSHIELD_PROOF_HEX: &str = "12df8a60cfe4b8345cc56a5b00d65c7c455678526daefbcf9db86fc8ee841a9e2e234bb7a4b606d5ca6566daa8a1a1895b39ad1505d8ccc44fe089a7ed49fc99229feef33db3d57c064053bc0e99a7128f36f7fd80f5578660ab76868dbfa5f814eb9576fd0219e143e20ecba4d073def09ae9f01b26093bd0210a92e7c038eb1219827645ff0d0fef18b759d3efd47ff8da25abd5fa47f688e771398655a9e518458c8973c4d15400772a08df1abfe6f1dc732093aaaf09d556c16bc9d9de7c1ea57b7b134b14bc911907b22170190fcbfdcc31084bff2ec9e8f15eb3f9457d243283289af9809d1e7d5a001a7016af6fe6f7646a86ded24ed5a0ae162b36e5";
+    const UNSHIELD_PROOF_HEX: &str = "2b9f7fd00b52856341777fdce6225c6fdd96ad55fa1ce8d3a660ecf0e5447c2a2174545b2d775a643644ac2deebde6128b6815a84729e2561bba19f4024b44481a99d2118612d1b413018810f439806de9ca773e36b4453de24e901f3ed9683114c3a34b2e1fd85c8d885b537db4bab6addaa20495e86cb2331589c6e8c442ca079c7d29b10c0732a84bc12f1abdc01b01f38f39ba22fc2d7627527cda4566d72b0503c76dd5f96ed06f8fee292d2a93540253de99333b4c6a45a38ac424e05c24c08bb628cf9f3d908810b3ae52a3b8d3123d32cdd671a8bf8fe640ef1a5b900c15e93dd61be8d9a145d9663700f87d751b3454bb9fec6cf910711e8e7c016f";
 
-    // Order: anchor, nullifier, pub_value, pub_asset_id, recipient_hash
-    // (matches unshield/unshield.circom's public signal list),
-    // little-endian 32 bytes each.
-    const UNSHIELD_PUBLIC_INPUTS_LE_HEX: [&str; 5] = [
+    // A genuine partial withdrawal: the spent note is worth 250000, only
+    // 100000 leaves the pool publicly (PUBVALUE), and a 150000-value change
+    // note (hidden — see `change_value_commit`) stays shielded, owned by the
+    // same key. Order: anchor, nullifier, pub_value, pub_asset_id,
+    // recipient_hash, change_commitment, change_value_commit (matches
+    // unshield/unshield.circom's public signal list), little-endian 32 bytes
+    // each. Regenerate with `circuits/unshield/build/gen_witness.js`.
+    const UNSHIELD_PUBLIC_INPUTS_LE_HEX: [&str; 7] = [
         "1f0d6b5ede9f49a76e976c141ff30b9e7f5fd57ef77db70c1851d787209d9f28", // ANCHOR
         "bb59c47fd18dfa22d7e51c1e2dafc346b60b6a60e39639e15ceb43f3bbe90609", // NULLIFIER
-        "90d0030000000000000000000000000000000000000000000000000000000000", // PUBVALUE
+        "a086010000000000000000000000000000000000000000000000000000000000", // PUBVALUE (100000)
         "cd81010000000000000000000000000000000000000000000000000000000000", // PUBASSETID
         "2a00000000000000000000000000000000000000000000000000000000000000", // RECIPIENTHASH
+        "dc701db3835aef89d5241c82028e61476f39baefddc08c14f3f6fbbd6bf01513", // CHANGE_COMMITMENT
+        "18f3d3147f1a67b51b2dd7af3e9bccdf5a061fc69678f0388c7a8d510860f32a", // CHANGE_VALUE_COMMIT
+    ];
+
+    // A second, independently-generated (different dev-ceremony contribution,
+    // different witness) real Unshield proof under its OWN distinct VK — used
+    // only by the VK-rotation tests below, as the "new key" a rotation moves
+    // to, in place of a different circuit's fixture: a real rotation always
+    // replaces one key with another for the exact *same* circuit (same
+    // arity), which reusing e.g. SwapFairness's 5-input fixture here no
+    // longer matches now that Unshield has 7 public inputs. Spent note worth
+    // 400000, PUBVALUE 300000, hidden change 100000.
+    const UNSHIELD_VK_B_HEX: &str = "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa06e18fb470addaf4786def3a8441e664a6e4c0797cf9b3fdbdfec8bff6be6e792b3a2ff583dc39af71750a74efb0e948f979c6153671fc024aaeb546cdac9b8620cab7182dff3374a79f7a571e6fa2558a2bb073a076b3b6e0be3b73a05b59812bdc9e29b284880f267d1e95446e61a44204391d660985aaed0572ad7ea6a5b0263bb7d99e03990f318d0eda7881f223919f8193b1c5847fbeb57bc20d29cd2e1fe39d75230c0a5a8e899614a03f8d559d5c978d10612b2323faeb58efa7391f185ee15b0e9f203535f14fa8108d9fac90b0593a10ca09f5d3616bcdc272c8e30bb7a91fc35fe17ce717ede8bd9ad0a3500319b0ea576656cf5151a25a3fcdf00cb1ece5551b9465174699a4478c2f03d3d5c2d50d37ef2def339a16c4cd3c921dd26d8561de1fe7dc539fe43fa2aa3ecb6d7c93357c94724e475b45745a92020ee53a6a41a9fd18fe9ac770c7fd30a795ae2d15d7b0366cc59487bc133ecc1818a9f5fc02c305920ffd2d6147cf2e01293ef0c581d6fcf7fda880f396c08b221af4b37ee35585ef336f78d21f070311789984d1be595d0f5aa7294aa6f41d9e0246a198031068ddd563eedcfa3a043aa32fba49117866cf202f9d19c960eb362792efb975c4d5fd34c15e61da02ff00f5d36f285c619a34e14a07b905c8d6d3198c8e67911bce4d76a41b3d36a7bc4ce436ce65719034e1c991172d96a90b7923cb0dc85014505eaf5880698fdf41a850602ea9917680b6dda66134a3dffc482dd9468b2fc91c7190e10aa845b8ae5f9def2b902b9c2b27e54d64700899ffd1245dec06a5747c9c776e6fb4ef43e99ccdd69c974e3424369e5a40c8bfac61342d2d196d8ea6ffc75d3166236867d16cbd249b9bd92e91446457b80ca55117fc";
+
+    const UNSHIELD_PROOF_B_HEX: &str = "2c164674af58aadc56e63bbf4753142952db9048a01fb659e0993526bef54d8b0b2efead827f129dc88114d3d5ba3b37efae93b85b9bf45b85e8ee91304b665f0e9e02825bacdd487ca99081723e541e7a31008e95287ecfba4d8b81e8dd34581b168bd2dc879228b08000eca0ace546f2a52e62ad76856eaab127c1b2ac035c06d478b18af2f10e8f6c2a9c689c11e08576ebcefc3d56f6766693c5e7797160130cb458f64ba2691214e804fe57a2310a3b4fb5b0b572ebe746aed87f907feb197ce600ef1a15d02a2f07e7d8b6fd427ede32e60e26ab1508caee9fad61a1362535b8a790941a2fd8c27bee008716b75a1a44a4eb45abef50de55a623efff95";
+
+    const UNSHIELD_PUBLIC_INPUTS_B_LE_HEX: [&str; 7] = [
+        "474070a2a0323a28b50552820787ffa696e1aadfa385f65b22c2f68ce1d6da02", // ANCHOR
+        "f8e7b85f60eba272caeb9981410a27b34f42597e0441cdb1fc8ebe209637a61b", // NULLIFIER
+        "e093040000000000000000000000000000000000000000000000000000000000", // PUBVALUE (300000)
+        "cd81010000000000000000000000000000000000000000000000000000000000", // PUBASSETID
+        "2a00000000000000000000000000000000000000000000000000000000000000", // RECIPIENTHASH
+        "d155d6b9c9339ea415a41aa8dd987f61195b7170f3538528c95c8635db0f142e", // CHANGE_COMMITMENT
+        "a0f1b69df9877cb5f046b59169d0d4d0714389560acaeb74e8eb9db51a0e0b0b", // CHANGE_VALUE_COMMIT
     ];
 
     // ── Deliverable 3: VK retention window ────────────────────────────────
@@ -1251,18 +1279,19 @@ mod tests {
         let client = VerifierContractClient::new(&env, &verifier);
         client.initialize(&admin);
 
-        // Two genuinely distinct, independently-valid (VK, proof) pairs —
-        // borrowing the real unshield and real swap_fairness fixtures purely
-        // as two unrelated valid Groth16 instances, not for their real
-        // circuit semantics, to exercise key rotation mechanics. Both share
-        // the same 5-public-input arity, matching how a real rotation always
-        // replaces a VK with another for the *same* circuit (same arity) —
-        // unlike a shield(4)/transfer2x2(11) pair, which would make `verify`
-        // return a `PublicInputCountMismatch` `Err` against the wrong key
-        // rather than a clean `Ok(false)`, a case that can't arise from a
-        // real same-circuit rotation and would otherwise make this test
-        // exercise a scenario `update_verifying_key` was never meant to
-        // handle.
+        // Two genuinely distinct, independently-valid (VK, proof) pairs for
+        // the exact same circuit (Unshield): two separate dev-ceremony
+        // contributions from the same phase-2 setup, each with its own real
+        // witness — this is what a real VK rotation actually looks like (the
+        // circuit is re-keyed; its public-input arity never changes), rather
+        // than the cross-circuit stand-in this test used before Unshield
+        // grew a change-note output. Same arity by construction, so `verify`
+        // takes the normal accept/reject path rather than the
+        // `PublicInputCountMismatch` `Err` a genuinely different circuit
+        // (e.g. shield(4) vs transfer2x2(11)) would raise — a case that
+        // can't arise from a real same-circuit rotation and would otherwise
+        // make this test exercise a scenario `update_verifying_key` was
+        // never meant to handle.
         let mut vk_a = Bytes::new(&env);
         hex_push(UNSHIELD_VK_HEX, &mut vk_a);
         let mut proof_a = Bytes::new(&env);
@@ -1275,11 +1304,11 @@ mod tests {
         }
 
         let mut vk_b = Bytes::new(&env);
-        hex_push(SWAP_FAIRNESS_VK_HEX, &mut vk_b);
+        hex_push(UNSHIELD_VK_B_HEX, &mut vk_b);
         let mut proof_b = Bytes::new(&env);
-        hex_push(SWAP_FAIRNESS_PROOF_HEX, &mut proof_b);
+        hex_push(UNSHIELD_PROOF_B_HEX, &mut proof_b);
         let mut inputs_b = Vec::new(&env);
-        for input_hex in SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX {
+        for input_hex in UNSHIELD_PUBLIC_INPUTS_B_LE_HEX {
             let mut b = Bytes::new(&env);
             hex_push(input_hex, &mut b);
             inputs_b.push_back(b.try_into().unwrap());
@@ -1313,18 +1342,19 @@ mod tests {
         let client = VerifierContractClient::new(&env, &verifier);
         client.initialize(&admin);
 
-        // Two genuinely distinct, independently-valid (VK, proof) pairs —
-        // borrowing the real unshield and real swap_fairness fixtures purely
-        // as two unrelated valid Groth16 instances, not for their real
-        // circuit semantics, to exercise key rotation mechanics. Both share
-        // the same 5-public-input arity, matching how a real rotation always
-        // replaces a VK with another for the *same* circuit (same arity) —
-        // unlike a shield(4)/transfer2x2(11) pair, which would make `verify`
-        // return a `PublicInputCountMismatch` `Err` against the wrong key
-        // rather than a clean `Ok(false)`, a case that can't arise from a
-        // real same-circuit rotation and would otherwise make this test
-        // exercise a scenario `update_verifying_key` was never meant to
-        // handle.
+        // Two genuinely distinct, independently-valid (VK, proof) pairs for
+        // the exact same circuit (Unshield): two separate dev-ceremony
+        // contributions from the same phase-2 setup, each with its own real
+        // witness — this is what a real VK rotation actually looks like (the
+        // circuit is re-keyed; its public-input arity never changes), rather
+        // than the cross-circuit stand-in this test used before Unshield
+        // grew a change-note output. Same arity by construction, so `verify`
+        // takes the normal accept/reject path rather than the
+        // `PublicInputCountMismatch` `Err` a genuinely different circuit
+        // (e.g. shield(4) vs transfer2x2(11)) would raise — a case that
+        // can't arise from a real same-circuit rotation and would otherwise
+        // make this test exercise a scenario `update_verifying_key` was
+        // never meant to handle.
         let mut vk_a = Bytes::new(&env);
         hex_push(UNSHIELD_VK_HEX, &mut vk_a);
         let mut proof_a = Bytes::new(&env);
@@ -1337,11 +1367,11 @@ mod tests {
         }
 
         let mut vk_b = Bytes::new(&env);
-        hex_push(SWAP_FAIRNESS_VK_HEX, &mut vk_b);
+        hex_push(UNSHIELD_VK_B_HEX, &mut vk_b);
         let mut proof_b = Bytes::new(&env);
-        hex_push(SWAP_FAIRNESS_PROOF_HEX, &mut proof_b);
+        hex_push(UNSHIELD_PROOF_B_HEX, &mut proof_b);
         let mut inputs_b = Vec::new(&env);
-        for input_hex in SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX {
+        for input_hex in UNSHIELD_PUBLIC_INPUTS_B_LE_HEX {
             let mut b = Bytes::new(&env);
             hex_push(input_hex, &mut b);
             inputs_b.push_back(b.try_into().unwrap());

@@ -209,3 +209,73 @@ Run on the previous validation token (`CDQ53BGU...`; the behaviour is unchanged 
 | `set_min_shield_amount(1000)` (restore) | https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25 |
 
 `scripts/testnet_min_shield_check.cjs` performs the rejected shield.
+
+## Tranche 2 live validation stack
+
+A fresh stack (see `deployments.json`'s `testnet_tranche2` block), redeployed for the
+interface changes Tranche 2 introduces: `token::transfer`/`transfer4` gain a `relayer:
+Option<Address>` parameter and pay a positive `pub_inputs.fee` to it; `token::unshield`
+gains `change_commitment`/`encrypted_change_note` parameters and a rebuilt, 7-public-input
+`Unshield` circuit (`circuits/unshield/unshield.circom`); `swap::commit_swap` gains a
+`min_amount_out` parameter. Verifying keys for Shield, Transfer(2x2), Unshield, Transfer4x4
+and SwapFairness are registered directly (deployer-administered, same as Tranche 1's stack —
+no governance timelock on this validation stack). Produced by
+`scripts/testnet_tranche2_validation.cjs`.
+
+### Deliverable 1: transfer() pays its proof-declared fee to an approved relayer
+
+The relayer (`set_relayer`-approved beforehand), not the note owner, submits and signs the
+transaction — its own Stellar account is the transaction source. Its real, on-chain balance
+change nets two opposite transfers in the same transaction (it pays the real Stellar network
+fee as the submitting account, and separately receives the proof-declared application-level
+fee via `token::transfer`'s own internal SEP-41 transfer); isolating the latter means adding
+back the real network fee actually charged (from Horizon) to the raw balance delta.
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `shield` x2 (funding two input notes) | | https://stellar.expert/explorer/testnet/tx/2d6e0a5713638177161ea70490310ee4e7326d3fc78c5368f64819db3ea38f35, https://stellar.expert/explorer/testnet/tx/d939025546c6d1abdc99747e7c739493f743cc25b9f89f2991ab8a60ac65c888 |
+| `transfer` (submitted by the relayer, fee = 10,000) | relayer's real balance: net -10,916,109 stroops, network fee charged 10,926,109 stroops, so the isolated application-level fee received is exactly 10,000 stroops | https://stellar.expert/explorer/testnet/tx/96733979922ee1dfe1d1f276818c5b1931550aa87630e66980508af50f787d0e |
+
+### Deliverable 2: unshield() accepts a partial withdrawal and creates a real change note
+
+Also the standalone, directly-invoked `unshield()` this deliverable's other criterion asks
+for (not a sub-step of swap's commit flow).
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `unshield` (withdraw half of a note's value) | `leaf_count` grew from 15 to 16 — the change note landed at leaf 15, a real new commitment, not a no-op | https://stellar.expert/explorer/testnet/tx/cacc35d885681328978b2841449883af363ee6f6ec805dad35ff598291abe56c |
+
+### Deliverable 3: the stalled-swap recovery path (cancel_swap), live
+
+A swap committed and never executed by any relayer; once its `expiry_ledger` passed, the
+committer reclaimed the escrowed `asset_in` via `cancel_swap` — not exercised only in unit
+tests. Same fee-isolation technique as the transfer above (the refund and `cancel_swap`'s own
+real network fee net out in one balance delta).
+
+| Step | Result | Tx |
+| --- | --- | --- |
+| `commit_swap` (escrowing 1,500,000, `min_amount_out = 0`) | | https://stellar.expert/explorer/testnet/tx/bccecc9269e086ad8bde4ee1931739a7771a71ca3d6aebfe8e81fb8b176b07bb |
+| `cancel_swap` (after `expiry_ledger`) | net balance change +1,483,313 stroops, network fee charged 16,687 stroops → isolated refund exactly 1,500,000 stroops | https://stellar.expert/explorer/testnet/tx/8fd02a1579add5c196d843bcaf676f2d809ef4841d2d166cb8fa18e0bb51caa7 |
+
+### Deliverable 3: execute_swap's min_amount_out bound and two concurrent swaps
+
+Unit-tested, not (yet) run live: `execute_swap_rejects_an_amount_out_below_the_committed_minimum`,
+`execute_swap_accepts_an_amount_out_at_exactly_the_committed_minimum`,
+`two_swaps_can_execute_concurrently_against_the_same_relayer` and
+`a_relayer_without_enough_combined_liquidity_fails_only_the_second_execute`
+(`contracts/swap/src/lib.rs`) — all against the real compiled contract logic, just not
+submitted as Testnet transactions. See `docs/TRANCHE2_DELIVERABLES.md` for the concurrent-swap
+behavior this documents.
+
+### Developer note: swap never touches the Stellar DEX
+
+`contracts/swap` has no dependency on, or call into, any DEX contract (classic Stellar DEX,
+Soroswap, or otherwise) anywhere in its source. Every asset movement in `commit_swap`,
+`execute_swap`, `reveal_and_claim`, `cancel_swap` and `reclaim_expired_swap` is a direct SEP-41
+`transfer` between the swap contract's own balance, the committer's shielded note (via
+`token::unshield`/`token::shield`), and the relayer's account — the relayer supplies
+`asset_out` liquidity directly from its own balance (a real SEP-41 transfer at `execute_swap`
+time) and is compensated with the escrowed `asset_in` at `reveal_and_claim`. There is no
+on-chain price discovery and no order book; the executed price is whatever the relayer offers,
+constrained only by `commit_swap`'s `min_amount_out` floor (Tranche 2) and, at reveal,
+`swap_fairness.circom`'s proof that the revealed price matches what was actually committed to.

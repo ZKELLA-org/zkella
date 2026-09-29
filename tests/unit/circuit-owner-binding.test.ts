@@ -37,12 +37,16 @@ function unshieldInput(ownerNk: bigint, spendNk: bigint) {
   const leaf = P2(P2(P2(value, asset), P2(rho, rcm)), ownerKey(ownerNk))
   let node = leaf
   for (let l = 0; l < D; l++) node = P2(node, emptyRoots[l])
+  const changeCommitment = P2(P2(P2(0n, asset), P2(6n, 7n)), ownerKey(ownerNk))
+  const changeValueCommit = P2(0n, 8n)
   return {
     value: String(value), asset_id: String(asset), rho: String(rho), rcm: String(rcm),
     nk: String(spendNk),
     path: emptyRoots.slice(0, D).map(String), path_index: new Array(D).fill('0'),
     anchor: String(node), nullifier: String(P2(spendNk, rho)),
     pub_value: String(value), pub_asset_id: String(asset), recipient_hash: '42',
+    change_rho: '6', change_rcm: '7', change_rcv: '8',
+    change_commitment: String(changeCommitment), change_value_commit: String(changeValueCommit),
   }
 }
 

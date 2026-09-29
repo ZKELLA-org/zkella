@@ -12,6 +12,7 @@
     "build:sdk": "npm run build --workspace=sdk",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "indexer": "node --experimental-strip-types indexer/src/main.ts",
+    "indexer:load-test": "node --experimental-strip-types scripts/indexer_load_test.mjs",
     "check:browser-worker": "node scripts/browser_worker_check.mjs"
   },
   "devDependencies": {
@@ -28,9 +29,11 @@
     "@noble/ciphers": "^0.5.0",
     "@noble/hashes": "^1.4.0",
     "@stellar/stellar-sdk": "^17.1.0",
+    "@types/pg": "^8.23.1",
     "circomlib": "2.0.5",
     "circomlibjs": "^0.1.7",
     "ffjavascript": "^0.2.63",
+    "pg": "^8.23.0",
     "snarkjs": "^0.7.6"
   },
   "jest": {

@@ -1,0 +1,53 @@
+# Containerized ZKELLA indexer stack (Tranche 2 Deliverable 4/5): the indexer
+# process plus a PostgreSQL 16 instance, the grant-funded reference
+# deployment target for this tranche. Dual-provider RPC failover and
+# Multi-AZ managed hosting are explicitly future, mainnet-stage work (see
+# docs/TECHNICAL_SPEC.md §13.3 and indexer/README.md) — not part of this
+# stack, and not what this compose file builds.
+#
+# Usage:
+#   TOKEN_CONTRACT_ID=C... INDEXER_START_LEDGER=<deploy ledger> docker compose up --build
+#
+# The postgres service's data lives in the `pgdata` named volume, so `docker
+# compose down` alone doesn't lose indexed history — `docker compose down -v`
+# does.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zkella
+      POSTGRES_PASSWORD: zkella
+      POSTGRES_DB: zkella_indexer
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zkella -d zkella_indexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  indexer:
+    build:
+      context: .
+      dockerfile: indexer/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://zkella:zkella@postgres:5432/zkella_indexer
+      TOKEN_CONTRACT_ID: ${TOKEN_CONTRACT_ID:?set TOKEN_CONTRACT_ID}
+      SOROBAN_RPC_URL: ${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+      ZKELLA_NETWORK: ${ZKELLA_NETWORK:-testnet}
+      INDEXER_START_LEDGER: ${INDEXER_START_LEDGER:?set INDEXER_START_LEDGER}
+      INDEXER_HTTP_PORT: "8787"
+      INDEXER_API_KEYS: ${INDEXER_API_KEYS:-}
+      INDEXER_RATE_LIMIT_PER_MINUTE: ${INDEXER_RATE_LIMIT_PER_MINUTE:-600}
+    ports:
+      - "8787:8787"
+
+volumes:
+  pgdata:

@@ -64,6 +64,7 @@ const vec = items => xdr.ScVal.scvVec(items.map(i => nativeToScVal(i, { type: 'b
   const ret = await wallet.submitContractCall(TOKEN_ID, 'transfer4', [
     vec(res.nullifiers), vec(res.outputNotes.map(n => n.commitment)), vec(encs),
     nativeToScVal(res.proof, { type: 'bytes' }), xdr.ScVal.scvMap(structEntries),
+    nativeToScVal(undefined), // relayer: Option<Address> = None (fee is 0)
   ])
   const leaves = scValToNative(ret)
   console.log('   new leaves', leaves)

@@ -245,9 +245,9 @@ struct TransferPublicInputs {
 }
 ```
 
-**Fee design decision (planned, not yet implemented):** `fee` is fully constrained today (`Σ in_value === Σ out_value + fee`, enforced in-circuit) but the contract has no code that actually pays it to anyone — it is proven, not collected. Real-world precedent for what a shielded transfer's fee is for is consistent across privacy-pool designs generally: Tornado Cash's withdrawal relayer, and Railgun's and Aztec's relayer/fee-payer models, all pay a proof-declared fee to whichever third party actually submits the transaction, letting the real party in interest avoid ever exposing a funded public account just to pay the network's normal transaction fee. That is the real problem this `fee` field exists to solve here too: submitting `transfer()` from the sender's own public account would link a specific, identifiable Stellar address to the exact moment of an otherwise-private operation, undermining the privacy the note model is built to provide.
+**Fee design decision (implemented, Tranche 2 Deliverable 1):** `fee` is fully constrained (`Σ in_value === Σ out_value + fee`, enforced in-circuit) and, since Tranche 2, actually paid: `token::transfer`/`transfer4` take a `relayer: Option<Address>` parameter, and when `fee > 0` the relayer must be approved (`token::set_relayer`), authorize the call (`relayer.require_auth()`), and is paid `fee` via a real SEP-41 transfer, with `shielded_supply` decremented symmetrically (the same accounting `unshield`'s own payout uses). Real-world precedent for what a shielded transfer's fee is for is consistent across privacy-pool designs generally: Tornado Cash's withdrawal relayer, and Railgun's and Aztec's relayer/fee-payer models, all pay a proof-declared fee to whichever third party actually submits the transaction, letting the real party in interest avoid ever exposing a funded public account just to pay the network's normal transaction fee. That is the real problem this `fee` field exists to solve here too: submitting `transfer()` from the sender's own public account would link a specific, identifiable Stellar address to the exact moment of an otherwise-private operation, undermining the privacy the note model is built to provide.
 
-The planned design reuses `contracts/swap`'s existing `set_relayer`/`ApprovedRelayer` mechanism rather than building a second, separate relayer system: an approved relayer submits `transfer()`, pays the real Stellar network fee from its own account, and is paid the proof-declared `fee` out of the shielded value in return. This is a deliberate consistency choice, not a default, since ZKELLA already has one audited relayer-authorization pattern in the codebase and a second, differently-shaped one would be new attack surface for no real benefit.
+The implementation mirrors `contracts/swap`'s existing `set_relayer`/`ApprovedRelayer` pattern independently on `token` (its own allowlist, not shared with swap's) rather than building a differently-shaped relayer system: an approved relayer submits `transfer()`, pays the real Stellar network fee from its own account, and is paid the proof-declared `fee` out of the shielded value in return. Live-validated on Testnet: the relayer's own account submitted and signed the transaction and was paid exactly the declared fee once the real network fee is isolated from its raw balance change — see `docs/TRANCHE2_DELIVERABLES.md` Deliverable 1.4 and `docs/TESTNET_DEPLOYMENT.md`'s Tranche 2 section.
 
 Why this problem does not apply the same way to OpenZeppelin's Confidential Tokens on Stellar (built with Nethermind's verifier): their account model keeps sender and recipient addresses visible by design, so paying a normal transaction fee from a visible account leaks nothing new. ZKELLA's fee-abstraction need exists specifically because addresses are hidden here and are not there — a real, structural consequence of the note-based model, not an oversight either implementation should be expected to share.
 
@@ -468,10 +468,10 @@ Constraints: 1,264 (measured). Proving time: ~200ms (unmeasured estimate).
 
 **File:** `circuits/unshield/unshield.circom`
 
-Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32]` (`pk` is derived in-circuit from `nk`)
-Public inputs: `anchor, nullifier, pub_value, pub_asset_id, recipient_hash` (amount and asset are revealed via `pub_value`/`pub_asset_id`; `recipient_hash = Poseidon2(address_field(to), 0)` binds the withdrawal destination — see `docs/CIRCUIT_SPEC.md` §3)
+Private inputs: `value, asset_id, rho, rcm, nk, path[32], path_index[32], change_rho, change_rcm, change_rcv` (`pk` is derived in-circuit from `nk`)
+Public inputs: `anchor, nullifier, pub_value, pub_asset_id, recipient_hash, change_commitment, change_value_commit` (the withdrawn amount and asset are revealed via `pub_value`/`pub_asset_id`; `recipient_hash = Poseidon2(address_field(to), 0)` binds the withdrawal destination; `change_commitment`/`change_value_commit` describe the Tranche 2 change note, whose own value is never revealed — see `docs/CIRCUIT_SPEC.md` §3)
 
-Constraints: 9,277 (measured). Proving time: ~600ms (unmeasured estimate).
+Constraints: 10,605 (measured, up from 9,277 pre-Tranche-2). Proving time: ~650ms (unmeasured estimate).
 
 ### 5.5 Swap Fairness Circuit
 
@@ -617,7 +617,7 @@ pub trait ShieldedTokenInterface {
 }
 ```
 
-`ShieldBatchItem { amount, rho, rcm, owner_pk, commitment, encrypted_note, shield_proof, shield_pub }` (`owner_pk` follows `rcm`). `transfer` and `transfer4` reject a negative `fee`. Public inputs for asset fields are reduced modulo the BN254 scalar field before use, because the verifier rejects non-canonical inputs. Token error codes: AlreadyInitialized 1, NotInitialized 2, Paused 3, InvalidProof 4, InvalidAnchor 5, NullifierSpent 6, CommitmentMismatch 7, AssetMismatch 8, AmountMismatch 9, Unauthorized 10, MerkleTreeFull 11, NotImplemented 12, InvalidNote 13, DuplicateCommitment 14, InvalidInputCount 15, RecipientMismatch 16, DuplicateInputInCall 17, AssetNotApproved 18, BatchLengthMismatch 19, EmptyBatch 20, BatchTooLarge 21.
+`ShieldBatchItem { amount, rho, rcm, owner_pk, commitment, encrypted_note, shield_proof, shield_pub }` (`owner_pk` follows `rcm`). `transfer` and `transfer4` reject a negative `fee`. Public inputs for asset fields are reduced modulo the BN254 scalar field before use, because the verifier rejects non-canonical inputs. Token error codes: AlreadyInitialized 1, NotInitialized 2, Paused 3, InvalidProof 4, InvalidAnchor 5, NullifierSpent 6, CommitmentMismatch 7, AssetMismatch 8, AmountMismatch 9, Unauthorized 10, MerkleTreeFull 11, NotImplemented 12, InvalidNote 13, DuplicateCommitment 14, InvalidInputCount 15, RecipientMismatch 16, DuplicateInputInCall 17, AssetNotApproved 18, BatchLengthMismatch 19, EmptyBatch 20, BatchTooLarge 21, RelayerRequired 22, RelayerNotApproved 23.
 
 **Verification logic (transfer, unshield, shield — all real, not pseudocode-only):** each calls `VerifierClient::new(&env, &verifier).verify(circuit, public_inputs, proof)`, which the `contracts/verifier` contract implements as: deserialize the wire-format proof into `(A, B, C)` over BN254, compute `vk_x = IC[0] + Σ public_input[i] · IC[i+1]` via `env.crypto().bn254().g1_msm(...)`, then a single `pairing_check([−A, α, vk_x, C], [B, β, γ, δ])` call. `−A` is computed as `g1_mul(A, r−1)` (scalar multiplication by `r−1` in a prime-order group is exact negation — no separate negate host function exists).
 
@@ -1301,7 +1301,7 @@ If users do not trust the ceremony, they should wait for a PLONK-based circuit (
 | Circuit | Constraints | Proving Time | Proof Size |
 |---|---|---|---|
 | Shield | 1,264 (measured) | ~200ms | 256 bytes |
-| Unshield | 9,277 (measured) | ~600ms | 256 bytes |
+| Unshield | 10,605 (measured) | ~650ms | 256 bytes |
 | Transfer 2-in/2-out | 21,391 (measured) | ~2.0s | 256 bytes |
 | Transfer 4-in/4-out | 42,489 (measured) | ~4.5s | 256 bytes |
 | Swap fairness | 941 (measured) | ~400ms | 256 bytes |

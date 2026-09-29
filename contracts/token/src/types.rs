@@ -16,6 +16,7 @@ pub enum StorageKey {
     ShieldedSupply(Address),
     MinShieldAmount, // governance-settable; see `set_min_shield_amount`
     AssetApproved(Address), // governance-controlled shield allowlist; see `set_asset_approved`
+    ApprovedRelayer(Address), // admin-controlled relayer allowlist for transfer()'s fee; see `set_relayer`
     // Persistent storage (long-lived, pays rent; TTL bumped on every write)
     MerkleLeaf(u32),
     MerkleNode(u32, u32),      // (level, index) — level 0 = leaf, level 32 = root
@@ -66,11 +67,22 @@ pub struct TransferPublicInputs {
 #[contracttype]
 #[derive(Clone)]
 pub struct UnshieldPublicInputs {
-    pub anchor:         BytesN<32>,
-    pub nullifier:      BytesN<32>,
-    pub pub_value:      i128,
-    pub pub_asset_id:   Address,
-    pub recipient_hash: BytesN<32>,
+    pub anchor:              BytesN<32>,
+    pub nullifier:           BytesN<32>,
+    pub pub_value:           i128,
+    pub pub_asset_id:        Address,
+    pub recipient_hash:      BytesN<32>,
+    /// Commitment of the change note (same owner key as the spent note,
+    /// value = spent note's value - `pub_value`) that stays in the shielded
+    /// pool. Always present — a "full" unshield with no change simply
+    /// produces a change note with a hidden value of 0, so there's no
+    /// separate code path that would let the amount leak by its absence.
+    pub change_commitment:   BytesN<32>,
+    /// Poseidon binding of the change note's (hidden) value and a blinding
+    /// factor, matching `ShieldPublicInputs::value_commit`'s role for a
+    /// shield() output — keeps the change amount out of the public inputs
+    /// entirely, consistent with every other note-creating entrypoint.
+    pub change_value_commit: BytesN<32>,
 }
 
 // ── Emitted events ────────────────────────────────────────────────────────────
@@ -87,6 +99,14 @@ pub struct NoteCommitmentEvent {
 #[derive(Clone)]
 pub struct NullifierEvent {
     pub nullifier: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct RelayerFeeEvent {
+    pub relayer: Address,
+    pub amount:  i128,
+    pub asset:   Address,
 }
 
 #[contracttype]
@@ -135,4 +155,6 @@ pub enum Error {
     BatchLengthMismatch  = 19, // shield_batch()'s parallel input vectors have different lengths
     EmptyBatch           = 20, // shield_batch() called with zero items
     BatchTooLarge        = 21, // shield_batch() item count exceeds MAX_SHIELD_BATCH
+    RelayerRequired      = 22, // transfer()/transfer4() declared a positive fee but no relayer was given
+    RelayerNotApproved   = 23, // the given relayer address is not on the admin-controlled allowlist (see `set_relayer`)
 }
