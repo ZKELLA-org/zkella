@@ -6,7 +6,7 @@
 // against it — not just unit-testing the helper functions in isolation.
 
 import { AddressInfo } from 'node:net'
-import { parseBearerToken, RateLimiter, startHttpServer } from '../../indexer/src/http.ts'
+import { parseBearerToken, matchesApiKey, RateLimiter, startHttpServer } from '../../indexer/src/http.ts'
 import type { IndexerDb, StoredNote } from '../../indexer/src/db.ts'
 
 describe('parseBearerToken', () => {
@@ -21,6 +21,24 @@ describe('parseBearerToken', () => {
   })
   test('returns null for an empty bearer token', () => {
     expect(parseBearerToken('Bearer')).toBeNull()
+  })
+})
+
+describe('matchesApiKey', () => {
+  test('matches a key that is present in the set', () => {
+    expect(matchesApiKey('secret-key', new Set(['other-key', 'secret-key']))).toBe(true)
+  })
+  test('rejects a key not in the set', () => {
+    expect(matchesApiKey('wrong-key', new Set(['secret-key']))).toBe(false)
+  })
+  test('rejects a key that only differs in length from a real one', () => {
+    expect(matchesApiKey('secret-key-extra', new Set(['secret-key']))).toBe(false)
+  })
+  test('rejects a prefix of a real key (not just any mismatch)', () => {
+    expect(matchesApiKey('secret', new Set(['secret-key']))).toBe(false)
+  })
+  test('an empty set matches nothing', () => {
+    expect(matchesApiKey('anything', new Set())).toBe(false)
   })
 })
 
@@ -145,6 +163,23 @@ describe('startHttpServer auth + rate limiting (real HTTP requests)', () => {
       }
       expect(statuses.slice(0, 3)).toEqual([200, 200, 200])
       expect(statuses.slice(3)).toEqual([429, 429])
+    } finally {
+      server.close()
+    }
+  })
+
+  test('/health and /metrics are rate-limited too, even though they need no auth', async () => {
+    // Each does a real RPC round-trip or DB query — leaving them completely
+    // unbounded would be an easy DoS surface, so they're rate-limited by IP
+    // like everything else, just not auth-gated.
+    const { server, base } = startTestServer({ rateLimitPerMinute: 2 })
+    try {
+      const statuses: number[] = []
+      for (let i = 0; i < 3; i++) {
+        const res = await fetch(`${base}/metrics`)
+        statuses.push(res.status)
+      }
+      expect(statuses).toEqual([200, 200, 429])
     } finally {
       server.close()
     }

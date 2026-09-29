@@ -34,7 +34,7 @@ Current implementation foundation:
 - TypeScript SDK note construction and note encryption helpers in `sdk/src/notes`, with real BN254 ECDH (including diversified-address hash-to-curve) in `sdk/src/crypto/bn254.ts`
 - `sdk/src/prover/{shield,transfer,transfer4,unshield}.ts`: real Groth16 proof generation for every token entry point via `snarkjs`, sharing one wire-format encoder (`sdk/src/prover/encoding.ts`) cross-validated byte-for-byte against real proof/VK bytes — shield's against the exact proof submitted in a real live-Testnet transaction, the rest against real compiled-circuit proofs (see `tests/unit/prover*.test.ts`) — no Python side-channel needed.
 - `sdk/src/wallet/wallet.ts`: real Soroban RPC transaction construction, signing, submission, and confirmation-polling for `shield()`/`transfer()`/`unshield()` — no more JSON-stub XDR building
-- `indexer/`: a real, running indexer service (real event polling, real SQLite persistence, real HTTP API), validated against live Stellar Testnet — see `indexer/README.md`
+- `indexer/`: a real, running indexer service (real event polling, SQLite or PostgreSQL persistence, a bearer-auth and rate-limited HTTP API, containerized), validated against live Stellar Testnet — see `indexer/README.md`
 - see `docs/POC_IMPLEMENTATION.md` for what's validated where (locally vs. live Testnet) and what's still open
 
 Planned implementation scope:

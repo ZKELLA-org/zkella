@@ -1797,7 +1797,12 @@ mod tests {
     /// failure — this is ordinary transaction atomicity, not a special case
     /// this contract has to implement.
     #[test]
-    #[should_panic]
+    // Error(Contract, #10) is the built-in SAC token client's own
+    // insufficient-balance error, propagated straight through from
+    // `execute_swap`'s real SEP-41 `transfer` call — confirming the panic
+    // below really is the relayer running out of `asset_out`, not some
+    // unrelated failure earlier in the call.
+    #[should_panic(expected = "Error(Contract, #10)")]
     fn a_relayer_without_enough_combined_liquidity_fails_only_the_second_execute() {
         let s = setup();
         let shielder = Address::generate(&s.env);

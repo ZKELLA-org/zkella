@@ -16,7 +16,7 @@ npm run indexer:load-test -- --events 5000 --database-url postgres://...
 node scripts/testnet_tranche2_validation.cjs                # live Testnet: relayer fee, change note, cancel_swap
 ```
 
-Test totals at the time of writing: contracts workspace 172 (token 118, verifier 30, swap 17,
+Test totals at the time of writing: contracts workspace 182 (token 124, verifier 30, swap 17,
 governance 5, compliance 4, viewing keys 2) plus 152 JS unit tests (39 of them the indexer's),
 all passing. Live evidence is in `docs/TESTNET_DEPLOYMENT.md`'s Tranche 2 section.
 
@@ -130,16 +130,24 @@ Tranche 2 stack, with `commit_swap`'s new `min_amount_out` parameter.
 
 **3.2 The full swap flow (commit, relayer-fronted execution, reveal-and-claim) executes
 end-to-end on Stellar Testnet with valid proof verification and correct nullifier consumption.
-Met (carried over from Tranche 1).** Already live-validated on the Tranche 1 stack: commit
-`21c4380b39685c9674edabb2f2830d931e8ead0d557adcff1a4aecdf66bc8038`, execute
-`5bfef119f8503f66782f0a22a4942fa43fc83c497ae71b7031ffc0025fa9fb75`, reveal
-`88aebe0e9cb0239d74a746facf2af18cdbe2921d1e7d9dbdaa12c6862a91648d` (see
-`docs/TESTNET_DEPLOYMENT.md`). Not re-run end-to-end on the Tranche 2 stack specifically —
+Met (carried over from Tranche 1).** Live-validated on the Tranche 1 stack (verified by
+independently decoding each transaction's invoked contract address, not just trusting the
+citation): commit `96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340`, execute
+`994f97fdf6b73dbcb2fd4bf8467a49be63c6d3dd2a5a7483aacfd6c314949797`, reveal
+`56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297`, all three confirmed against
+`CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY` (`testnet_tranche1`'s swap address —
+see `docs/TESTNET_DEPLOYMENT.md`). The *other* full-lifecycle runs `docs/ARCHITECTURE.md`
+describes (commit `21c4380b...`/execute `5bfef119...`/reveal `88aebe0e...`, and a second one at
+commit `bdb127a5...`/execute `d25a676c...`/reveal `dbb10c1b...`) both independently decode to
+two *different*, earlier addresses (`CBGG3UND7P6...`, the legacy pre-Tranche-1 stack, and
+`CCQH2YIZ4GKL...`, an untracked intermediate one — neither is in `deployments.json`), not the
+Tranche 1 stack; `docs/ARCHITECTURE.md` should be corrected to stop calling the second of those
+"the Tranche 1 stack". Not re-run end-to-end on the Tranche 2 stack specifically —
 this tranche's own live evidence targets its *new* criteria (3.6, below) instead, and the
 full-lifecycle path is exercised by `full_swap_lifecycle_moves_real_value` against the current
 source.
 
-**3.3 Associated unit and integration tests pass. Met.** 17 swap tests (up from 12 before this
+**3.3 Associated unit and integration tests pass. Met.** 17 swap tests (up from 13 before this
 deliverable's additions): `cost_parity_swap_commit_and_reveal`,
 `full_swap_lifecycle_moves_real_value`,
 `reveal_and_claim_rejects_an_output_owner_key_other_than_the_committed_one`,
@@ -328,6 +336,20 @@ requests against a server configured with `rateLimitPerMinute: 3` return `[200, 
 an in-memory, single-process fixed-window counter, documented in its own doc comment as a
 limitation for a multi-instance deployment (each replica would enforce its own independent
 budget; a real horizontally-scaled deployment should move this to a shared store).
+
+An independent security review of this deliverable found two Low-severity hygiene gaps, both
+closed: the bearer-token check now compares with `crypto.timingSafeEqual` (`matchesApiKey`)
+instead of a plain `Set.has`/`===`, which leaked timing information about how many leading
+bytes of a guess were correct; and `/health`/`/metrics`, while still deliberately unauthenticated
+(load balancers and monitoring tooling need to reach them with no credentials), are now also
+rate-limited by IP, since each does a real RPC round-trip or DB query and was otherwise
+completely unbounded. Neither was a fund-safety or auth-bypass issue — every query-data route
+was already correctly gated, and `db-postgres.ts`'s queries are fully parameterized (no SQL
+injection surface). Reviewed and confirmed safe: relayer resolution/authorization always runs
+before any state write in `transfer_internal` and cannot be bypassed by a spurious
+`fee`/`relayer` combination; the change note's nonnegativity and owner-key binding are enforced
+by the circuit itself, not just the contract; `min_amount_out` can only ever be set by the swap
+creator, never a relayer or third party, so a wrong value only ever harms its own author.
 
 ---
 

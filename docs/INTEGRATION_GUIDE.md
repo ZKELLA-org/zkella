@@ -172,7 +172,7 @@ const { leafIndices } = await submit()
 
 ## 9. Unshield (Move tokens out of the shielded pool)
 
-`wallet.unshield()` withdraws a single note's **full value** — there is no unshield-with-change entrypoint; split a note with `transfer()` first if you need to withdraw a partial amount.
+`wallet.unshield()` supports partial withdrawals: since Tranche 2, unshielding less than a note's full value produces a change note (same owner key) that stays shielded for the remainder — see `docs/TRANCHE2_DELIVERABLES.md` Deliverable 2.4.
 
 ```typescript
 const { submit } = await wallet.unshield({
@@ -289,7 +289,7 @@ API is available at `http://localhost:8787` — `GET /health`, `GET /notes`, `GE
 
 ## 15. Contract Addresses
 
-The Testnet addresses below are the legacy August stack, which predates owner-key notes, the canonical-input check, batch transcript challenges and `revoke_previous_vk`; they do not match the current SDK and circuits. The current-source validation stack (verifier `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY`, token `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`, swap `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY`; the swap address predates the `commit_swap` binding change) is recorded as `testnet_tranche1` in `deployments.json`. Addresses (redeployed whenever a contract/circuit change requires it — always check `deployments.json` at the repository root for the latest, since addresses in a static doc go stale):
+The Testnet addresses below are the legacy August stack, which predates owner-key notes, the canonical-input check, batch transcript challenges and `revoke_previous_vk`; they do not match the current SDK and circuits. The Tranche 1 validation stack (verifier `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY`, token `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`, swap `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY`) is recorded as `testnet_tranche1` in `deployments.json`; it predates Tranche 2's relayer fee, change-note unshield and `min_amount_out` changes. The current-source stack is `testnet_tranche2` (verifier `CCU6TP7MQD7WN4UC3M4KDLSV3M3WSAOBWTO3MZ6QDMF23BUBAKENJP44`, token `CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`, swap `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D`). Addresses (redeployed whenever a contract/circuit change requires it — always check `deployments.json` at the repository root for the latest, since addresses in a static doc go stale):
 
 | Network | Contract | Address |
 |---|---|---|
