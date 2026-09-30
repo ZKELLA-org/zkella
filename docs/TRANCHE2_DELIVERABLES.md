@@ -72,12 +72,12 @@ https://stellar.expert/explorer/testnet/tx/96733979922ee1dfe1d1f276818c5b1931550
 Tranche 1 Deliverable 3 verifier optimization lands, with its real compiled-WASM instruction
 cost measured and published against the mainnet budget. Met.**
 Originally live-validated on the Tranche 1 stack: tx
-`15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba` (see
+https://stellar.expert/explorer/testnet/tx/15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba (see
 `docs/TESTNET_DEPLOYMENT.md`), 86.3M declared instructions (was 378.7M before the
 optimisation — see `docs/PERFORMANCE_OPTIMISATION.md`), 20% of the 400M mainnet budget. Also
 re-run live on the Tranche 2 stack itself (`relayer: None`, reproducing the pre-Tranche-2
 behavior exactly at `fee == 0`, as designed): tx
-`12c13856c7acc058802abd8b1a5acefac8e8579bee1b054b48a70cd6447d440b`, 89,787,377 declared
+https://stellar.expert/explorer/testnet/tx/12c13856c7acc058802abd8b1a5acefac8e8579bee1b054b48a70cd6447d440b, 89,787,377 declared
 instructions (22.4% of the 400M budget) — consistent with the Tranche 1 figure, confirming the
 relayer-fee addition doesn't materially change `transfer4`'s own proof-verification or
 Merkle-tree cost.
@@ -122,7 +122,7 @@ transaction, not only as a sub-step of swap's commit flow. Met.**
 The same transaction above is a direct `wallet.unshield()` call, not a cross-contract call
 from `swap::commit_swap` — the first such standalone call against the *new* (change-note)
 interface. (A standalone unshield against the pre-Tranche-2 interface was already live in
-Tranche 1: tx `c99b6b23dd068d3c12c77697cb614efa06c805349233716851efc85a22f80891`.)
+Tranche 1: tx https://stellar.expert/explorer/testnet/tx/c99b6b23dd068d3c12c77697cb614efa06c805349233716851efc85a22f80891.)
 
 ---
 
@@ -135,21 +135,29 @@ Tranche 2 stack, with `commit_swap`'s new `min_amount_out` parameter.
 end-to-end on Stellar Testnet with valid proof verification and correct nullifier consumption.
 Met (carried over from Tranche 1).** Live-validated on the Tranche 1 stack (verified by
 independently decoding each transaction's invoked contract address, not just trusting the
-citation): commit `96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340`, execute
-`994f97fdf6b73dbcb2fd4bf8467a49be63c6d3dd2a5a7483aacfd6c314949797`, reveal
-`56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297`, all three confirmed against
-`CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY` (`testnet_tranche1`'s swap address —
+citation):
+- commit: https://stellar.expert/explorer/testnet/tx/96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340
+- execute: https://stellar.expert/explorer/testnet/tx/994f97fdf6b73dbcb2fd4bf8467a49be63c6d3dd2a5a7483aacfd6c314949797
+- reveal: https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297
+
+all three confirmed against `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY` (`testnet_tranche1`'s swap address —
 see `docs/TESTNET_DEPLOYMENT.md`). The *other* full-lifecycle runs `docs/ARCHITECTURE.md`
-describes (commit `21c4380b...`/execute `5bfef119...`/reveal `88aebe0e...`, and a second one at
-commit `bdb127a5...`/execute `d25a676c...`/reveal `dbb10c1b...`) both independently decode to
+describes:
+- commit https://stellar.expert/explorer/testnet/tx/21c4380b39685c9674edabb2f2830d931e8ead0d557adcff1a4aecdf66bc8038 / execute https://stellar.expert/explorer/testnet/tx/5bfef119f8503f66782f0a22a4942fa43fc83c497ae71b7031ffc0025fa9fb75 / reveal https://stellar.expert/explorer/testnet/tx/88aebe0e9cb0239d74a746facf2af18cdbe2921d1e7d9dbdaa12c6862a91648d
+- and a second one at commit https://stellar.expert/explorer/testnet/tx/bdb127a5ae8a14f0956ddb5246e664812c4306fad444d0be7a8fd58d2afb85e6 / execute https://stellar.expert/explorer/testnet/tx/d25a676cc3e13cb1f86bad1251765a3ae5e6305f3b2add9354ceca3bd4506507 / reveal https://stellar.expert/explorer/testnet/tx/dbb10c1b3cc5bc2a0d8285337f40d2097f6b72dc609d33a2ad04441c97219892
+
+both independently decode to
 two *different*, earlier addresses (`CBGG3UND7P6...`, the legacy pre-Tranche-1 stack, and
 `CCQH2YIZ4GKL...`, an untracked intermediate one — neither is in `deployments.json`), not the
 Tranche 1 stack; `docs/ARCHITECTURE.md` was corrected to stop calling the second of those
 "the Tranche 1 stack". Also since re-run end-to-end on the Tranche 2 stack itself, with
 `min_amount_out` (this tranche's own addition) genuinely exercised end-to-end for the first
-time: commit `fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c`, execute
-`4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7`, reveal
-`065e89fa8070965b1be0ea867a2fb00be681332056930654fda3fa4e7d627d9c`, all three independently
+time:
+- commit: https://stellar.expert/explorer/testnet/tx/fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c
+- execute: https://stellar.expert/explorer/testnet/tx/4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7
+- reveal: https://stellar.expert/explorer/testnet/tx/065e89fa8070965b1be0ea867a2fb00be681332056930654fda3fa4e7d627d9c
+
+all three independently
 confirmed against `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D` (`testnet_tranche2`'s
 swap address).
 

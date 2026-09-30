@@ -23,13 +23,21 @@ Current Testnet stack (built from the current source, including the instruction-
 ## Deliverable 1: Asset custody and commitment logic
 
 **1.1 Custody and commitment-creation logic builds successfully and deploys to Stellar Testnet. Met.**
-The contracts build for `wasm32v1-none` in CI (`cargo build --workspace --target wasm32v1-none --release`) and are deployed on Testnet (addresses above). Proof: `docs/TESTNET_DEPLOYMENT.md`; four shields on the fresh deployment: `e51f3be3...`, `048f0233...`, `0ac97d14...`, `244b9950...`.
+The contracts build for `wasm32v1-none` in CI (`cargo build --workspace --target wasm32v1-none --release`) and are deployed on Testnet (addresses above). Proof: `docs/TESTNET_DEPLOYMENT.md`; four shields on the fresh deployment:
+https://stellar.expert/explorer/testnet/tx/e51f3be33e335917b663cb1969a7d9812cbac1c5e97e797c7fb2cdcb43abd2b1,
+https://stellar.expert/explorer/testnet/tx/048f02332f51a0f5efe99c40e01f4b80b073d61755328630c4b28637d150b084,
+https://stellar.expert/explorer/testnet/tx/0ac97d14310a692a35a7a3c9da71bc84e03e96eed0dcf0c97120a52df2183700,
+https://stellar.expert/explorer/testnet/tx/244b995070978701a382202355d76c352d63e1b150092541da77d8c9a4910b1c.
 
 **1.2 Commitment generation is validated against representative shield inputs, including duplicate-commitment rejection. Met.**
 `cm = H(H(H(value, asset), H(rho, rcm)), pk)` is computed inside the contract, compared with the commitment argument, and independently cross-checked against circomlibjs and the compiled circuit (`poseidon.rs`: `note_commitment_matches_real_shield_circuit_v2_500stroops_vector`; `commitment.test.ts`: three vectors plus the circuit's own witness). Duplicates are rejected with `DuplicateCommitment` (`shield_rejects_duplicate_commitment`, `shield_replay_by_different_caller_rejected_at_duplicate_check`, a duplicate inside a batch in `tests/shield_flow.rs`). Representative inputs, zero and negative amounts, amounts below the minimum, oversized values and wrong note lengths (0, 175, 177 bytes) each assert the exact error and that state is unchanged.
 
 **1.3 MIN_SHIELD_AMOUNT is a governance-settable parameter rather than a hardcoded constant, confirmed by changing it without a redeploy. Met.**
-`set_min_shield_amount` (admin-gated) and `min_shield_amount` replace the constant; non-positive values are rejected. Proof, live: the minimum was read as 1,000, raised to 2,000,000 (`db1b3a9c...`), a shield below it was rejected by the contract, and it was restored (`12236807...`), all on the same deployed contract. Unit test: `min_shield_amount_is_governance_settable_without_redeploy`.
+`set_min_shield_amount` (admin-gated) and `min_shield_amount` replace the constant; non-positive values are rejected. Proof, live: the minimum was read as 1,000, raised to 2,000,000
+(https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890),
+a shield below it was rejected by the contract, and it was restored
+(https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25),
+all on the same deployed contract. Unit test: `min_shield_amount_is_governance_settable_without_redeploy`.
 
 **1.4 A documented, implemented policy exists for what happens to shielded notes if a non-native asset's issuer claws back the contract's custodied balance. Met.**
 Implemented in three layers (`docs/TECHNICAL_SPEC.md` section 6.1, `docs/RUNBOOK.md` category 5):
@@ -40,7 +48,9 @@ Proof: `unshield_shares_a_clawback_loss_pro_rata_and_reports_the_shortfall` runs
 Limit: this is proven against the Soroban test environment's asset contract, not against a live clawback on Testnet.
 
 **1.5 A batched multi-deposit entrypoint exists and is exercised against multiple simultaneous shield inputs in a single call. Met.**
-`shield_batch` deposits several notes with one aggregated token transfer. Proof: `shield_batch_deposits_multiple_notes_in_one_call_with_one_aggregated_transfer` (three deposits, one transfer of the summed amount), `shield_batch_real_wasm_instruction_cost` (eight items on the compiled WASM), eleven rejection tests plus an atomicity test (a failure on item 2 leaves nothing from item 1 behind), and live on Testnet: one transaction depositing eight real shield proofs (`22e3c4e3...`, `scripts/testnet_shield_batch.cjs`). The batch is capped at 8 items (`MAX_SHIELD_BATCH`): 8 items use 314M of the 400M limit on the compiled WASM (335M declared live), and a size sweep from 1 to 8 (`shield_batch_size_sweep_on_real_wasm`) fails the build if the cap is raised past 85% of the limit.
+`shield_batch` deposits several notes with one aggregated token transfer. Proof: `shield_batch_deposits_multiple_notes_in_one_call_with_one_aggregated_transfer` (three deposits, one transfer of the summed amount), `shield_batch_real_wasm_instruction_cost` (eight items on the compiled WASM), eleven rejection tests plus an atomicity test (a failure on item 2 leaves nothing from item 1 behind), and live on Testnet: one transaction depositing eight real shield proofs
+(https://stellar.expert/explorer/testnet/tx/22e3c4e31121a045f319e965a04761edca3d527f3dfb077423aaf0e5eac5964d,
+`scripts/testnet_shield_batch.cjs`). The batch is capped at 8 items (`MAX_SHIELD_BATCH`): 8 items use 314M of the 400M limit on the compiled WASM (335M declared live), and a size sweep from 1 to 8 (`shield_batch_size_sweep_on_real_wasm`) fails the build if the cap is raised past 85% of the limit.
 
 ---
 
@@ -62,8 +72,10 @@ This was then confirmed with real transactions: `scripts/testnet_scale_run.cjs` 
 
 | Batch | Leaf count before | Instructions |
 | --- | --- | --- |
-| tx `1bcd1589…` | 0 | 336,599,908 |
-| tx `67655412…` | 1354 | 334,258,867 |
+| tx `1bcd1589…` (full hash not retained — see note below) | 0 | 336,599,908 |
+| tx `67655412…` (full hash not retained — see note below) | 1354 | 334,258,867 |
+
+These two hashes were printed to the terminal by `scripts/testnet_scale_run.cjs`/`scripts/tx_resource_profile.cjs` during the live run and were never saved to a file, so only the 8-character prefix survives in this doc; a full explorer link for these two specifically can only be produced by re-running the 171-batch scale run live again (or if a saved terminal log from that run turns up).
 
 Cost is flat (within measurement noise) between an empty tree and one with over a thousand real leaves, on-chain, matching the synthetic 5,000-leaf test's conclusion that insert cost does not grow with tree size (a fixed 32-level path; the tiny synthetic-test increase is the extra sibling reads at a specific, deliberately unfavourable index). The insert itself was optimised while doing this work (see "Instruction-cost optimisation" below); `insert_many_matches_an_independent_tree_for_every_batch_size_and_alignment` proves the optimised insert stores the same tree as inserting leaf by leaf.
 
@@ -140,9 +152,9 @@ The four live shields above each carry a proof from `generateShieldProof`, verif
 
 **5.5 generateTransfer4Proof, generateUnshieldProof and the swap-fairness generator have each produced a proof used in a fresh, individually-submitted and verified live transaction. Met.**
 Each is its own live transaction on the current stack (`docs/TESTNET_DEPLOYMENT.md`):
-- `generateTransfer4Proof`: `transfer4`, tx `15cbeef9...` (19 public signals, 86.3M instructions).
-- `generateUnshieldProof`: `unshield`, tx `c99b6b23...`.
-- swap-fairness generator: `reveal_and_claim`, tx `56cf20e1...`, verifying a real swap-fairness proof (with the real unshield ownership proof in `commit_swap` `96ac0a77...` and a real shield proof for the output note).
+- `generateTransfer4Proof`: `transfer4`, tx https://stellar.expert/explorer/testnet/tx/15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba (19 public signals, 86.3M instructions).
+- `generateUnshieldProof`: `unshield`, tx https://stellar.expert/explorer/testnet/tx/c99b6b23dd068d3c12c77697cb614efa06c805349233716851efc85a22f80891.
+- swap-fairness generator: `reveal_and_claim`, tx https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297, verifying a real swap-fairness proof (with the real unshield ownership proof in `commit_swap` https://stellar.expert/explorer/testnet/tx/96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340 and a real shield proof for the output note).
 Limit: these ran on a validation deployment whose verifier is administered by the deployer rather than through governance's timelock.
 
 ---
@@ -188,7 +200,19 @@ Governance's two entrypoints do no proof verification (they forward a VK to the 
 
 ## On-chain evidence, re-verified
 
-`node scripts/verify_onchain_evidence.cjs` queries public Testnet RPC and checks that each cited transaction on the current stack is SUCCESS on the documented contract and function, and that contract state matches: 4 shield transactions (`e51f3be3`, `048f0233`, `0ac97d14`, `244b9950`), `shield_batch` of 8 (`22e3c4e3`), `transfer4` (`15cbeef9`), `unshield` (`c99b6b23`), a swap-asset shield (`ff8756d3`), `commit_swap` (`96ac0a77`), `execute_swap` (`994f97fd`), `reveal_and_claim` (`56cf20e1`) and `publish_compliance_proof` (`514b9abc`). State read back: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change and restore transactions (`db1b3a9c`, `12236807`) are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer.
+`node scripts/verify_onchain_evidence.cjs` queries public Testnet RPC and checks that each cited transaction on the current stack is SUCCESS on the documented contract and function, and that contract state matches:
+
+- 4 shield transactions: https://stellar.expert/explorer/testnet/tx/e51f3be33e335917b663cb1969a7d9812cbac1c5e97e797c7fb2cdcb43abd2b1, https://stellar.expert/explorer/testnet/tx/048f02332f51a0f5efe99c40e01f4b80b073d61755328630c4b28637d150b084, https://stellar.expert/explorer/testnet/tx/0ac97d14310a692a35a7a3c9da71bc84e03e96eed0dcf0c97120a52df2183700, https://stellar.expert/explorer/testnet/tx/244b995070978701a382202355d76c352d63e1b150092541da77d8c9a4910b1c
+- `shield_batch` of 8: https://stellar.expert/explorer/testnet/tx/22e3c4e31121a045f319e965a04761edca3d527f3dfb077423aaf0e5eac5964d
+- `transfer4`: https://stellar.expert/explorer/testnet/tx/15cbeef9533724df6ea96d3e96152255039664b11dac8640dd3d4c01370678ba
+- `unshield`: https://stellar.expert/explorer/testnet/tx/c99b6b23dd068d3c12c77697cb614efa06c805349233716851efc85a22f80891
+- a swap-asset shield: https://stellar.expert/explorer/testnet/tx/ff8756d3320ae98a03abf76562e3b7fb980283624ca50700e1979c939e1d527d
+- `commit_swap`: https://stellar.expert/explorer/testnet/tx/96ac0a773395a31b36521abe81fa2ff933e6cadf0502399a467e5ec3738b1340
+- `execute_swap`: https://stellar.expert/explorer/testnet/tx/994f97fdf6b73dbcb2fd4bf8467a49be63c6d3dd2a5a7483aacfd6c314949797
+- `reveal_and_claim`: https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297
+- `publish_compliance_proof`: https://stellar.expert/explorer/testnet/tx/514b9abca55beeb41d56f739f11d83ee9cb8d3a5be90f33cb0736318e3eb5385
+
+State read back: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change (https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890) and restore (https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25) transactions are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer.
 
 ## Instruction-cost optimisation
 
