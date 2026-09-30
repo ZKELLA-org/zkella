@@ -68,14 +68,14 @@ The check is enforced in `shield`, `shield_batch` and `transfer` (`merkle::has_c
 **2.4 Per-insert instruction cost is measured against a tree populated to a realistic scale of thousands of leaves, and published. Met.**
 The network caps one transaction at 400 ledger entries, so thousands of real inserts cannot happen inside one test invocation; `merkle_insert_cost_and_correctness_at_thousands_of_leaves` instead builds a full 5,000-leaf tree in memory (independent pure-Rust Poseidon), writes exactly the boundary nodes a real 5,000-leaf tree would hold, and runs a real `shield` on the compiled WASM as leaf 5,000: **76,355,580 instructions into an empty tree, 76,941,303 into the 5,000-leaf tree (+0.77%)**, root verified against an independent recomputation of all 5,001 leaves.
 
-This was then confirmed with real transactions: `scripts/testnet_scale_run.cjs` ran 171 further live `shield_batch` (8-item) calls against the Tranche 1 stack, growing `leaf_count` from 18 to **1,362** (`node scripts/verify_onchain_evidence.cjs`). Comparing the resource profile (`scripts/tx_resource_profile.cjs`) of the first such batch, into a near-empty tree, against one submitted once the tree held over 1,350 leaves:
+This was then confirmed with real transactions: `scripts/testnet_scale_run.cjs` ran 171 further live `shield_batch` (8-item) calls against the Tranche 1 stack, growing `leaf_count` from 18 to **1,362** (`node scripts/verify_onchain_evidence.cjs`), and later activity has grown it further still. Comparing the resource profile (`scripts/tx_resource_profile.cjs`) of an early such batch against one re-run at the current scale (both real `shield_batch` calls of 8 items each, so directly comparable):
 
-| Batch | Leaf count before | Instructions |
-| --- | --- | --- |
-| tx `1bcd1589…` (full hash not retained — see note below) | 0 | 336,599,908 |
-| tx `67655412…` (full hash not retained — see note below) | 1354 | 334,258,867 |
+| Batch | Leaf count before | Instructions | Tx |
+| --- | --- | --- | --- |
+| Low leaf count | 10 | 334,977,222 | https://stellar.expert/explorer/testnet/tx/22e3c4e31121a045f319e965a04761edca3d527f3dfb077423aaf0e5eac5964d |
+| High leaf count | 1394 | 334,283,407 | https://stellar.expert/explorer/testnet/tx/1d48e2bc2717ba491496464a8863abe7f6715f62b85f4cc1c60db60ece93ec1f |
 
-These two hashes were printed to the terminal by `scripts/testnet_scale_run.cjs`/`scripts/tx_resource_profile.cjs` during the live run and were never saved to a file, so only the 8-character prefix survives in this doc; a full explorer link for these two specifically can only be produced by re-running the 171-batch scale run live again (or if a saved terminal log from that run turns up).
+(The batch that originally established the flat-cost result at 1,354 leaves is superseded by the second row above — its own full hash was only ever printed to a terminal during that earlier live run and was never saved to a file, so it's replaced here with a freshly re-measured transaction rather than left as an unverifiable prefix.)
 
 Cost is flat (within measurement noise) between an empty tree and one with over a thousand real leaves, on-chain, matching the synthetic 5,000-leaf test's conclusion that insert cost does not grow with tree size (a fixed 32-level path; the tiny synthetic-test increase is the extra sibling reads at a specific, deliberately unfavourable index). The insert itself was optimised while doing this work (see "Instruction-cost optimisation" below); `insert_many_matches_an_independent_tree_for_every_batch_size_and_alignment` proves the optimised insert stores the same tree as inserting leaf by leaf.
 
@@ -212,7 +212,7 @@ Governance's two entrypoints do no proof verification (they forward a VK to the 
 - `reveal_and_claim`: https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297
 - `publish_compliance_proof`: https://stellar.expert/explorer/testnet/tx/514b9abca55beeb41d56f739f11d83ee9cb8d3a5be90f33cb0736318e3eb5385
 
-State read back: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change (https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890) and restore (https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25) transactions are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer.
+State read back at the time of that check: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change (https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890) and restore (https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25) transactions are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer. (`leaf_count` has since grown well past that snapshot, to 1,402 at the time of writing, from the Deliverable 2.4 scale run and the additional at-scale confirmation transaction above — a live view call, not a discrepancy.)
 
 ## Instruction-cost optimisation
 
