@@ -24,7 +24,11 @@ Current Testnet stack (`deployments.json`'s `testnet_tranche2` block): verifier
 `CCU6TP7MQD7WN4UC3M4KDLSV3M3WSAOBWTO3MZ6QDMF23BUBAKENJP44`, token
 `CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`, swap
 `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D`. Deployer-administered verifier
-(no governance timelock on this validation stack, same as Tranche 1's).
+(no governance timelock on this validation stack, same as Tranche 1's). Deploy transactions for
+all three contracts, found by deriving each `CreateContract` operation's resulting address from
+the deployer's own on-chain history: verifier
+https://stellar.expert/explorer/testnet/tx/f92d0b042d8f650b13db562b06bff618766ab50e00cb471c0b2f7500d530fd69,
+token (see 1.1), swap (see 3.1).
 
 ---
 
@@ -33,7 +37,12 @@ Current Testnet stack (`deployments.json`'s `testnet_tranche2` block): verifier
 **1.1 The token contract's new transfer entrypoint compiles and deploys to Testnet. Met.**
 `transfer`/`transfer4` already existed from Tranche 1 and are unchanged in shape except for
 the new `relayer: Option<Address>` parameter this tranche adds. Deployed as part of the
-Tranche 2 stack above.
+Tranche 2 stack above. Deploy transaction, found by deriving the `CreateContract` operation's
+resulting address from the deployer's own on-chain history and matching it to this contract:
+https://stellar.expert/explorer/testnet/tx/c2f3b1615f16e6c20baa5d568cded2af5738d2d2b6fdc1d55ccd0811cb7a58ee.
+Live proof the deployed contract runs this code:
+https://stellar.expert/explorer/testnet/tx/96733979922ee1dfe1d1f276818c5b1931550aa87630e66980508af50f787d0e
+(the relayer-fee transaction in 1.4).
 
 **1.2 Transfer executes end-to-end on Stellar Testnet with valid proof verification and
 correct nullifier consumption. Met.** Carried over from Tranche 1 (real 2-in/2-out and
@@ -88,7 +97,10 @@ Merkle-tree cost.
 
 **2.1 The token contract's new unshield entrypoint compiles and deploys to Testnet. Met.**
 Deployed as part of the Tranche 2 stack, with the rebuilt 7-public-input `Unshield` circuit
-(`circuits/unshield/unshield.circom`) and a matching, freshly-registered verifying key.
+(`circuits/unshield/unshield.circom`) and a matching, freshly-registered verifying key. Live
+proof the deployed circuit runs:
+https://stellar.expert/explorer/testnet/tx/cacc35d885681328978b2841449883af363ee6f6ec805dad35ff598291abe56c
+(the change-note transaction in 2.4).
 
 **2.2 Unshield executes end-to-end on Stellar Testnet with valid proof verification and
 correct nullifier consumption. Met.** Confirmed live as part of the change-note transaction
@@ -129,7 +141,12 @@ Tranche 1: tx https://stellar.expert/explorer/testnet/tx/c99b6b23dd068d3c12c7769
 ## Deliverable 3: Swap Contract & Fairness Circuit
 
 **3.1 The swap contract compiles and deploys to Testnet. Met.** Deployed as part of the
-Tranche 2 stack, with `commit_swap`'s new `min_amount_out` parameter.
+Tranche 2 stack, with `commit_swap`'s new `min_amount_out` parameter. Deploy transaction, found
+the same way as the token's above:
+https://stellar.expert/explorer/testnet/tx/b61dbaa9b3a8ede45cc6cc5daec4f2e2c1cd22d0d1411aa6dec0df66e34f1d25.
+Live proof the deployed contract runs this code:
+https://stellar.expert/explorer/testnet/tx/fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c
+(the commit in 3.2's Tranche 2 lifecycle).
 
 **3.2 The full swap flow (commit, relayer-fronted execution, reveal-and-claim) executes
 end-to-end on Stellar Testnet with valid proof verification and correct nullifier consumption.
@@ -201,6 +218,11 @@ ever harms the creator themselves (see `commit_swap`'s doc comment for the full 
 is written, and `reveal_and_claim` separately checks the fairness proof's own revealed
 `min_amount_out` against the same stored value, as defense in depth alongside the circuit's
 existing derivation check.
+
+The rejection path itself is unit-tested, not separately run live; the underlying mechanism
+(the declared `min_amount_out`) is genuinely exercised end-to-end in 3.2's Tranche 2 lifecycle —
+commit https://stellar.expert/explorer/testnet/tx/fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c,
+execute https://stellar.expert/explorer/testnet/tx/4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7.
 
 Test: `execute_swap_rejects_an_amount_out_below_the_committed_minimum` commits a swap with
 `min_amount_out = 900,000` and shows `execute_swap` panics with "amount_out below the
