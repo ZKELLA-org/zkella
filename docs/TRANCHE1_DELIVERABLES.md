@@ -33,11 +33,12 @@ https://stellar.expert/explorer/testnet/tx/244b995070978701a382202355d76c352d63e
 `cm = H(H(H(value, asset), H(rho, rcm)), pk)` is computed inside the contract, compared with the commitment argument, and independently cross-checked against circomlibjs and the compiled circuit (`poseidon.rs`: `note_commitment_matches_real_shield_circuit_v2_500stroops_vector`; `commitment.test.ts`: three vectors plus the circuit's own witness). Duplicates are rejected with `DuplicateCommitment` (`shield_rejects_duplicate_commitment`, `shield_replay_by_different_caller_rejected_at_duplicate_check`, a duplicate inside a batch in `tests/shield_flow.rs`). Representative inputs, zero and negative amounts, amounts below the minimum, oversized values and wrong note lengths (0, 175, 177 bytes) each assert the exact error and that state is unchanged.
 
 **1.3 MIN_SHIELD_AMOUNT is a governance-settable parameter rather than a hardcoded constant, confirmed by changing it without a redeploy. Met.**
-`set_min_shield_amount` (admin-gated) and `min_shield_amount` replace the constant; non-positive values are rejected. Proof, live: the minimum was read as 1,000, raised to 2,000,000
-(https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890),
-a shield below it was rejected by the contract, and it was restored
-(https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25),
-all on the same deployed contract. Unit test: `min_shield_amount_is_governance_settable_without_redeploy`.
+`set_min_shield_amount` (admin-gated) and `min_shield_amount` replace the constant; non-positive values are rejected. Proof, live, on the current Testnet stack's token (`CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`): the minimum was read as 1,000, raised to 2,000,000
+(https://stellar.expert/explorer/testnet/tx/09a8a09fc0efe4437b314c38ad6d565480573bc2806416d5a83a70c6a371bbff),
+confirmed read back as 2,000,000, and restored to 1,000
+(https://stellar.expert/explorer/testnet/tx/fb11dff8c2083c051034707466cf599d32db830f7448d5ea0313194611ca6ae2),
+all without a redeploy. Unit test: `min_shield_amount_is_governance_settable_without_redeploy`.
+(An earlier version of this evidence cited two transactions against an untracked, non-current contract; replaced here with fresh transactions against the actual current stack.)
 
 **1.4 A documented, implemented policy exists for what happens to shielded notes if a non-native asset's issuer claws back the contract's custodied balance. Met.**
 Implemented in three layers (`docs/TECHNICAL_SPEC.md` section 6.1, `docs/RUNBOOK.md` category 5):
@@ -212,7 +213,7 @@ Governance's two entrypoints do no proof verification (they forward a VK to the 
 - `reveal_and_claim`: https://stellar.expert/explorer/testnet/tx/56cf20e1bed210acc1548e32514ccfc59b8f6dc31ffd788d5c609e9054321297
 - `publish_compliance_proof`: https://stellar.expert/explorer/testnet/tx/514b9abca55beeb41d56f739f11d83ee9cb8d3a5be90f33cb0736318e3eb5385
 
-State read back at the time of that check: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change (https://stellar.expert/explorer/testnet/tx/db1b3a9cd4f6ab8aa92d6e27708bc67947643e4d48c165e4a3fe9e0336dfe890) and restore (https://stellar.expert/explorer/testnet/tx/122368076cfda683116fe997de29b418f39efa309412c291686c9a69d435be25) transactions are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer. (`leaf_count` has since grown well past that snapshot, to 1,402 at the time of writing, from the Deliverable 2.4 scale run and the additional at-scale confirmation transaction above — a live view call, not a discrepancy.)
+State read back at the time of that check: `leaf_count` 18, `min_shield_amount` 1000, five verifying keys registered (Shield, Unshield, NonMembership, Transfer4x4, SwapFairness). The min-shield change (https://stellar.expert/explorer/testnet/tx/09a8a09fc0efe4437b314c38ad6d565480573bc2806416d5a83a70c6a371bbff) and restore (https://stellar.expert/explorer/testnet/tx/fb11dff8c2083c051034707466cf599d32db830f7448d5ea0313194611ca6ae2) transactions, re-run live against the actual current stack's token contract, are also SUCCESS. Public RPC retains only a recent window, so older-stack transactions may return NOT_FOUND there and must be checked on an explorer. (`leaf_count` has since grown well past that snapshot, to 1,402 at the time of writing, from the Deliverable 2.4 scale run and the additional at-scale confirmation transaction above — a live view call, not a discrepancy.)
 
 ## Instruction-cost optimisation
 
