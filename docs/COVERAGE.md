@@ -13,17 +13,18 @@ cargo llvm-cov report --release --show-missing-lines     # itemised uncovered li
 
 The run compiles the crate and its dependencies with coverage instrumentation and takes several minutes on a cold build.
 
-## Result (token crate, `zkella-token`, 116 tests)
+## Result (token crate, `zkella-token`, 124 tests)
 
 | File | Regions | Lines | Functions |
 | --- | --- | --- | --- |
-| `src/lib.rs` | 99.80% | 100% | 100% |
-| `src/merkle.rs` | 99.40% | 99.17% | 93.33% |
+| `src/lib.rs` | 99.74% | 99.89% | 100% |
+| `src/merkle.rs` | 99.40% | 99.18% | 93.75% |
 | `src/poseidon.rs` | 99.68% | 100% | 100% |
+| `src/test_groth16.rs` | 100% | 100% | 100% |
 | `src/types.rs` | 0% | 0% | 0% |
-| Total | 99.66% | 99.66% | 93.33% |
+| Total | 99.59% | 99.55% | 92.94% |
 
-Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (28, 12, 4, 3 and 2), but no coverage figure exists for them.
+Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (30, 17, 5, 4 and 2), but no coverage figure exists for them.
 
 ## Independent review of adequacy
 
@@ -37,14 +38,20 @@ The first version of this report was reviewed by someone other than its author. 
 - several tests asserted only `is_err()`, which passes on an unrelated error;
 - the Merkle root was only compared with "not equal" to the previous root, never with an independently computed value.
 
-These were all closed with 49 new tests (`contracts/token/src/tests/shield_flow.rs`, 33 tests, and `tests/spend_paths.rs`, 16 tests). They assert the exact error and that leaf count, root, supply, nullifiers and balances are unchanged on failure. Together with the pause, admin-transfer and `merkle_path` tests added earlier, and the clawback, at-scale and cost-parity tests, this took the crate from 55 to 116 tests and `lib.rs` to 100% of lines.
+These were all closed with 49 new tests (`contracts/token/src/tests/shield_flow.rs`, 33 tests, and `tests/spend_paths.rs`, 16 tests). They assert the exact error and that leaf count, root, supply, nullifiers and balances are unchanged on failure. Together with the pause, admin-transfer and `merkle_path` tests added earlier, and the clawback, at-scale and cost-parity tests, this took the crate from 55 to 116 tests, with `lib.rs` at 100% of lines at that point.
+
+Since then, Tranche 2's relayer-fee and unshield change-note features added real code without, in three places, a dedicated negative test for a defensive branch — see "What remains uncovered" below. The crate is now at 124 tests.
 
 ## What remains uncovered
 
-- `types.rs` (9 lines, 9 functions): derive and conversion glue generated for the contract types. Not behaviour.
-- One line in `merkle.rs`: the false branch of a test-only helper, `verify_path`.
+- `types.rs` (10 lines, 10 functions): derive and conversion glue generated for the contract types. Not behaviour.
+- `lib.rs`, 3 lines, each a defensive error branch introduced by a Tranche 2 feature, correctly implemented but not yet exercised by its own test:
+  - `transfer`'s guard against a relayer fee driving `shielded_supply` negative (an underflow that passes `checked_sub` because the result is still a representable negative `i128`, but is semantically invalid).
+  - `unshield`'s change-note `change_commitment` binding-mismatch check (the same pattern as the already-tested nullifier mismatch check immediately above it).
+  - `unshield`'s change-note `MerkleTreeFull` pre-check (the same pattern already tested for `shield`/`shield_batch`/`transfer`, not yet repeated for this call site).
+- `merkle.rs`, 2 lines in test-only helper code (`verify_path`/`get_path_indices`), not reached by the current suite.
 
-There are no uncovered error branches left in the shield, `shield_batch`, `transfer`, `transfer4` or `unshield` entrypoints.
+The three `lib.rs` gaps are genuine, open test-coverage gaps on real (if narrow) code paths, not yet closed.
 
 ## Limits of this measure
 
