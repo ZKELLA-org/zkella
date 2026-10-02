@@ -63,6 +63,9 @@
     "testMatch": [
       "**/tests/**/*.test.ts"
     ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/jest.setup-after-env.cjs"
+    ],
     "transformIgnorePatterns": [
       "node_modules/(?!(uint8array-extras|@exodus|@noble|@scure|@stellar)/)",
       "<rootDir>/circuits/"

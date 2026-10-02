@@ -70,6 +70,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
       WASM_PATH,
       ZKEY_PATH,
       async () => new Uint8Array(0), // encryptNote stub — this test doesn't check the ciphertext
+      true, // singleThread: avoid ffjavascript's own worker pool so Jest exits cleanly
     )
 
     expect(result.proof.length).toBe(256)
@@ -113,6 +114,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
         WASM_PATH,
         ZKEY_PATH,
         async () => new Uint8Array(0),
+        true, // singleThread
       ),
     ).rejects.toThrow('leafIndex')
   })
@@ -135,6 +137,7 @@ describe('generateUnshieldProof — end-to-end against the real compiled circuit
         WASM_PATH,
         ZKEY_PATH,
         async () => new Uint8Array(0),
+        true, // singleThread
       ),
     ).rejects.toThrow('merklePath')
   })
