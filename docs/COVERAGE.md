@@ -49,7 +49,7 @@ Since then, Tranche 2's relayer-fee and unshield change-note features added real
   - `transfer`'s guard against a relayer fee driving `shielded_supply` negative (an underflow that passes `checked_sub` because the result is still a representable negative `i128`, but is semantically invalid).
   - `unshield`'s change-note `change_commitment` binding-mismatch check (the same pattern as the already-tested nullifier mismatch check immediately above it).
   - `unshield`'s change-note `MerkleTreeFull` pre-check (the same pattern already tested for `shield`/`shield_batch`/`transfer`, not yet repeated for this call site).
-- `merkle.rs`, 2 lines in test-only helper code (`verify_path`/`get_path_indices`), not reached by the current suite.
+- `merkle.rs`, 2 lines: `is_known_root`'s fallback branch for when `RootHistory` has never been written (every test inserts at least one leaf first, so this closure never runs), and a diagnostic `panic!` message inside the test helper `assert_tree_matches` that is only reached if a test were to fail (by design, never during a passing run).
 
 The three `lib.rs` gaps are genuine, open test-coverage gaps on real (if narrow) code paths, not yet closed.
 
