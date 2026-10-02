@@ -54,10 +54,11 @@ fuzz_target!(|data: &[u8]| {
     let proof = Bytes::from_slice(&env, &data[1 + 32 * 9..]);
     let (leaves, root) = (client.leaf_count(), client.merkle_root());
 
+    let relayer: Option<Address> = None;
     let ok = if four {
-        client.try_transfer4(&nfs, &outs, &encs, &proof, &pub_in)
+        client.try_transfer4(&nfs, &outs, &encs, &proof, &pub_in, &relayer)
     } else {
-        client.try_transfer(&nfs, &outs, &encs, &proof, &pub_in)
+        client.try_transfer(&nfs, &outs, &encs, &proof, &pub_in, &relayer)
     };
     assert!(
         ok.is_err() || ok.unwrap().is_err(),
