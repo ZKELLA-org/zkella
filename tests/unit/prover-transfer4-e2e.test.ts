@@ -90,6 +90,7 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
       { anchor, assetId: ASSET_ADDR },
       WASM_PATH,
       ZKEY_PATH,
+      true, // singleThread: avoid ffjavascript's own worker pool so Jest exits cleanly
     )
 
     expect(result.proof.length).toBe(256)
@@ -130,6 +131,7 @@ describe('generateTransfer4Proof — end-to-end against the real compiled circui
         { anchor: new Uint8Array(32), assetId: ASSET_ADDR },
         WASM_PATH,
         ZKEY_PATH,
+        true, // singleThread
       ),
     ).rejects.toThrow('in_value sum')
   })

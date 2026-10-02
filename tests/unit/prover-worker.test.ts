@@ -46,10 +46,10 @@ describe('prover worker dispatch (sdk/src/prover/worker.ts)', () => {
     const note = await buildNote(AMOUNT, ASSET, await computeOwnerKey(bigIntToBuffer(4444n)))
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset: ASSET, amount: AMOUNT }
 
-    const direct = await generateShieldProof(note, publicInputs, WASM_PATH, ZKEY_PATH)
+    const direct = await generateShieldProof(note, publicInputs, WASM_PATH, ZKEY_PATH, true)
     const request: ProverWorkerRequest = {
       kind: 'shield',
-      args: [note, publicInputs, WASM_PATH, ZKEY_PATH],
+      args: [note, publicInputs, WASM_PATH, ZKEY_PATH, true],
     }
     const viaHandle = (await handle(request)) as ShieldProofResult
 

@@ -89,6 +89,7 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
       { anchor, assetId: ASSET_ADDR },
       WASM_PATH,
       ZKEY_PATH,
+      true, // singleThread: avoid ffjavascript's own worker pool so Jest exits cleanly
     )
 
     expect(result.proof.length).toBe(256)
@@ -148,6 +149,7 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
         { anchor: new Uint8Array(32), assetId: ASSET_ADDR },
         WASM_PATH,
         ZKEY_PATH,
+        true, // singleThread
       ),
     ).rejects.toThrow('in_value sum')
   })
@@ -180,6 +182,7 @@ describe('generateTransferProof — end-to-end against the real compiled circuit
         { anchor: new Uint8Array(32), assetId: ASSET_ADDR },
         WASM_PATH,
         ZKEY_PATH,
+        true, // singleThread
       ),
     ).rejects.toThrow('leafIndex')
   })
