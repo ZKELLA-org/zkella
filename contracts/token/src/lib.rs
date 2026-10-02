@@ -1,4 +1,9 @@
 #![no_std]
+// `env.events().publish(...)` is deprecated in favor of `#[contractevent]`.
+// Deferred deliberately: migrating would change event encoding and could
+// shift the compiled WASM's instruction cost, invalidating numbers already
+// published as live Testnet evidence. Tracked as a follow-up, not ignored.
+#![allow(deprecated)]
 
 mod merkle;
 mod poseidon;

@@ -92,8 +92,6 @@ const EMPTY_ROOTS: [[u8; 32]; 33] = [
     [0x11, 0x1d, 0xd8, 0xb5, 0x5a, 0x1d, 0x28, 0xa2, 0x35, 0x22, 0x21, 0xb7, 0x7e, 0x44, 0x28, 0xeb, 0x45, 0xed, 0x85, 0x3d, 0xad, 0xe8, 0x42, 0x48, 0xaf, 0xe4, 0x05, 0xdb, 0xf8, 0xd2, 0x02, 0x11],
 ];
 
-const EMPTY_LEAF: [u8; 32] = EMPTY_ROOTS[0];
-
 fn empty_subtree_root(level: u32) -> [u8; 32] {
     EMPTY_ROOTS[level as usize]
 }
@@ -226,7 +224,7 @@ pub fn insert_many(env: &Env, commitments: &[BytesN<32>], hasher: &mut Poseidon2
 }
 
 /// Return the current Merkle root.
-pub fn root(env: &Env, hasher: &mut Poseidon2Hasher) -> BytesN<32> {
+pub fn root(env: &Env, _hasher: &mut Poseidon2Hasher) -> BytesN<32> {
     env.storage()
         .instance()
         .get(&StorageKey::MerkleRoot)
@@ -255,7 +253,7 @@ pub fn is_known_root(env: &Env, candidate: &BytesN<32>, hasher: &mut Poseidon2Ha
 
 /// Return the Merkle authentication path for `leaf_index`.
 /// Returns a Vec of sibling nodes from leaf level to root.
-pub fn get_path(env: &Env, leaf_index: u32, hasher: &mut Poseidon2Hasher) -> Vec<BytesN<32>> {
+pub fn get_path(env: &Env, leaf_index: u32, _hasher: &mut Poseidon2Hasher) -> Vec<BytesN<32>> {
     let mut path  = Vec::new(env);
     let mut index = leaf_index;
 
@@ -277,6 +275,7 @@ pub fn get_path(env: &Env, leaf_index: u32, hasher: &mut Poseidon2Hasher) -> Vec
 }
 
 /// Return the direction bits for `leaf_index` (false = left, true = right).
+#[cfg(test)]
 pub fn get_path_indices(leaf_index: u32) -> [bool; 32] {
     let mut bits  = [false; 32];
     let mut index = leaf_index;

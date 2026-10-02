@@ -1,4 +1,7 @@
 #![no_std]
+// See contracts/token/src/lib.rs for why the `publish` deprecation is
+// deferred rather than migrated right now.
+#![allow(deprecated)]
 
 #[cfg(test)]
 mod test_groth16;
@@ -1138,7 +1141,7 @@ mod tests {
         };
         let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
 
-        let leaf_index = swap_client.reveal_and_claim(
+        let _leaf_index = swap_client.reveal_and_claim(
             &swap_id, &out_rho, &out_rcm, &BytesN::from_array(&s.env, &canon(99)), &out_commitment, &out_value_commit,
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );

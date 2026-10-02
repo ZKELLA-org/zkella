@@ -1,4 +1,7 @@
 #![no_std]
+// See contracts/token/src/lib.rs for why the `publish` deprecation is
+// deferred rather than migrated right now.
+#![allow(deprecated)]
 
 //! Viewing-key commitment registry.
 //!
