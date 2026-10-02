@@ -587,7 +587,7 @@ mod tests {
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         let admin = Address::generate(&env);
-        let verifier = env.register_contract(None, VerifierContract);
+        let verifier = env.register(VerifierContract, ());
         (env, admin, verifier)
     }
 

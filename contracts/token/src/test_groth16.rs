@@ -21,7 +21,7 @@ use ark_bn254::{Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
 use ark_std::UniformRand;
-use soroban_sdk::{Bytes, BytesN, Env};
+use soroban_sdk::{Bytes, Env};
 
 fn fq_be(f: &Fq) -> [u8; 32] {
     let mut out = [0u8; 32];

@@ -15,7 +15,17 @@ const R: [u64; 4] = [
     0x30644e72e131a029,
 ];
 
+// Everything below down to `poseidon2_native` is a pure-Rust reference
+// implementation of Poseidon2, used only to independently cross-check the
+// real on-chain hash in tests (see `poseidon2_native_matches_pure_rust_*`
+// below). It is genuinely unreachable from any contract entrypoint in a
+// release build, but `poseidon2_bytes` must stay a plain, ungated `pub fn`
+// because the `tests/shield_flow.rs` integration test links against it
+// directly; integration tests build the crate without `cfg(test)`, so
+// gating this code behind `#[cfg(test)]` would break that build.
+
 // 2^256 mod r (Montgomery constant for iterative reduction)
+#[allow(dead_code)]
 const TWO256_MOD_R: [u64; 4] = [
     0xac96341c4ffffffb,
     0x36fc76959f60cd29,
@@ -28,6 +38,7 @@ const TWO256_MOD_R: [u64; 4] = [
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Fr(pub [u64; 4]);
 
+#[allow(dead_code)]
 impl Fr {
     pub const ZERO: Fr = Fr([0, 0, 0, 0]);
     pub const ONE:  Fr = Fr([1, 0, 0, 0]);
@@ -96,6 +107,7 @@ impl Fr {
 }
 
 // Carry-propagating 4×4 schoolbook multiply → 8-limb result (no overflow).
+#[allow(dead_code)]
 fn mul_512(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
     let mut r = [0u64; 8];
     for i in 0..4 {
@@ -114,6 +126,7 @@ fn mul_512(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
 
 // Reduce 512-bit product (little-endian [u64;8]) mod r.
 // Uses n = lo + hi·C where C = 2^256 mod r, iterating until hi = 0.
+#[allow(dead_code)]
 fn reduce_512(mut n: [u64; 8]) -> Fr {
     loop {
         let hi = [n[4], n[5], n[6], n[7]];
@@ -143,12 +156,14 @@ fn reduce_512(mut n: [u64; 8]) -> Fr {
 
 // ── MDS matrix multiply ───────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn mds_mul(state: &mut [Fr; 3], m: &[[Fr; 3]; 3]) {
     let mut ns = [Fr::ZERO; 3];
     for i in 0..3 { for j in 0..3 { ns[i] = ns[i].add(m[j][i].mul(state[j])); } }
     *state = ns;
 }
 
+#[allow(dead_code)]
 const POSEIDON_C: [Fr; 81] = [
     Fr([0x8d21d47304cd8e6e, 0x14c4993c11bb2993, 0xd05986d656f40c21, 0x0ee9a592ba9a9518]),
     Fr([0x5696fff40956e864, 0x887b08d4d00868df, 0x5986587169fc1bcd, 0x00f1445235f2148c]),
@@ -233,18 +248,21 @@ const POSEIDON_C: [Fr; 81] = [
     Fr([0x40cc8f78b7bd9abe, 0x8c2666a6379d9d2c, 0x22acc1a1f5f3bb6d, 0x2e211b39a023031a]),
 ];
 
+#[allow(dead_code)]
 const POSEIDON_M: [[Fr; 3]; 3] = [
     [Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]), Fr([0xd62940bcde0bd771, 0x2cc8fdd1415c3dde, 0xb9c36c764379dbca, 0x2969f27eed31a480]), Fr([0x326244ee65a1b1a7, 0xe6cd79e28c5b3753, 0x0d5f9e654638065c, 0x143021ec686a3f33])],
     [Fr([0xd6c64543dc4903e0, 0x9314dc9fdbdeea55, 0x6ae119424fddbcbc, 0x16ed41e13bb9c0c6]), Fr([0x29b2311687b1fe23, 0xb89d743c8c7b9640, 0x4c9871c832963dc1, 0x2e2419f9ec02ec39]), Fr([0xb16cdfabc8ee2911, 0xd057e12e58e7d7b6, 0x82a70eff08a6fd99, 0x176cc029695ad025])],
     [Fr([0x791a93b74e36736d, 0xf706ab640ceb247b, 0xf617e7dcbfe82e0d, 0x2b90bba00fca0589]), Fr([0xc8aacc55a0f89bfa, 0x148d4e109f5fb065, 0x97315876690f053d, 0x101071f0032379b6]), Fr([0x73279cd71d25d5e0, 0xa644470307043f77, 0x17ba7fee3802593f, 0x19a3fc0a56702bf4])],
 ];
 
+#[allow(dead_code)]
 const POSEIDON_P: [[Fr; 3]; 3] = [
     [Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]), Fr([0x5a8a79a66831f51d, 0x6203f5f24ae72c92, 0x3f83dcedddb9a023, 0x1e6f20a11d1e31e4]), Fr([0x4084e3027e782467, 0x484f426725403ae2, 0xc722a141f8785694, 0x1bd8c528472e57bd])],
     [Fr([0xd6c64543dc4903e0, 0x9314dc9fdbdeea55, 0x6ae119424fddbcbc, 0x16ed41e13bb9c0c6]), Fr([0x90527a1a5f05079a, 0x7143625b0a9e9c31, 0x6bacf1ad5e56655b, 0x2d51ba82c8073c6d]), Fr([0xb5f927fe8d6a77c9, 0xce0611f940ff0731, 0xe0ab10fc2e51ea83, 0x1b07d6d51e6f7e97])],
     [Fr([0x791a93b74e36736d, 0xf706ab640ceb247b, 0xf617e7dcbfe82e0d, 0x2b90bba00fca0589]), Fr([0x5a3e53f0bc5765a0, 0x093cdef1ccf34d98, 0xe8376f62d19edf43, 0x11e12a40d262ae88]), Fr([0x8a3ef37cce8463bd, 0x1574f980d8903830, 0x9c6f3e47b5ff5578, 0x221c170e4d02a247])],
 ];
 
+#[allow(dead_code)]
 const POSEIDON_S: [Fr; 285] = [
     Fr([0xfedb68592ba8118b, 0x94be7c11ad24378b, 0xb2b70caf5c36a7b1, 0x109b7f411ba0e4c9]),
     Fr([0x3ab718e707576b31, 0x1a89752f427f4f06, 0x6ee25a9b8768b323, 0x03f0815ab463f1b7]),
@@ -547,6 +565,7 @@ const POSEIDON_S: [Fr; 285] = [
 //
 //   Final full round uses M but no constants.
 
+#[allow(dead_code)]
 fn poseidon_permutation(state: &mut [Fr; 3]) {
     const NRF2: usize = 4;   // nRoundsF / 2
     const NRP: usize  = 57;  // nRoundsP
@@ -598,6 +617,7 @@ fn poseidon_permutation(state: &mut [Fr; 3]) {
 
 /// Poseidon2(a, b) — hash two field elements, returns one.
 /// initState (capacity) = 0. Matches circomlibjs Poseidon([a, b]).
+#[allow(dead_code)]
 pub fn poseidon2(a: Fr, b: Fr) -> Fr {
     let mut state = [Fr::ZERO, a, b];
     poseidon_permutation(&mut state);
@@ -605,6 +625,7 @@ pub fn poseidon2(a: Fr, b: Fr) -> Fr {
 }
 
 /// Convenience: hash two 32-byte values, return 32 bytes.
+#[allow(dead_code)]
 pub fn poseidon2_bytes(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     poseidon2(Fr::from_bytes(a), Fr::from_bytes(b)).to_bytes()
 }
@@ -703,6 +724,7 @@ impl<'a> Poseidon2Hasher<'a> {
 /// single hash. Perf-sensitive call sites (merkle inserts, commitment
 /// computation) should use [`Poseidon2Hasher`] directly and reuse one
 /// instance across all their hashes instead.
+#[allow(dead_code)]
 pub fn poseidon2_native(env: &soroban_sdk::Env, a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     Poseidon2Hasher::new(env).hash(a, b)
 }
