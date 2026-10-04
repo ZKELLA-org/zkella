@@ -52,8 +52,47 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL.
 
 ### Instruction budget (real WASM)
 
-- Measured with the real-WASM methodology for `shield`, `transfer`, and `transfer4`, plus the shield-batch and unshield cost tests.
-- **Open**: the remaining entrypoints across all six contracts have not been measured yet.
+- Proof-consuming entrypoints (`shield`, `shield_batch`, `transfer`, `transfer4`, `unshield`, verifier `verify` and `verify_batch`, swap commit/execute/reveal, governance queue and execute, compliance publish) are measured by the cost-parity tests inside each contract crate, against real compiled WASM.
+- Non-proof entrypoints are measured by `contracts/budget/tests/instruction_budget.rs` (run with `cd contracts/budget && cargo test --release -- --nocapture`). It registers the real compiled WASM from `contracts/target/wasm32v1-none/release`, which must be built first. Every row is a single successful call, measured as CPU instructions from the Soroban cost tracker, against the 400,000,000 mainnet budget.
+- Highest non-proof cost is `token::merkle_root` at 0.55% of the budget. Every measured non-proof entrypoint is under 0.6%.
+
+| Contract | Entrypoint | CPU instructions | % of budget |
+| --- | --- | ---: | ---: |
+| token | set_min_shield_amount | 724,116 | 0.18 |
+| token | min_shield_amount | 652,957 | 0.16 |
+| token | set_asset_approved | 725,529 | 0.18 |
+| token | is_asset_approved | 658,263 | 0.16 |
+| token | set_relayer | 738,590 | 0.18 |
+| token | is_approved_relayer | 666,145 | 0.17 |
+| token | merkle_root | 2,196,977 | 0.55 |
+| token | leaf_count | 666,238 | 0.17 |
+| token | shielded_supply | 666,082 | 0.17 |
+| token | is_spent | 661,073 | 0.17 |
+| token | pause | 745,431 | 0.19 |
+| token | unpause | 745,261 | 0.19 |
+| token | transfer_admin | 749,521 | 0.19 |
+| token | accept_admin | 782,961 | 0.20 |
+| verifier | initialize | 484,491 | 0.12 |
+| verifier | register_verifying_key | 535,239 | 0.13 |
+| verifier | update_verifying_key | 595,097 | 0.15 |
+| verifier | get_verifying_key | 494,717 | 0.12 |
+| verifier | revoke_previous_vk | 557,992 | 0.14 |
+| governance | initialize | 401,122 | 0.10 |
+| governance | timelock_ledgers | 344,096 | 0.09 |
+| governance | queue_vk_update | 450,259 | 0.11 |
+| governance | cancel_vk_update | 429,644 | 0.11 |
+| governance | execute_vk_update | 1,489,210 | 0.37 |
+| governance | revoke_previous_vk | 948,537 | 0.24 |
+| governance | transfer_admin | 421,612 | 0.11 |
+| governance | accept_admin | 440,109 | 0.11 |
+| compliance | initialize | 370,310 | 0.09 |
+| compliance | get_compliance_proof | 355,210 | 0.09 |
+| viewing_keys | register | 340,763 | 0.09 |
+| viewing_keys | get_viewing_key_commitment | 311,174 | 0.08 |
+| swap | initialize | 592,750 | 0.15 |
+| swap | set_relayer | 596,635 | 0.15 |
+
+- **Open**: swap `cancel_swap` and `reclaim_expired_swap` need a committed swap, so they are not in this table yet. Their cost should be measured in the swap cost-parity test, which builds a committed swap.
 
 ## Open items
 
