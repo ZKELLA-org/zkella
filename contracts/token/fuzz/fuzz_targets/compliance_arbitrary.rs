@@ -21,9 +21,9 @@ fuzz_target!(|data: &[u8]| {
 
     let cc = env.register(ComplianceContract, ());
     let cclient = ComplianceContractClient::new(&env, &cc);
-    cclient.initialize(&verifier);
+    cclient.initialize(&admin, &verifier);
     assert!(
-        cclient.try_initialize(&verifier).is_err(),
+        cclient.try_initialize(&admin, &verifier).is_err(),
         "compliance accepted a second initialize"
     );
 

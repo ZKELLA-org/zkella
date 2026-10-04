@@ -34,6 +34,7 @@ pub enum StorageKey {
     Admin,
     Verifier,
     Token,
+    Paused,
 }
 
 /// BN254 scalar-field modulus r, big-endian.
@@ -149,6 +150,11 @@ const STATE_TTL_EXTEND_TO: u32 = 17_280 * 365; // extend to 1 year
 /// `SwapState` lives in persistent storage, one entry per swap, with its own
 /// TTL. Keeping every swap in the single instance entry (capped at ~128 KiB and
 /// loaded on every call) would let cheap spam brick the whole contract.
+fn assert_not_paused(env: &Env) {
+    let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
+    assert!(!paused, "paused");
+}
+
 fn load_state(env: &Env, swap_id: &BytesN<32>) -> Option<SwapState> {
     let key = StorageKey::SwapState(swap_id.clone());
     let state: Option<SwapState> = env.storage().persistent().get(&key);
@@ -243,6 +249,7 @@ impl ShieldedSwap {
         ownership_proof:       Bytes,
         expiry_ledger:         u32,
     ) -> BytesN<32> {
+        assert_not_paused(&env);
         assert!(expiry_ledger > env.ledger().sequence(), "expiry must be in the future");
         assert!(min_amount_out >= 0, "min_amount_out must not be negative");
         // `reclaim_expired_swap` computes `expiry_ledger + CLAIM_WINDOW_LEDGERS`
@@ -365,6 +372,7 @@ impl ShieldedSwap {
         amount_out: i128,
         relayer:    Address,
     ) {
+        assert_not_paused(&env);
         relayer.require_auth();
         assert!(
             env.storage().instance().has(&StorageKey::ApprovedRelayer(relayer.clone())),
@@ -435,6 +443,7 @@ impl ShieldedSwap {
         fairness_pub:     SwapFairnessPublicInputs,
         shield_proof:     Bytes,
     ) -> u32 {
+        assert_not_paused(&env);
         let mut state: SwapState = load_state(&env, &swap_id).expect("swap not found");
         assert!(state.status == SwapStatus::Executed, "swap not executed");
         // Without this check, `fairness_pub.intent_commitment` was accepted
@@ -625,7 +634,20 @@ impl ShieldedSwap {
         );
     }
 
+    pub fn pause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &true);
+    }
+
+    pub fn unpause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &false);
+    }
+
     pub fn set_relayer(env: Env, relayer: Address, approved: bool) {
+        assert_not_paused(&env);
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
         if approved {
@@ -1849,5 +1871,101 @@ mod tests {
 
         // The second fails — the relayer has no more asset_out left to front.
         swap_client.execute_swap(&swap_id_b, &amount_out, &s.relayer);
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_commit_swap() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.commit_swap(
+            &BytesN::from_array(&s.env, &[1u8; 32]),
+            &BytesN::from_array(&s.env, &[2u8; 32]),
+            &s.asset_in,
+            &s.asset_out,
+            &1_000i128,
+            &BytesN::from_array(&s.env, &[3u8; 32]),
+            &Address::generate(&s.env),
+            &BytesN::from_array(&s.env, &[4u8; 32]),
+            &0i128,
+            &BytesN::from_array(&s.env, &[5u8; 32]),
+            &BytesN::from_array(&s.env, &[6u8; 32]),
+            &Bytes::new(&s.env),
+            &Bytes::new(&s.env),
+            &(s.env.ledger().sequence() + 100),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_execute_swap() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.execute_swap(&BytesN::from_array(&s.env, &[7u8; 32]), &1_000i128, &s.relayer);
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_reveal_and_claim() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        let fairness_pub = SwapFairnessPublicInputs {
+            intent_commitment: BytesN::from_array(&s.env, &[8u8; 32]),
+            asset_in: s.asset_in.clone(),
+            asset_out: s.asset_out.clone(),
+            amount_out: 1_000,
+            min_amount_out: 0,
+        };
+        swap_client.reveal_and_claim(
+            &BytesN::from_array(&s.env, &[7u8; 32]),
+            &BytesN::from_array(&s.env, &[1u8; 32]),
+            &BytesN::from_array(&s.env, &[2u8; 32]),
+            &BytesN::from_array(&s.env, &[3u8; 32]),
+            &BytesN::from_array(&s.env, &[4u8; 32]),
+            &BytesN::from_array(&s.env, &[5u8; 32]),
+            &Bytes::new(&s.env),
+            &Bytes::new(&s.env),
+            &fairness_pub,
+            &Bytes::new(&s.env),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_set_relayer() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.set_relayer(&Address::generate(&s.env), &true);
+    }
+
+    #[test]
+    #[should_panic(expected = "swap not found")]
+    fn pause_does_not_block_cancel_swap() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.cancel_swap(&BytesN::from_array(&s.env, &[9u8; 32]));
+    }
+
+    #[test]
+    #[should_panic(expected = "swap not found")]
+    fn pause_does_not_block_reclaim_expired_swap() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.reclaim_expired_swap(&BytesN::from_array(&s.env, &[9u8; 32]));
+    }
+
+    #[test]
+    fn unpause_restores_set_relayer() {
+        let s = setup();
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        swap_client.pause();
+        swap_client.unpause();
+        swap_client.set_relayer(&Address::generate(&s.env), &true);
     }
 }

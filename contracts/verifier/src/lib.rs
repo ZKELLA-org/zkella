@@ -107,6 +107,7 @@ pub enum Error {
     PublicInputCountMismatch = 7,
     EmptyBatch               = 8,
     NonCanonicalInput        = 9,
+    Paused                   = 10,
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -115,6 +116,7 @@ pub enum Error {
 #[soroban_sdk::contracttype]
 pub enum StorageKey {
     Admin,
+    Paused,
     VerifyingKey(CircuitType),
     /// The key `VerifyingKey(circuit)` held immediately before the most
     /// recent `update_verifying_key` rotation, retained until
@@ -204,6 +206,7 @@ impl VerifierContract {
     /// — use `update_verifying_key` to rotate.
     pub fn register_verifying_key(env: Env, circuit: CircuitType, vk: Bytes) -> Result<(), Error> {
         Self::require_admin(&env)?;
+        Self::assert_not_paused(&env)?;
         let key = StorageKey::VerifyingKey(circuit);
         if env.storage().instance().has(&key) {
             return Err(Error::VkAlreadyRegistered);
@@ -227,6 +230,7 @@ impl VerifierContract {
     /// to the retained old key if the new key rejects the proof.
     pub fn update_verifying_key(env: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error> {
         Self::require_admin(&env)?;
+        Self::assert_not_paused(&env)?;
         let key = StorageKey::VerifyingKey(circuit);
         let old_vk: Bytes = env
             .storage()
@@ -247,11 +251,30 @@ impl VerifierContract {
     /// Immediately drops the retained previous key for `circuit`. Use this
     /// when a rotation was made because the outgoing key (or its circuit) was
     /// compromised, so it must not stay acceptable for the retention window.
+    /// Deliberately not gated by `pause`: revoking only narrows what `verify`
+    /// accepts, and it is the response a pause exists to enable.
     pub fn revoke_previous_vk(env: Env, circuit: CircuitType) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage().instance().remove(&StorageKey::PreviousVerifyingKey(circuit));
         env.storage().instance().remove(&StorageKey::PreviousVkExpiry(circuit));
         Ok(())
+    }
+
+    pub fn pause(env: Env) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&StorageKey::Paused, &true);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&StorageKey::Paused, &false);
+        Ok(())
+    }
+
+    fn assert_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
+        if paused { Err(Error::Paused) } else { Ok(()) }
     }
 
     pub fn get_verifying_key(env: Env, circuit: CircuitType) -> Result<Bytes, Error> {
@@ -1755,5 +1778,59 @@ mod tests {
         let empty: Vec<BatchProofItem> = Vec::new(&env);
         let result = client.try_verify_batch(&CircuitType::Shield, &empty);
         assert_eq!(result, Err(Ok(Error::EmptyBatch)));
+    }
+
+    fn paused_verifier() -> (Env, Address) {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        client.register_verifying_key(&CircuitType::Shield, &Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]));
+        client.pause();
+        (env, verifier)
+    }
+
+    #[test]
+    fn pause_blocks_register_verifying_key() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        let vk = Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_register_verifying_key(&CircuitType::Transfer, &vk), Err(Ok(Error::Paused)));
+    }
+
+    #[test]
+    fn pause_blocks_update_verifying_key() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        let vk = Bytes::from_array(&env, &[1u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_update_verifying_key(&CircuitType::Shield, &vk), Err(Ok(Error::Paused)));
+    }
+
+    #[test]
+    fn pause_does_not_block_revoke_previous_vk() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        assert_eq!(client.try_revoke_previous_vk(&CircuitType::Shield), Ok(Ok(())));
+    }
+
+    #[test]
+    fn unpause_restores_register_update_and_revoke() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.unpause();
+        let vk = Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_register_verifying_key(&CircuitType::Transfer, &vk), Ok(Ok(())));
+        assert_eq!(client.try_update_verifying_key(&CircuitType::Shield, &vk), Ok(Ok(())));
+    }
+
+    #[test]
+    fn pause_does_not_block_reads_or_verification() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        assert!(client.try_get_verifying_key(&CircuitType::Shield).is_ok(), "reads must stay available while paused");
+        let proof = Bytes::from_array(&env, &[0u8; 256]);
+        let inputs = Vec::from_array(&env, [BytesN::from_array(&env, &[0u8; 32])]);
+        let result = client.try_verify(&CircuitType::Shield, &inputs, &proof);
+        assert_ne!(result, Err(Ok(Error::Paused)), "verify is intentionally not gated by pause");
     }
 }

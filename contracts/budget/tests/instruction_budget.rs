@@ -109,7 +109,8 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         let gov = env.register(GOVERNANCE_WASM, ());
         let verifier = verifier_with(&env, &gov);
         let g = ZKELLAGovernanceClient::new(&env, &gov);
-        let (_, c) = measure(&env, || g.initialize(&admin, &verifier));
+        let guardian = Address::generate(&env);
+        let (_, c) = measure(&env, || g.initialize(&admin, &verifier, &guardian));
         record(&mut rows, "governance", "initialize", c);
         let (_, c) = measure(&env, || g.timelock_ledgers());
         record(&mut rows, "governance", "timelock_ledgers", c);
@@ -138,7 +139,7 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         let verifier = verifier_with(&env, &admin);
         let compliance = env.register(COMPLIANCE_WASM, ());
         let c_client = ComplianceContractClient::new(&env, &compliance);
-        let (_, c) = measure(&env, || c_client.initialize(&verifier));
+        let (_, c) = measure(&env, || c_client.initialize(&admin, &verifier));
         record(&mut rows, "compliance", "initialize", c);
         let owner = Address::generate(&env);
         let (_, c) = measure(&env, || c_client.get_compliance_proof(&owner));
