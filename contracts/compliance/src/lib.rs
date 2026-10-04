@@ -364,6 +364,18 @@ mod tests {
     }
 
     #[test]
+    fn pause_and_unpause_require_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let contract = env.register(ComplianceContract, ());
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.initialize(&admin, &verifier);
+        assert!(client.try_pause().is_err(), "pause must require admin authorization");
+        assert!(client.try_unpause().is_err(), "unpause must require admin authorization");
+    }
+
+    #[test]
     fn pause_blocks_publish_compliance_proof() {
         let (env, owner, contract, _verifier) = setup();
         let client = ComplianceContractClient::new(&env, &contract);

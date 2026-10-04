@@ -557,4 +557,58 @@ mod tests {
         assert!(gov.try_execute_min_shield_amount().is_err(), "cancelled update must not execute");
         assert_eq!(token.min_shield_amount(), before);
     }
+
+    #[test]
+    fn pause_unpause_and_guardian_cancel_require_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let token = Address::generate(&env);
+        let gov_id = env.register(ZKELLAGovernance, ());
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.initialize(&admin, &verifier, &guardian, &token);
+        assert!(gov.try_pause().is_err(), "pause must require admin authorization");
+        assert!(gov.try_unpause().is_err(), "unpause must require admin authorization");
+        assert!(
+            gov.try_guardian_cancel_vk_update(&CircuitType::Shield).is_err(),
+            "guardian cancel must require guardian authorization"
+        );
+    }
+
+    #[test]
+    fn unpause_restores_execute_vk_update() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+        gov.pause();
+        gov.unpause();
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_vk_update(&CircuitType::Shield);
+    }
+
+    #[test]
+    fn unpause_restores_transfer_and_accept_admin() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let new_admin = Address::generate(&env);
+        gov.pause();
+        gov.unpause();
+        gov.transfer_admin(&new_admin);
+        gov.accept_admin();
+    }
+
+    #[test]
+    fn unpause_restores_queue_and_execute_min_shield_amount() {
+        let (env, _admin, _guardian, gov_id, _verifier, token_id) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
+        gov.pause();
+        gov.unpause();
+        let target = token.min_shield_amount() * 2;
+        gov.queue_min_shield_amount(&target);
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_min_shield_amount();
+        assert_eq!(token.min_shield_amount(), target);
+    }
 }

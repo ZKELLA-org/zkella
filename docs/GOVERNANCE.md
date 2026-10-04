@@ -17,19 +17,20 @@ Each of the four contracts (verifier, governance, compliance, swap) has `pause` 
 
 | Contract | Gated while paused | Callable while paused, and why |
 | --- | --- | --- |
-| verifier | `register_verifying_key`, `update_verifying_key` | `revoke_previous_vk`: narrows what `verify` accepts, and is the response a pause is meant to enable. |
+| verifier | `register_verifying_key`, `update_verifying_key`, `verify`, `verify_batch` | `revoke_previous_vk`: narrows what `verify` accepts, and is the response a pause is meant to enable. |
 | governance | `queue_vk_update`, `execute_vk_update`, `transfer_admin`, `accept_admin` | `cancel_vk_update` and `guardian_cancel_vk_update`: cancelling a bad queued update is the response a pause is often declared for. `revoke_previous_vk`: narrowing, as above. |
 | compliance | `publish_compliance_proof` | Reads. |
 | swap | `commit_swap`, `execute_swap`, `reveal_and_claim`, `set_relayer` | `cancel_swap`, `reclaim_expired_swap`: these return escrowed funds to users, and blocking them would trap user funds. |
 
 ### What a pause does not stop
 
-- **Proof acceptance in the verifier.** `verify` and `verify_batch` are not gated. The verifier is a shared registry, and token, swap, and compliance call it directly. To stop proof acceptance in an emergency, pause the contracts that consume proofs (token, swap, compliance). The verifier's own pause only stops key changes.
+- **Proof acceptance is stopped by the verifier's pause, fail-closed.** `verify` and `verify_batch` return `Paused` while the verifier is paused. Token, swap, and compliance call the verifier directly, so their proof-consuming calls abort too. Reads (`get_verifying_key`) stay available.
+- **Each token-side contract keeps its own flag.** Token's pause (`shield`, `shield_batch`, `transfer`, `transfer4`, `unshield`) and swap's and compliance's pauses are separate from the verifier's. Pausing the verifier alone is enough to stop proof acceptance; pausing the others stops state changes in those contracts even when the verifier is live.
 - **Token.** The token contract's pause is separate and was added in an earlier tranche. It gates `shield`, `shield_batch`, `transfer`, `transfer4`, and `unshield`.
 
 ### Deviation from the roadmap's count
 
-The roadmap lists 18 gated entrypoints (verifier 3, governance 6, compliance 2, swap 7). Under one consistent rule (exclude the one-shot `initialize`, count only functions that write state), the count is verifier 3, governance 6, compliance 1, swap 6. Of those, this implementation gates 3, 4, 1, and 4 respectively. The remaining ones are the cancel and revoke paths listed above, which must stay callable during a pause. Compliance has one state-changing entrypoint, not two. The roadmap's total of 18 counts `initialize` for compliance and swap, but not for verifier and governance; this document applies the rule consistently.
+The roadmap lists 18 gated entrypoints (verifier 3, governance 6, compliance 2, swap 7). Under one consistent rule (exclude the one-shot `initialize`, count only functions that write state), the count is verifier 3, governance 6, compliance 1, swap 6. This implementation gates 4 verifier entrypoints (the three state-changing ones plus `verify` and `verify_batch`, so proof acceptance stops), 4 governance, 1 compliance, and 4 swap. The cancel and revoke paths listed above stay callable during a pause. Compliance has one state-changing entrypoint, not two. The roadmap's total of 18 counts `initialize` for compliance and swap, but not for verifier and governance; this document applies the rule consistently.
 
 ## Governance-settable parameters
 
@@ -51,4 +52,4 @@ These are out of scope for this deliverable, as the roadmap states:
 
 ## Tests
 
-Each gated entrypoint has a test that the pause blocks it, and each exempt entrypoint has a test that the pause does not block it. Unpause is tested to restore access in the verifier and compliance contracts for their gated entrypoints, and for one gated entrypoint each in governance (`queue_vk_update`) and swap (`set_relayer`). Restoring every gated entrypoint after unpause in governance and swap is not yet tested. Run the tests with `cd contracts && cargo test --workspace --release`.
+Each gated entrypoint has a test that the pause blocks it, and each exempt entrypoint has a test that the pause does not block it. Unpause is tested to restore every gated entrypoint in all four contracts. Pause and unpause are tested to require admin authorization, and the guardian's cancel is tested to require guardian authorization. Run the tests with `cd contracts && cargo test --workspace --release`.

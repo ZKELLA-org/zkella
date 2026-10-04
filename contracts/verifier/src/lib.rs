@@ -302,6 +302,7 @@ impl VerifierContract {
         public_inputs: Vec<BytesN<32>>,
         proof: Bytes,
     ) -> Result<bool, Error> {
+        Self::assert_not_paused(&env)?;
         if proof.len() != PROOF_LEN {
             return Err(Error::InvalidProofLength);
         }
@@ -413,6 +414,7 @@ impl VerifierContract {
         circuit: CircuitType,
         items: Vec<BatchProofItem>,
     ) -> Result<bool, Error> {
+        Self::assert_not_paused(&env)?;
         if items.is_empty() {
             return Err(Error::EmptyBatch);
         }
@@ -1791,6 +1793,17 @@ mod tests {
     }
 
     #[test]
+    fn pause_and_unpause_require_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let verifier = env.register(VerifierContract, ());
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        assert!(client.try_pause().is_err(), "pause must require admin authorization");
+        assert!(client.try_unpause().is_err(), "unpause must require admin authorization");
+    }
+
+    #[test]
     fn pause_blocks_register_verifying_key() {
         let (env, verifier) = paused_verifier();
         let client = VerifierContractClient::new(&env, &verifier);
@@ -1821,16 +1834,28 @@ mod tests {
         let vk = Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]);
         assert_eq!(client.try_register_verifying_key(&CircuitType::Transfer, &vk), Ok(Ok(())));
         assert_eq!(client.try_update_verifying_key(&CircuitType::Shield, &vk), Ok(Ok(())));
+        let proof = Bytes::from_array(&env, &[0u8; 256]);
+        let inputs = Vec::from_array(&env, [BytesN::from_array(&env, &[0u8; 32])]);
+        assert_ne!(client.try_verify(&CircuitType::Shield, &inputs, &proof), Err(Ok(Error::Paused)));
+        let items = Vec::from_array(&env, [BatchProofItem { public_inputs: inputs, proof }]);
+        assert_ne!(client.try_verify_batch(&CircuitType::Shield, &items), Err(Ok(Error::Paused)));
     }
 
     #[test]
-    fn pause_does_not_block_reads_or_verification() {
+    fn pause_does_not_block_reads() {
         let (env, verifier) = paused_verifier();
         let client = VerifierContractClient::new(&env, &verifier);
         assert!(client.try_get_verifying_key(&CircuitType::Shield).is_ok(), "reads must stay available while paused");
+    }
+
+    #[test]
+    fn pause_blocks_proof_verification_fail_closed() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
         let proof = Bytes::from_array(&env, &[0u8; 256]);
         let inputs = Vec::from_array(&env, [BytesN::from_array(&env, &[0u8; 32])]);
-        let result = client.try_verify(&CircuitType::Shield, &inputs, &proof);
-        assert_ne!(result, Err(Ok(Error::Paused)), "verify is intentionally not gated by pause");
+        assert_eq!(client.try_verify(&CircuitType::Shield, &inputs, &proof), Err(Ok(Error::Paused)));
+        let items = Vec::from_array(&env, [BatchProofItem { public_inputs: inputs, proof }]);
+        assert_eq!(client.try_verify_batch(&CircuitType::Shield, &items), Err(Ok(Error::Paused)));
     }
 }
