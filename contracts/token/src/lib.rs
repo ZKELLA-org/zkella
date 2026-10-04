@@ -20,14 +20,14 @@ use soroban_sdk::{
 use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 use types::{
-    NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldBatchItem, ShieldEvent,
+    NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldEvent,
     StorageKey, UnshieldEvent,
 };
 // Re-exported for downstream crates that deploy a real `ShieldedToken` in
 // their own tests (e.g. `contracts/swap`'s test suite, which shields a real
 // note via a direct `ShieldedTokenClient` call before exercising
 // `swap::commit_swap`'s cross-call into `token::unshield`).
-pub use types::{Error, ShieldPublicInputs, TransferPublicInputs, UnshieldPublicInputs};
+pub use types::{Error, ShieldBatchItem, ShieldPublicInputs, TransferPublicInputs, UnshieldPublicInputs};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

@@ -43,11 +43,12 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL.
 
 ### Fuzzing (`cargo fuzz`, `contracts/token/fuzz`)
 
-- Targets: `shield_arbitrary`, `transfer_arbitrary` (covers `transfer` and `transfer4`), `verifier_arbitrary` (covers `verify` and `verify_batch`), `swap_arbitrary` (every swap entrypoint), `governance_arbitrary`, `compliance_arbitrary`, `viewing_keys_arbitrary`. Each target asserts its own invariants: a bogus proof is never accepted, a rejected call leaves no state behind, a second initialize is rejected, and a VK update cannot execute before its timelock.
+- Targets: `shield_arbitrary`, `transfer_arbitrary` (covers `transfer` and `transfer4`), `verifier_arbitrary` (covers `verify` and `verify_batch`), `swap_arbitrary` (every swap entrypoint), `governance_arbitrary`, `compliance_arbitrary`, `viewing_keys_arbitrary`, `token_admin_arbitrary` (token admin, pause, allowlists, relayers, `unshield`, `shield_batch`), `verifier_admin_arbitrary` (verifier key registration, update, revocation). Each target asserts its own invariants: a bogus proof is never accepted, a rejected call leaves no state behind, a second initialize is rejected, and a VK update cannot execute before its timelock.
 - Short local runs (20 to 60 seconds each) found no crashes or invariant violations. These are smoke runs, not a full fuzzing campaign.
 - A build break in `transfer_arbitrary` (the `relayer` argument added in Tranche 2) was fixed in commit `cb5b409`.
 - To make the contracts importable from the fuzz crate, the swap, governance, compliance, and viewing_keys crates now also build an rlib, matching the token crate. The WASM output is unchanged, and their tests pass.
-- **Open**: the token contract has entrypoints not yet covered by a dedicated target (admin, pause, allowlist and shield-batch functions). The verifier's admin functions and the remaining viewing-key and compliance getters are also not yet covered.
+- Every state-changing entrypoint across the six contracts now has a fuzz target. The remaining uncovered functions are read-only getters, which the targets exercise only indirectly.
+- A change to token's `lib.rs` re-exports `ShieldBatchItem` so the fuzz crate can construct batch inputs. No runtime behavior changed.
 
 ### Instruction budget (real WASM)
 

@@ -61,3 +61,15 @@ name = "viewing_keys_arbitrary"
 path = "fuzz_targets/viewing_keys_arbitrary.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "token_admin_arbitrary"
+path = "fuzz_targets/token_admin_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "verifier_admin_arbitrary"
+path = "fuzz_targets/verifier_admin_arbitrary.rs"
+test = false
+doc = false
