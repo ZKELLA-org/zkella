@@ -1933,6 +1933,8 @@ name = "zkella-governance"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+ "zkella-token",
+ "zkella-token-interface",
  "zkella-verifier",
  "zkella-verifier-interface",
 ]

@@ -29,10 +29,11 @@ fuzz_target!(|data: &[u8]| {
     let gov = env.register(ZKELLAGovernance, ());
     let gc = ZKELLAGovernanceClient::new(&env, &gov);
     let guardian = Address::generate(&env);
-    gc.initialize(&admin, &verifier, &guardian);
+    let token = Address::generate(&env);
+    gc.initialize(&admin, &verifier, &guardian, &token);
 
     assert!(
-        gc.try_initialize(&admin, &verifier, &guardian).is_err(),
+        gc.try_initialize(&admin, &verifier, &guardian, &token).is_err(),
         "governance accepted a second initialize"
     );
 

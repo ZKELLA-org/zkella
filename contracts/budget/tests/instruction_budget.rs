@@ -110,7 +110,9 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         let verifier = verifier_with(&env, &gov);
         let g = ZKELLAGovernanceClient::new(&env, &gov);
         let guardian = Address::generate(&env);
-        let (_, c) = measure(&env, || g.initialize(&admin, &verifier, &guardian));
+        let token = env.register(TOKEN_WASM, ());
+        ShieldedTokenClient::new(&env, &token).initialize(&gov, &verifier);
+        let (_, c) = measure(&env, || g.initialize(&admin, &verifier, &guardian, &token));
         record(&mut rows, "governance", "initialize", c);
         let (_, c) = measure(&env, || g.timelock_ledgers());
         record(&mut rows, "governance", "timelock_ledgers", c);
@@ -131,6 +133,14 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         record(&mut rows, "governance", "transfer_admin", c);
         let (_, c) = measure(&env, || g.accept_admin());
         record(&mut rows, "governance", "accept_admin", c);
+        let (_, c) = measure(&env, || g.queue_min_shield_amount(&2_000));
+        record(&mut rows, "governance", "queue_min_shield_amount", c);
+        let delay = g.timelock_ledgers();
+        env.ledger().with_mut(|li| { li.sequence_number += delay; });
+        let (_, c) = measure(&env, || g.execute_min_shield_amount());
+        record(&mut rows, "governance", "execute_min_shield_amount", c);
+        let (_, c) = measure(&env, || g.guardian_cancel_min_shield());
+        record(&mut rows, "governance", "guardian_cancel_min_shield", c);
     }
 
     {

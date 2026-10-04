@@ -33,7 +33,13 @@ The roadmap lists 18 gated entrypoints (verifier 3, governance 6, compliance 2, 
 
 ## Governance-settable parameters
 
-`MIN_SHIELD_AMOUNT` is a storage value in the token contract, changed by `set_min_shield_amount`, which only the token admin can call. Making it governance-settable requires the token admin to be the governance contract, and a timelocked governance entrypoint that forwards the change. That path is not yet implemented. See the open items in `docs/SECURITY_TOOLING_REPORT.md`.
+`MIN_SHIELD_AMOUNT` is a storage value in the token contract. Only the token's admin can change it, so the token's admin must be the governance contract. Governance then changes it through the same timelock as a verifying-key update:
+
+1. `queue_min_shield_amount(new_amount)` (admin, gated by pause). Rejects non-positive amounts.
+2. `execute_min_shield_amount()` after `timelock_ledgers()` ledgers (admin, gated by pause). Calls the token's `set_min_shield_amount`, which takes effect without a redeploy.
+3. `guardian_cancel_min_shield()` (guardian only, not gated by pause) cancels a queued change.
+
+Tested against the real token contract: the value is unchanged before the timelock and changes after it. Deployment must set governance as the token admin; that is a Deliverable 4 step.
 
 ## Deferred to a later governance upgrade
 
