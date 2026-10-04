@@ -64,3 +64,24 @@ describe('viewing-key epochs and revocation by rotation', () => {
     expect(toHex(epoch0.pkD)).toBe(toHex((await keys.deriveAddress(0)).pkD))
   })
 })
+
+describe('wallet viewing-key epoch persistence', () => {
+  test('a wallet restarted with its saved epoch resumes that epoch', async () => {
+    const { Keypair } = await import('@stellar/stellar-sdk')
+    const { ZKELLAWallet } = await import('../../sdk/src/wallet/wallet')
+    const keys = await ZKELLAKeys.fromSeed(new Uint8Array(32).fill(5))
+    const base = {
+      keys:        keys.spendingKey,
+      network:     'testnet' as const,
+      sorobanRpc:  'http://localhost:1',
+      indexerUrl:  'http://localhost:1',
+      tokenAddress: 'CAAAA',
+      stellarSecret: Keypair.random().secret(),
+    }
+    const wallet = new ZKELLAWallet(base)
+    expect(wallet.currentEpoch).toBe(0)
+    expect(wallet.rotateViewingKey()).toBe(1)
+    const restarted = new ZKELLAWallet({ ...base, viewingEpoch: wallet.currentEpoch })
+    expect(restarted.currentEpoch).toBe(1)
+  })
+})

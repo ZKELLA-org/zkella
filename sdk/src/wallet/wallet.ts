@@ -54,12 +54,13 @@ export class ZKELLAWallet {
   private indexer:   IndexerClient
   private notes:     Note[] = []
   private lastSyncLedger = 0
-  private epoch = 0
+  private epoch: number
   private config:    WalletConfig
   private sourceKeypair: Keypair
 
   constructor(config: WalletConfig) {
     this.config        = config
+    this.epoch         = config.viewingEpoch ?? 0
     this.keys          = ZKELLAKeys.fromSpendingKey(config.keys)
     this.indexer       = new IndexerClient(config.indexerUrl)
     this.sourceKeypair = Keypair.fromSecret(config.stellarSecret)
