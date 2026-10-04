@@ -51,6 +51,8 @@ Wallet-level sync across epochs is exercised by the code path but has no dedicat
 
 The compliance contract accepts a non-membership proof only against the sanctions-list root the admin has set. The admin is the list maintainer. Each `publish_compliance_proof` call is rejected with `UnknownSanctionsRoot` unless its root matches the admin's current root, so a prover cannot choose a root of their own. Changing the root is `set_sanctions_root`, which requires the admin's authorization. Publishing is also blocked while the compliance contract is paused.
 
+The SDK builds the sanctions tree and generates the non-membership proof (`sdk/src/prover/compliance.ts`). A proof generated with the real `circuits/compliance` artifacts verifies against the real verification key, and the compliance contract accepts and stores it in its test environment (`accepts_and_stores_a_real_sdk_proof`). A proof against a root the admin has not authorized is rejected by the same test suite. A live Testnet publish has not run yet; it is part of the deployment step.
+
 Still to decide, and not part of this change:
 
 - **Update cadence:** a fixed schedule (for example weekly) and an urgent path for listings that must take effect sooner.

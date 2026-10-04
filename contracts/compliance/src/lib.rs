@@ -470,4 +470,67 @@ mod tests {
         client.pause();
         assert!(client.get_compliance_proof(&owner).is_none());
     }
+
+    // Real non-membership proof produced by the SDK prover (sdk/src/prover/compliance.ts)
+    // against circuits/compliance/build, with a fixed test spending key and list.
+    const NM_VK_HEX: &str = "0b291fdaaa28add7553e94df40614c894ca8fb22a2b6b4ed7351d325cad7068e1242afa10511b208e98200b835350f44a0b2641bf06744f87f3960b79f6122880041e3d1d3043bbf9687e1c198b5fe1f3f597c26b7a97127b33b64938c49887e0c65ed7e66ecf358b07f11fc7eb9cb3ecb88ec0dcfb88c12938f1ef0fa330e601c122704e90921beaa1548ea5efcd702fa0689a866360fd874cec4d1f0507f7430573487cca5aaa0c8a3417a831694d86b1171e39d821f5d456f9be5a2d7457f198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa1ccc5c0d7119761a53031371e0c2aea83977372a65d425d5d1b089120064f62120cf74009fead184417b98a5723060cd56ead300a7584c13a9b7c22a4b56434b025ea2f25c54b6405eab8e327f86fcee6ab54646bf2d152956ad21e05e8d2aca024942c9869db3681c627d23c3f75fbbd92d35fbc5ee45fb2f4d6eae7390b584136dcdbb4eeb47c328783cd8c7ac92dec5d5b51de616bad35845d7845ebb261023225d302134a931c399123f18f4a5d3a59d90d15211108f9bcd2da69ad4507b222daf8eb1f9418ea273cb8dd4fd4453a0f74babbdb73eea54996dabad19174c1f1314e913b59b9717cb5de4ef59e0e36b3325e5a70da912eafe530463a626b0172d6598e7e9f8bc0c953d7d307c2f4b2b44864a612f2629fa012c03a87c02260b94a30fb149187548a6abbf0ecb5f4d1277127fc9697694ccb76ae8937dd566";
+    const NM_PROOF_HEX: &str = "00a4f0be06d79bc46905e0b6ae6e4da08f33782858153638fa74d61db1d4f178218c0172b2c91407f6973580d0c9829f5240c9fbf54dfd643532e245d2e1c08b0fcd1762aa4cfc5b9866003a63e8d7cae1d7af3d335c5bce33033666ee2ce26d2131abc66207024639bf9b9799f4f75f900eb753d9083c6dcb4439973a5f088408698cf4806db4fb33e211d7302a861849a386b1f7e21997b71eb5ea45bb44681d9d36de437664f873340b0fe3d26fbaca5cad8069f1382c0f9d27de067578742db476a492d5fde47712b3c5149209e3c6ed67920bd1573bf41779d320342bd4127abd238891a0bf1ad6efcac30cf537dfeb7b608b2c1499f19f086618eb637c";
+    const NM_ROOT_LE_HEX: &str = "ba7a4a5ae8c255ea1f0849513dcb552409196855a454cb29045e436526471d14";
+    const NM_TK_LE_HEX: &str = "a6abd547620d29273243fa363a15b23d4e49812307b5256ff2a37fefc2c3a715";
+
+    fn hex_to_bytes(env: &Env, s: &str) -> Bytes {
+        let mut out = Bytes::new(env);
+        for i in (0..s.len()).step_by(2) {
+            out.push_back(u8::from_str_radix(&s[i..i + 2], 16).unwrap());
+        }
+        out
+    }
+
+    fn hex_to_32(s: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn accepts_and_stores_a_real_sdk_proof() {
+        let (env, owner, contract, verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::NonMembership.into(), &hex_to_bytes(&env, NM_VK_HEX));
+
+        let root = BytesN::from_array(&env, &hex_to_32(NM_ROOT_LE_HEX));
+        let tk = BytesN::from_array(&env, &hex_to_32(NM_TK_LE_HEX));
+        client.set_sanctions_root(&root);
+
+        let pub_inputs = CompliancePublicInputs { sanctions_root: root.clone(), tk_commitment: tk.clone() };
+        client.publish_compliance_proof(&owner, &hex_to_bytes(&env, NM_PROOF_HEX), &pub_inputs);
+
+        let stored = client.get_compliance_proof(&owner).unwrap();
+        assert_eq!(stored.sanctions_root, root);
+        assert_eq!(stored.tk_commitment, tk);
+    }
+
+    #[test]
+    fn rejects_a_real_sdk_proof_against_a_different_authorized_root() {
+        let (env, owner, contract, verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::NonMembership.into(), &hex_to_bytes(&env, NM_VK_HEX));
+
+        client.set_sanctions_root(&BytesN::from_array(&env, &[0xabu8; 32]));
+        let pub_inputs = CompliancePublicInputs {
+            sanctions_root: BytesN::from_array(&env, &hex_to_32(NM_ROOT_LE_HEX)),
+            tk_commitment:  BytesN::from_array(&env, &hex_to_32(NM_TK_LE_HEX)),
+        };
+        assert_eq!(
+            client.try_publish_compliance_proof(&owner, &hex_to_bytes(&env, NM_PROOF_HEX), &pub_inputs),
+            Err(Ok(Error::UnknownSanctionsRoot)),
+        );
+        assert!(client.get_compliance_proof(&owner).is_none());
+    }
 }
