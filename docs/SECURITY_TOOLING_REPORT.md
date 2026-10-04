@@ -43,9 +43,11 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL.
 
 ### Fuzzing (`cargo fuzz`, `contracts/token/fuzz`)
 
-- Existing targets: `shield_arbitrary`, `transfer_arbitrary`, `verifier_arbitrary`. Short local runs (20 to 60 seconds each) found no crashes. These are smoke runs, not a full fuzzing campaign.
-- A build break in `transfer_arbitrary` (the `relayer` argument added in Tranche 2) was fixed in commit `cb5b409`. The CI fuzz-smoke job now passes.
-- **Open**: fuzz harnesses do not yet cover every contract entrypoint. The remaining entrypoints across swap, governance, compliance, viewing_keys, and the rest of token are listed under "Open items".
+- Targets: `shield_arbitrary`, `transfer_arbitrary` (covers `transfer` and `transfer4`), `verifier_arbitrary` (covers `verify` and `verify_batch`), `swap_arbitrary` (every swap entrypoint), `governance_arbitrary`, `compliance_arbitrary`, `viewing_keys_arbitrary`. Each target asserts its own invariants: a bogus proof is never accepted, a rejected call leaves no state behind, a second initialize is rejected, and a VK update cannot execute before its timelock.
+- Short local runs (20 to 60 seconds each) found no crashes or invariant violations. These are smoke runs, not a full fuzzing campaign.
+- A build break in `transfer_arbitrary` (the `relayer` argument added in Tranche 2) was fixed in commit `cb5b409`.
+- To make the contracts importable from the fuzz crate, the swap, governance, compliance, and viewing_keys crates now also build an rlib, matching the token crate. The WASM output is unchanged, and their tests pass.
+- **Open**: the token contract has entrypoints not yet covered by a dedicated target (admin, pause, allowlist and shield-batch functions). The verifier's admin functions and the remaining viewing-key and compliance getters are also not yet covered.
 
 ### Instruction budget (real WASM)
 
