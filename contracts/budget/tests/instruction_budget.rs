@@ -154,6 +154,9 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         let owner = Address::generate(&env);
         let (_, c) = measure(&env, || c_client.get_compliance_proof(&owner));
         record(&mut rows, "compliance", "get_compliance_proof", c);
+        let root = BytesN::from_array(&env, &[7u8; 32]);
+        let (_, c) = measure(&env, || c_client.set_sanctions_root(&root));
+        record(&mut rows, "compliance", "set_sanctions_root", c);
     }
 
     {
@@ -166,6 +169,8 @@ fn instruction_budget_for_every_non_proof_entrypoint() {
         record(&mut rows, "viewing_keys", "register", c);
         let (_, c) = measure(&env, || vk.get_viewing_key_commitment(&owner));
         record(&mut rows, "viewing_keys", "get_viewing_key_commitment", c);
+        let (_, c) = measure(&env, || vk.revoke(&owner));
+        record(&mut rows, "viewing_keys", "revoke", c);
     }
 
     {

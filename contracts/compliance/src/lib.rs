@@ -24,6 +24,7 @@ pub enum StorageKey {
     Admin,
     Verifier,
     Paused,
+    SanctionsRoot,
     ComplianceRecord(Address),
 }
 
@@ -53,6 +54,7 @@ pub enum Error {
     NotInitialized     = 2,
     InvalidProof        = 3,
     Paused             = 4,
+    UnknownSanctionsRoot = 5,
 }
 
 #[contract]
@@ -66,6 +68,15 @@ impl ComplianceContract {
         }
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&StorageKey::Verifier, &verifier);
+    }
+
+    /// Sets the sanctions-list root that `publish_compliance_proof` will accept.
+    /// Only the admin (the list maintainer) can change it, so a proof computed
+    /// against any other root, including one the prover chose, is rejected.
+    pub fn set_sanctions_root(env: Env, root: BytesN<32>) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::SanctionsRoot, &root);
     }
 
     pub fn pause(env: Env) {
@@ -95,6 +106,15 @@ impl ComplianceContract {
         let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
         if paused {
             return Err(Error::Paused);
+        }
+
+        let authorized_root: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::SanctionsRoot)
+            .ok_or(Error::UnknownSanctionsRoot)?;
+        if pub_inputs.sanctions_root != authorized_root {
+            return Err(Error::UnknownSanctionsRoot);
         }
 
         let verifier: Address = env
@@ -274,6 +294,7 @@ mod tests {
             .register_verifying_key(&CircuitType::NonMembership.into(), &vk);
         let mut budget = env.cost_estimate().budget();
         budget.reset_limits(2_000_000_000, 100_000_000);
+        client.set_sanctions_root(&pub_inputs.sanctions_root);
         client.publish_compliance_proof(&owner, &proof, &pub_inputs);
         env.cost_estimate().budget().cpu_instruction_cost()
     }
@@ -299,6 +320,7 @@ mod tests {
             sanctions_root: BytesN::from_array(&env, &[1u8; 32]),
             tk_commitment:  BytesN::from_array(&env, &[2u8; 32]),
         };
+        client.set_sanctions_root(&pub_inputs.sanctions_root);
         let result = client.try_publish_compliance_proof(&owner, &garbage_proof, &pub_inputs);
         assert!(result.is_err());
         assert!(client.get_compliance_proof(&owner).is_none());
@@ -324,6 +346,7 @@ mod tests {
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::NonMembership.into(), &vk);
 
+        client.set_sanctions_root(&pub_inputs.sanctions_root);
         client.publish_compliance_proof(&owner, &proof, &pub_inputs);
 
         let stored = client.get_compliance_proof(&owner).unwrap();
@@ -351,6 +374,7 @@ mod tests {
         zkella_verifier::VerifierContractClient::new(&env, &verifier)
             .register_verifying_key(&CircuitType::NonMembership.into(), &vk);
 
+        client.set_sanctions_root(&pub_inputs.sanctions_root);
         let result = client.try_publish_compliance_proof(&owner, &bad_proof, &pub_inputs);
         assert!(result.is_err());
         assert!(client.get_compliance_proof(&owner).is_none());
@@ -380,6 +404,7 @@ mod tests {
         let (env, owner, contract, _verifier) = setup();
         let client = ComplianceContractClient::new(&env, &contract);
         client.pause();
+        client.set_sanctions_root(&empty_inputs(&env).sanctions_root);
         let result = client.try_publish_compliance_proof(&owner, &Bytes::new(&env), &empty_inputs(&env));
         assert_eq!(result, Err(Ok(Error::Paused)));
         assert!(client.get_compliance_proof(&owner).is_none());
@@ -391,8 +416,51 @@ mod tests {
         let client = ComplianceContractClient::new(&env, &contract);
         client.pause();
         client.unpause();
+        client.set_sanctions_root(&empty_inputs(&env).sanctions_root);
         let result = client.try_publish_compliance_proof(&owner, &Bytes::new(&env), &empty_inputs(&env));
         assert_ne!(result, Err(Ok(Error::Paused)), "publish must no longer be blocked after unpause");
+    }
+
+    #[test]
+    fn rejects_a_root_the_admin_has_not_authorized() {
+        let (env, owner, contract, verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+
+        let prover_root = BytesN::from_array(&env, &[3u8; 32]);
+        let tk_commitment = BytesN::from_array(&env, &[4u8; 32]);
+        let public_inputs_le: [[u8; 32]; 2] = [prover_root.clone().into(), tk_commitment.clone().into()];
+        let (vk, proof, _bad) = build_proofs(&env, public_inputs_le);
+        zkella_verifier::VerifierContractClient::new(&env, &verifier)
+            .register_verifying_key(&CircuitType::NonMembership.into(), &vk);
+
+        client.set_sanctions_root(&BytesN::from_array(&env, &[9u8; 32]));
+        let pub_inputs = CompliancePublicInputs { sanctions_root: prover_root, tk_commitment };
+        assert_eq!(
+            client.try_publish_compliance_proof(&owner, &proof, &pub_inputs),
+            Err(Ok(Error::UnknownSanctionsRoot)),
+        );
+        assert!(client.get_compliance_proof(&owner).is_none());
+    }
+
+    #[test]
+    fn publishing_before_any_root_is_set_is_rejected() {
+        let (env, owner, contract, _verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+        assert_eq!(
+            client.try_publish_compliance_proof(&owner, &Bytes::new(&env), &empty_inputs(&env)),
+            Err(Ok(Error::UnknownSanctionsRoot)),
+        );
+    }
+
+    #[test]
+    fn set_sanctions_root_requires_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let contract = env.register(ComplianceContract, ());
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.initialize(&admin, &verifier);
+        assert!(client.try_set_sanctions_root(&BytesN::from_array(&env, &[1u8; 32])).is_err());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 **Version:** 0.1.0  
 **Audience:** Soroban developers building on top of the ZKELLA Protocol
 
-**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries) and the SDK's core crypto, note, and prover modules are real and exercised on live Stellar Testnet — not stubs. Some SDK convenience wrapper classes are still stubs, though (`ZKELLASwap`, `ZKELLAAuditor`, `ZKELLACompliance` — flagged explicitly in the relevant sections below). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
+**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries) and the SDK's core crypto, note, and prover modules are real and exercised on live Stellar Testnet — not stubs. Some SDK convenience wrapper classes are still stubs, though (`ZKELLASwap`, `ZKELLACompliance` — flagged explicitly in the relevant sections below). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
 
 ---
 
@@ -209,7 +209,7 @@ const vkJson = wallet.exportViewingKey()
 // }
 ```
 
-`ZKELLAAuditor` (`sdk/src/wallet/auditor.ts`) exists but is a **stub** — `sync()` runs without error, but its note-decryption step always returns `null`, so it never actually recovers any history yet. There is no working auditor-side import/sync flow today; treat this class as a placeholder for the intended API shape, not something to integrate against.
+`ZKELLAAuditor` (`sdk/src/wallet/auditor.ts`) decrypts notes with a viewing key granted by the account holder and reports receipts (value, asset, leaf position). It is covered by unit tests against encrypted notes and a mocked indexer, but has not yet been run against live Testnet data. It does not report spends, because those need the nullifier key, which a viewing key does not hold. See `docs/VIEWING_KEYS.md` for the grant and revocation workflow.
 
 ---
 

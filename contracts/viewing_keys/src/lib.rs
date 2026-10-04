@@ -29,6 +29,8 @@ pub struct ViewingKeyRegistry;
 #[contractimpl]
 impl ViewingKeyRegistry {
 
+    /// Registers or replaces `owner`'s viewing-key commitment. Registering a new
+    /// commitment is how an owner rotates to a fresh viewing key.
     pub fn register(
         env:           Env,
         owner:         Address,
@@ -36,17 +38,35 @@ impl ViewingKeyRegistry {
         birthday:      u32,
     ) {
         owner.require_auth();
-        env.storage().instance().set(&StorageKey::ViewingKeyCommitment(owner.clone()), &vk_commitment);
+        let key = StorageKey::ViewingKeyCommitment(owner.clone());
+        env.storage().persistent().set(&key, &vk_commitment);
+        env.storage().persistent().extend_ttl(&key, STATE_TTL_THRESHOLD, STATE_TTL_EXTEND_TO);
         env.events().publish(
             (symbol_short!("zkella"), symbol_short!("vkreg")),
             (owner, vk_commitment, birthday),
         );
     }
 
+    /// Removes `owner`'s commitment. Revoking does not change what a holder of
+    /// an already-granted viewing key can decrypt; it withdraws the registry's
+    /// advertised commitment, and rotating to a new key is what cuts off notes
+    /// encrypted after the rotation.
+    pub fn revoke(env: Env, owner: Address) {
+        owner.require_auth();
+        env.storage().persistent().remove(&StorageKey::ViewingKeyCommitment(owner.clone()));
+        env.events().publish(
+            (symbol_short!("zkella"), symbol_short!("vkrev")),
+            owner,
+        );
+    }
+
     pub fn get_viewing_key_commitment(env: Env, owner: Address) -> Option<BytesN<32>> {
-        env.storage().instance().get(&StorageKey::ViewingKeyCommitment(owner))
+        env.storage().persistent().get(&StorageKey::ViewingKeyCommitment(owner))
     }
 }
+
+const STATE_TTL_THRESHOLD: u32 = 17_280 * 30;
+const STATE_TTL_EXTEND_TO: u32 = 17_280 * 365;
 
 #[cfg(test)]
 mod tests {
@@ -75,5 +95,46 @@ mod tests {
         let client = ViewingKeyRegistryClient::new(&env, &contract);
 
         assert_eq!(client.get_viewing_key_commitment(&owner), None);
+    }
+
+    #[test]
+    fn revoke_removes_the_registered_commitment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let contract = env.register(ViewingKeyRegistry, ());
+        let client = ViewingKeyRegistryClient::new(&env, &contract);
+
+        client.register(&owner, &BytesN::from_array(&env, &[7u8; 32]), &100);
+        client.revoke(&owner);
+
+        assert_eq!(client.get_viewing_key_commitment(&owner), None);
+    }
+
+    #[test]
+    fn rotating_by_registering_a_new_commitment_replaces_the_old_one() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let contract = env.register(ViewingKeyRegistry, ());
+        let client = ViewingKeyRegistryClient::new(&env, &contract);
+
+        client.register(&owner, &BytesN::from_array(&env, &[7u8; 32]), &100);
+        let rotated = BytesN::from_array(&env, &[8u8; 32]);
+        client.register(&owner, &rotated, &200);
+
+        assert_eq!(client.get_viewing_key_commitment(&owner), Some(rotated));
+    }
+
+    #[test]
+    fn register_and_revoke_require_the_owners_authorization() {
+        let env = Env::default();
+        let owner = Address::generate(&env);
+        let contract = env.register(ViewingKeyRegistry, ());
+        let client = ViewingKeyRegistryClient::new(&env, &contract);
+
+        let commitment = BytesN::from_array(&env, &[7u8; 32]);
+        assert!(client.try_register(&owner, &commitment, &100).is_err(), "register must require owner auth");
+        assert!(client.try_revoke(&owner).is_err(), "revoke must require owner auth");
     }
 }

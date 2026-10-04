@@ -9,7 +9,7 @@ import { encryptNote, tryDecryptNote }                    from '../notes/encrypt
 import { generateShieldProof, ShieldPublicInputs }        from '../prover/shield'
 import { generateTransferProof, TransferInputNote }       from '../prover/transfer'
 import { generateUnshieldProof }                          from '../prover/unshield'
-import { Note, WalletConfig, TransferOptions, ViewingKeyExport } from '../types'
+import { Note, WalletConfig, TransferOptions, ViewingKeyExport, ShieldedAddress } from '../types'
 
 // transfer4() (4-in-4-out) isn't wired into the wallet yet — 2-in-2-out
 // transfer() covers the common case, and transfer4's only real use (note
@@ -54,6 +54,7 @@ export class ZKELLAWallet {
   private indexer:   IndexerClient
   private notes:     Note[] = []
   private lastSyncLedger = 0
+  private epoch = 0
   private config:    WalletConfig
   private sourceKeypair: Keypair
 
@@ -65,16 +66,20 @@ export class ZKELLAWallet {
   }
 
   async sync(): Promise<void> {
-    const vk = this.keys.toViewingKey(this.lastSyncLedger)
+    const epochKeys: Uint8Array[] = []
+    for (let e = 0; e <= this.epoch; e++) epochKeys.push(this.keys.viewingKeyForEpoch(e))
     let cursor = this.lastSyncLedger
 
     while (true) {
       const { notes, nextLedger } = await this.indexer.getNotes(cursor)
-      if (notes.length === 0) break
 
       for (const raw of notes) {
         const bundle = Buffer.from(raw.encryptedNote, 'hex')
-        const plaintext = await tryDecryptNote(bundle, vk.raw)
+        let plaintext: Awaited<ReturnType<typeof tryDecryptNote>> = null
+        for (const key of epochKeys) {
+          plaintext = await tryDecryptNote(bundle, key)
+          if (plaintext) break
+        }
         if (!plaintext) continue
 
         // The plaintext carries no owner key: a note this wallet can decrypt
@@ -99,6 +104,7 @@ export class ZKELLAWallet {
           ownerPk,
         })
       }
+      if (notes.length === 0 || nextLedger <= cursor) break
       cursor = nextLedger
     }
 
@@ -170,7 +176,7 @@ export class ZKELLAWallet {
     // here) would silently deposit "for a recipient" but leave the note
     // decryptable/spendable only by the sender's own wallet, not the
     // intended recipient.
-    const transmissionKey = to !== undefined ? hexToBytes(to) : this.config.keys.transmissionKey
+    const transmissionKey = to !== undefined ? hexToBytes(to) : await this.keys.transmissionKeyForEpoch(this.epoch)
     const encryptedBundle = await encryptNote(note, transmissionKey)
 
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset, amount }
@@ -261,7 +267,7 @@ export class ZKELLAWallet {
     ])
 
     const recipientTk = hexToBytes(to)
-    const changeTk    = this.config.keys.transmissionKey
+    const changeTk    = await this.keys.transmissionKeyForEpoch(this.epoch)
 
     const inputs: [TransferInputNote, TransferInputNote] = [
       { note: inA, merklePath: pathA },
@@ -339,7 +345,7 @@ export class ZKELLAWallet {
 
     const anchor = await this.getMerkleRoot()
     const merklePath = await this.getMerklePathBytes(note.leafIndex)
-    const changeTk = this.config.keys.transmissionKey
+    const changeTk = await this.keys.transmissionKeyForEpoch(this.epoch)
 
     const result = await generateUnshieldProof(
       { note, nk: this.config.keys.nullifierKey, merklePath },
@@ -389,6 +395,31 @@ export class ZKELLAWallet {
 
   exportViewingKey(): ViewingKeyExport {
     return this.keys.exportViewingKey(this.lastSyncLedger, this.config.network)
+  }
+
+  /** The viewing key for the current epoch, to grant an auditor. */
+  exportCurrentViewingKey(): Promise<ViewingKeyExport> {
+    return this.keys.exportViewingKeyForEpoch(this.lastSyncLedger, this.config.network, this.epoch)
+  }
+
+  /**
+   * Starts a new viewing-key epoch. Notes encrypted from now on use the new key,
+   * so a holder of an earlier epoch's key cannot decrypt them. Notes already
+   * encrypted to earlier epochs stay decryptable by whoever holds those keys;
+   * rotation cannot change history.
+   */
+  rotateViewingKey(): number {
+    this.epoch += 1
+    return this.epoch
+  }
+
+  /** Current epoch. Persist it alongside `lastSyncLedger`, or a restarted wallet loses it. */
+  get currentEpoch(): number {
+    return this.epoch
+  }
+
+  receiveAddress(diversifierIndex = 0): Promise<ShieldedAddress> {
+    return this.keys.deriveAddressForEpoch(this.epoch, diversifierIndex)
   }
 
   // ── Soroban RPC ──────────────────────────────────────────────────────────────
