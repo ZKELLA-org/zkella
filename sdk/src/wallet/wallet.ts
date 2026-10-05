@@ -398,6 +398,19 @@ export class ZKELLAWallet {
     return this.keys.exportViewingKey(this.lastSyncLedger, this.config.network)
   }
 
+  /** The Stellar account that submits and owns this wallet's on-chain actions. */
+  accountAddress(): string {
+    return this.sourceKeypair.publicKey()
+  }
+
+  /** Spending scalar the compliance non-membership proof binds to (never leaves the wallet except as a proof input). */
+  complianceSecret(): bigint {
+    let n = 0n
+    const raw = this.keys.spendingKey.raw
+    for (let i = raw.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(raw[i])
+    return n
+  }
+
   /** The viewing key for the current epoch, to grant an auditor. */
   exportCurrentViewingKey(): Promise<ViewingKeyExport> {
     return this.keys.exportViewingKeyForEpoch(this.lastSyncLedger, this.config.network, this.epoch)
@@ -460,7 +473,7 @@ export class ZKELLAWallet {
    * `merkle_root()`/`leaf_count()` poll is racy (another shield/transfer
    * could land between our tx and the read), the return value isn't.
    */
-  private async submitContractCall(
+  async submitContractCall(
     contractId: string,
     method:     string,
     args:       xdr.ScVal[],
@@ -524,7 +537,7 @@ type FieldKind = 'bytes' | 'address' | 'i128' | 'vec-bytes'
  * contract struct's field types, e.g. an `Address` string vs. a `Bytes`
  * hex string are both plain strings in JS).
  */
-function structScVal(obj: Record<string, unknown>, fields: Record<string, FieldKind>): xdr.ScVal {
+export function structScVal(obj: Record<string, unknown>, fields: Record<string, FieldKind>): xdr.ScVal {
   // Soroban structs are encoded as ScVal maps sorted by field-name symbol.
   // Built by hand (rather than nativeToScVal's own struct type-hint shape)
   // because `vec-bytes` fields (Vec<BytesN<32>>) aren't expressible in that

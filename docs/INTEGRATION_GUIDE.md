@@ -3,7 +3,7 @@
 **Version:** 0.1.0  
 **Audience:** Soroban developers building on top of the ZKELLA Protocol
 
-**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries) and the SDK's core crypto, note, and prover modules are real and exercised on live Stellar Testnet — not stubs. Some SDK convenience wrapper classes are still stubs, though (`ZKELLASwap`, `ZKELLACompliance` — flagged explicitly in the relevant sections below). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
+**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries) and the SDK's core crypto, note, and prover modules are real and exercised on live Stellar Testnet — not stubs. Some SDK convenience wrapper classes are still stubs, though (`ZKELLASwap` — flagged explicitly in the relevant sections below). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
 
 ---
 
