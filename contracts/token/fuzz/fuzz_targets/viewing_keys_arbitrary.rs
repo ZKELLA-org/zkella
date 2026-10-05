@@ -25,4 +25,9 @@ fuzz_target!(|data: &[u8]| {
         Some(commitment),
         "registered viewing-key commitment did not read back"
     );
+    client.revoke(&owner);
+    assert!(
+        client.get_viewing_key_commitment(&owner).is_none(),
+        "revoked viewing-key commitment is still readable"
+    );
 });

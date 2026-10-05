@@ -48,4 +48,12 @@ fuzz_target!(|data: &[u8]| {
         cclient.get_compliance_proof(&owner).is_none(),
         "a rejected proof left a compliance record behind"
     );
+
+    let authorized = BytesN::from_array(&env, &[0x5au8; 32]);
+    cclient.set_sanctions_root(&authorized);
+    assert_eq!(
+        cclient.try_publish_compliance_proof(&owner, &proof, &inputs),
+        Err(Ok(zkella_compliance::Error::UnknownSanctionsRoot)),
+        "a proof against an unauthorized root must be rejected even after a root is set"
+    );
 });

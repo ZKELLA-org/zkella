@@ -47,7 +47,7 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL.
 - Short local runs (20 to 60 seconds each) found no crashes or invariant violations. These are smoke runs, not a full fuzzing campaign.
 - A build break in `transfer_arbitrary` (the `relayer` argument added in Tranche 2) was fixed in commit `cb5b409`.
 - To make the contracts importable from the fuzz crate, the swap, governance, compliance, and viewing_keys crates now also build an rlib, matching the token crate. The WASM output is unchanged, and their tests pass.
-- Every state-changing entrypoint across the six contracts now has a fuzz target. The remaining uncovered functions are read-only getters, which the targets exercise only indirectly.
+- The fuzz harnesses call the state-changing entrypoints with arbitrary inputs: the data entrypoints of every contract, token admin and allowlists, token-action queuing (governance), verifier key management, compliance root binding, and viewing-key revoke. Pause, unpause, and guardian cancel are exercised by unit tests, not by the harnesses. Read-only getters are exercised only indirectly.
 - A change to token's `lib.rs` re-exports `ShieldBatchItem` so the fuzz crate can construct batch inputs. No runtime behavior changed.
 
 ### Instruction budget (real WASM)

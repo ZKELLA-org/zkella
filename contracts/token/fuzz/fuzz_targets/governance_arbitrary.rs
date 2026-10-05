@@ -49,4 +49,15 @@ fuzz_target!(|data: &[u8]| {
         "accept_admin succeeded with no pending admin transfer"
     );
     assert!(gc.timelock_ledgers() > 0, "timelock is zero");
+
+    let action = if data[0] & 1 == 1 {
+        zkella_governance::TokenAdminAction::MinShieldAmount(data[1] as i128 + 1)
+    } else {
+        zkella_governance::TokenAdminAction::Relayer(Address::generate(&env), data[1] & 2 == 2)
+    };
+    let _ = gc.try_queue_token_action(&action);
+    assert!(
+        gc.try_execute_token_action().is_err(),
+        "token action executed before its timelock elapsed"
+    );
 });
