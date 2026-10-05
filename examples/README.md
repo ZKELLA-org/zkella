@@ -6,7 +6,9 @@ Each script runs against the Testnet stack in `deployments.json` (`testnet_final
 npm run build --workspace=sdk
 ```
 
-Circuit artifacts are read from `circuits/*/build`, which exists after `circuits/build.sh` has been run for each circuit. Never put a real secret in a file; pass it through the environment.
+Circuit artifacts are read from `circuits/*/build`, which exists after `circuits/build.sh` has been run for each circuit.
+
+Wallet seed: the wallet examples read a 32-byte seed from `SPENDING_SEED` (64 hex characters) or from the file named by `SPENDING_SEED_FILE`. If the file does not exist, it is created with mode 0600. Keep that file: a note is spendable only with the key derived from its seed. Stellar account secrets go in the environment only, never in a file.
 
 | Script | What it shows | Needs |
 | --- | --- | --- |
@@ -18,4 +20,4 @@ Circuit artifacts are read from `circuits/*/build`, which exists after `circuits
 | `06-unshield.cjs` | Withdraw part of a note to a public address. | `STELLAR_SECRET`, `INDEXER_URL`, `UNSHIELD_AMOUNT`, `UNSHIELD_TO` |
 | `07-swap.cjs` | Commit a note into a swap intent and cancel it after expiry. Reveal needs a relayer's execution, which is outside this script. | `STELLAR_SECRET`, `INDEXER_URL`, `SWAP_AMOUNT` |
 
-Each script prints the Testnet transaction link for every on-chain step.
+Status: `01-keys-and-address.cjs` and `02-shield.cjs` were run against Testnet. The other scripts have not yet been run end to end, and the transfer, unshield, and swap scripts need funded notes first.

@@ -1,6 +1,7 @@
 const { ZKELLAKeys, TESTNET_CONTRACTS } = require('../sdk/dist')
 
 ;(async () => {
+  // Demo seed for showing the output format only. Real wallets use examples/_keys.cjs.
   const keys = await ZKELLAKeys.fromSeed(new Uint8Array(32).fill(1))
   const address = await keys.deriveAddress(0)
   console.log('shielded address:', address.toString())

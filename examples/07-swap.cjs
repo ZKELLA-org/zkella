@@ -1,13 +1,14 @@
 const path = require('path')
 const { execSync } = require('child_process')
-const { ZKELLAKeys, ZKELLAWallet, ZKELLASwap, TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC } = require('../sdk/dist')
+const { ZKELLAWallet, ZKELLASwap, TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC } = require('../sdk/dist')
+const { loadKeys } = require('./_keys.cjs')
 const build = path.join(__dirname, '..', 'circuits')
 
 ;(async () => {
   const { STELLAR_SECRET, INDEXER_URL, SWAP_AMOUNT } = process.env
   if (!STELLAR_SECRET || !INDEXER_URL || !SWAP_AMOUNT) throw new Error('set STELLAR_SECRET, INDEXER_URL, SWAP_AMOUNT')
   const native = execSync('stellar contract id asset --asset native --network testnet').toString().trim()
-  const keys = await ZKELLAKeys.generate()
+  const keys = await loadKeys()
   const wallet = new ZKELLAWallet({
     keys: keys.spendingKey, network: 'testnet', sorobanRpc: TESTNET_SOROBAN_RPC, indexerUrl: INDEXER_URL,
     tokenAddress: TESTNET_CONTRACTS.token, stellarSecret: STELLAR_SECRET,
