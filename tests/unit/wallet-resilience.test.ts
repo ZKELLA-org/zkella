@@ -16,31 +16,44 @@ async function walletWith(server: unknown) {
   return { wallet, secret }
 }
 
-function fakeServer(sendResults: Array<Error | object>) {
+function fakeServer(script: Array<'fail-before-send' | 'fail-after-landing' | 'ok' | 'contract-error'>) {
+  let landed = false
   const sendTransaction = jest.fn(async () => {
-    const next = sendResults.shift()
-    if (next instanceof Error) throw next
-    return next
+    const step = script.shift()
+    if (step === 'fail-before-send') throw new Error('fetch failed')
+    if (step === 'fail-after-landing') { landed = true; throw new Error('fetch failed') }
+    if (step === 'contract-error') throw new Error('HostError: Error(Contract, #4)')
+    landed = true
+    return { status: 'PENDING', hash: 'h' }
   })
   return {
     sendTransaction,
     getAccount: jest.fn(async (id: string) => new Account(id, '1')),
-    prepareTransaction: jest.fn(async () => ({ sign: () => {} })),
-    getTransaction: jest.fn(async () => ({ status: 'SUCCESS', returnValue: nativeToScVal(7, { type: 'u32' }) })),
+    prepareTransaction: jest.fn(async () => ({ sign: () => {}, hash: () => new Uint8Array(32).fill(7) })),
+    getTransaction: jest.fn(async () =>
+      landed ? { status: 'SUCCESS', returnValue: nativeToScVal(7, { type: 'u32' }) } : { status: 'NOT_FOUND' }),
   }
 }
 
 describe('wallet submission resilience', () => {
-  test('a transient RPC failure is retried and the call then succeeds', async () => {
-    const server = fakeServer([new Error('fetch failed'), { status: 'PENDING', hash: 'h1' }])
+  test('a transient RPC failure that never reached the network is retried and then succeeds', async () => {
+    const server = fakeServer(['fail-before-send', 'ok'])
     const { wallet } = await walletWith(server)
     const value = await wallet.submitContractCall(TESTNET_CONTRACTS.token, 'shield', [] as xdr.ScVal[])
     expect(value).toBeDefined()
     expect(server.sendTransaction).toHaveBeenCalledTimes(2)
   })
 
+  test('an ambiguous failure whose transaction did land is not resubmitted', async () => {
+    const server = fakeServer(['fail-after-landing'])
+    const { wallet } = await walletWith(server)
+    const value = await wallet.submitContractCall(TESTNET_CONTRACTS.token, 'shield', [] as xdr.ScVal[])
+    expect(value).toBeDefined()
+    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+  })
+
   test('a contract rejection is not retried', async () => {
-    const server = fakeServer([new Error('HostError: Error(Contract, #4)')])
+    const server = fakeServer(['contract-error'])
     const { wallet } = await walletWith(server)
     await expect(wallet.submitContractCall(TESTNET_CONTRACTS.token, 'shield', [] as xdr.ScVal[])).rejects.toThrow('#4')
     expect(server.sendTransaction).toHaveBeenCalledTimes(1)

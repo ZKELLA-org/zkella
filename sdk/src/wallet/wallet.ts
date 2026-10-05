@@ -519,9 +519,20 @@ export class ZKELLAWallet {
         .build()
       const prepared = await server.prepareTransaction(tx)
       prepared.sign(this.sourceKeypair)
-      const sent = await server.sendTransaction(prepared)
-      if (sent.status === 'TRY_AGAIN_LATER') throw new TransientError(`${method}: RPC asked to retry`)
-      return sent
+      const hash = Buffer.from(prepared.hash()).toString('hex')
+      try {
+        const sent = await server.sendTransaction(prepared)
+        if (sent.status === 'TRY_AGAIN_LATER') throw new TransientError(`${method}: RPC asked to retry`)
+        return sent
+      } catch (err) {
+        // An ambiguous failure may still have reached the network. Resubmitting a new
+        // transaction would run the operation twice, so check the hash first.
+        if (isTransient(err)) {
+          const seen = await server.getTransaction(hash).catch(() => null)
+          if (seen && seen.status !== 'NOT_FOUND') return { status: 'PENDING', hash } as unknown as rpc.Api.SendTransactionResponse
+        }
+        throw err
+      }
     })
     if (response.status === 'ERROR') {
       throw new Error(`${method} submission error: ${JSON.stringify(response.errorResult)}`)
