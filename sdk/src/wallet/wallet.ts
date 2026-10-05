@@ -9,7 +9,7 @@ import { encryptNote, tryDecryptNote }                    from '../notes/encrypt
 import { generateShieldProof, ShieldPublicInputs }        from '../prover/shield'
 import { generateTransferProof, TransferInputNote }       from '../prover/transfer'
 import { generateUnshieldProof }                          from '../prover/unshield'
-import { Note, WalletConfig, TransferOptions, ViewingKeyExport, ShieldedAddress } from '../types'
+import { Note, WalletConfig, TransferOptions, ViewingKeyExport, ShieldedAddress, SpendingKey } from '../types'
 
 // transfer4() (4-in-4-out) isn't wired into the wallet yet — 2-in-2-out
 // transfer() covers the common case, and transfer4's only real use (note
@@ -398,6 +398,11 @@ export class ZKELLAWallet {
     return this.keys.exportViewingKey(this.lastSyncLedger, this.config.network)
   }
 
+  /** The shielded-pool spending keys (nullifier and owner keys are needed for swaps). */
+  spendingKey(): SpendingKey {
+    return this.config.keys
+  }
+
   /** The Stellar account that submits and owns this wallet's on-chain actions. */
   accountAddress(): string {
     return this.sourceKeypair.publicKey()
@@ -508,12 +513,12 @@ export class ZKELLAWallet {
     return result.returnValue!
   }
 
-  private async getMerkleRoot(): Promise<Uint8Array> {
+  async getMerkleRoot(): Promise<Uint8Array> {
     const root = await this.callView(this.config.tokenAddress, 'merkle_root', [])
     return root as Uint8Array
   }
 
-  private async getMerklePathBytes(leafIndex: number): Promise<Uint8Array[]> {
+  async getMerklePathBytes(leafIndex: number): Promise<Uint8Array[]> {
     const path = await this.callView(this.config.tokenAddress, 'merkle_path', [
       nativeToScVal(leafIndex, { type: 'u32' }),
     ]) as Uint8Array[]
