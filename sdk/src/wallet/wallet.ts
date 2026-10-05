@@ -398,6 +398,11 @@ export class ZKELLAWallet {
     return this.keys.exportViewingKey(this.lastSyncLedger, this.config.network)
   }
 
+  /** Drops a note this wallet has consumed on-chain, so balance and coin selection stop counting it. */
+  markNoteSpent(note: Note): void {
+    this.notes = this.notes.filter(n => n !== note)
+  }
+
   /** The shielded-pool spending keys (nullifier and owner keys are needed for swaps). */
   spendingKey(): SpendingKey {
     return this.config.keys

@@ -86,6 +86,7 @@ export class ZKELLASwap {
       nativeToScVal(own.proof,                       { type: 'bytes' }),
       nativeToScVal(opts.expiry,                     { type: 'u32' }),
     ])) as Uint8Array
+    wallet.markNoteSpent(opts.note)
 
     return {
       swapId:           Buffer.from(swapId).toString('hex'),

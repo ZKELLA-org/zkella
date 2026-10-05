@@ -203,3 +203,10 @@ Findings:
 - All three faults reached the failure path and the script exited non-zero. Delivery to a webhook was verified separately against a local receiver.
 
 Not yet done: a scheduled drill with people following the incident categories above, and an alerting channel for failures. Both need a decision on owners and a destination.
+
+## Decisions
+
+- **Failure notifications.** Notifications go to `NOTIFY_WEBHOOK` when it is set, and every failure is also written to `LOG_FILE`. No external messaging service is configured or created by this repository. The team sets the webhook to its chosen channel; until then, failures are visible only in the log and in the script's exit status.
+- **Expected governance timelock.** The health check fails when the timelock differs from `EXPECTED_TIMELOCK` (default 60, the Testnet demo build). A production deployment sets it to 120960 (7 days at 5 seconds per ledger), so a demo build reaching production is caught.
+- **Drill cadence.** The health check runs every 15 minutes. A full drill, with people following the four incident categories, runs quarterly and after any contract redeployment.
+- **Indexer on mainnet.** The indexer refuses to start on `ZKELLA_NETWORK=mainnet` without `INDEXER_API_KEYS`, so query endpoints cannot run unauthenticated in production.

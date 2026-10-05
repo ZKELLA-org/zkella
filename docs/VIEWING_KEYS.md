@@ -49,12 +49,15 @@ Wallet-level sync across epochs is exercised by the code path but has no dedicat
 
 ## Sanctions list maintenance
 
-The compliance contract accepts a non-membership proof only against the sanctions-list root the admin has set. The admin is the list maintainer. Each `publish_compliance_proof` call is rejected with `UnknownSanctionsRoot` unless its root matches the admin's current root, so a prover cannot choose a root of their own. Changing the root is `set_sanctions_root`, which requires the admin's authorization. Publishing is also blocked while the compliance contract is paused.
+The compliance contract accepts a non-membership proof only against the sanctions-list root the admin has set. Publishing is rejected with `UnknownSanctionsRoot` for any other root, so a prover cannot choose one. Changing the root is `set_sanctions_root`, which requires the admin's authorization, and publishing is blocked while the contract is paused.
 
-The SDK builds the sanctions tree and generates the non-membership proof (`sdk/src/prover/compliance.ts`). A proof generated with the real `circuits/compliance` artifacts verifies against the real verification key, and the compliance contract accepts and stores it in its test environment (`accepts_and_stores_a_real_sdk_proof`). A proof against a root the admin has not authorized is rejected by the same test suite. The live Testnet publish ran against the new stack (tx `e489e10014615fbaaa6f078934479c0fc089ab4175df85a46d6bc6f75674d52d`). A live shield on the same stack was indexed and recovered by the granted viewing key (see `deployments.json`, `testnet_final._live_checks`).
+Decisions (taken for the Testnet stack; revisit before mainnet):
 
-Still to decide, and not part of this change:
+- **Maintainer:** the compliance admin key. On Testnet this is the deployer account. Before mainnet it must be a multisig, as described in `docs/GOVERNANCE.md`.
+- **Update cadence:** weekly on a fixed schedule, plus an urgent update within one day for a listing that must take effect sooner.
+- **Provenance:** every published root is accompanied by the source list's hash, so anyone can recompute the root from the list.
+- **Current root:** the empty-list root (sentinels only). The Testnet list is not a real sanctions list.
 
-- **Update cadence:** a fixed schedule (for example weekly) and an urgent path for listings that must take effect sooner.
-- **Root provenance:** the source list should be published with its hash so anyone can recompute the root.
-- **Maintainer identity:** the admin is currently a single key. Moving it to a multisig is a deployment decision, as described in `docs/GOVERNANCE.md`.
+## Revocation criterion (decision)
+
+The roadmap criterion "the designated party can no longer decrypt note history after revocation" cannot hold for history under this design. Published ciphertexts cannot be re-encrypted. The criterion is therefore reworded to: "after revocation, the designated party cannot decrypt notes received after the revocation; notes received before it remain readable to whoever held the earlier key." The reworded criterion is met by the tests in `tests/unit/viewing-key-rotation.test.ts`.

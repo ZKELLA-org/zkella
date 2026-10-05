@@ -40,6 +40,9 @@ async function main() {
   const port        = Number(process.env.INDEXER_HTTP_PORT ?? '8787')
   const pollMs      = Number(process.env.INDEXER_POLL_MS ?? '5000')
   const apiKeys     = (process.env.INDEXER_API_KEYS ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  if (network === 'mainnet' && apiKeys.length === 0) {
+    throw new Error('refusing to start on mainnet with INDEXER_API_KEYS unset: query endpoints would be unauthenticated')
+  }
   const rateLimitPerMinute = Number(process.env.INDEXER_RATE_LIMIT_PER_MINUTE ?? '600')
 
   const db = await openIndexerDb({ databaseUrl, sqlitePath })
