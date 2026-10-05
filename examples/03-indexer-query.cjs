@@ -11,4 +11,4 @@ const { IndexerClient } = require('../sdk/dist')
     const path = await client.getMerklePath(notes[0].leafIndex)
     console.log('merkle path depth:', path.path.length)
   }
-})().catch(e => { console.error(e.message); process.exit(1) })
+})().then(() => process.exit(0), e => { console.error(e.message); process.exit(1) })
