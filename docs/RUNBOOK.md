@@ -174,3 +174,15 @@ This runbook describes a real but early operational posture, not a mature one. S
 - **No indexer failover.** One process, one SQLite file, no secondary instance, and a single RPC provider for event ingestion. `docs/ARCHITECTURE.md` and `docs/POC_IMPLEMENTATION.md` describe multi-operator indexing as target architecture; `docs/TECHNICAL_SPEC.md` §13.3 sets out the planned production design (dual-provider RPC failover, managed Postgres with Multi-AZ, a second operator in a different region or cloud provider) — none of it is built yet.
 - **No pause mechanism on `verifier`, `governance`, `compliance`, or `swap`.** Only `token` can be halted directly; see §1 and Category 4 for the practical consequences.
 - **This document is untested.** It has not been exercised in a real incident or a scheduled drill. Treat every procedure above as a first draft to be corrected by the first real use, not a proven playbook.
+
+## Testnet stack health check
+
+`scripts/testnet_health_check.sh` checks the Soroban RPC, the indexer (when `INDEXER_URL` is set), and the deployed contract state recorded under `testnet_final` in `deployments.json`: governance's timelock value and the token's approval of the native asset. Any failure is appended to `LOG_FILE` and posted to `NOTIFY_WEBHOOK` if that is set; the script exits non-zero.
+
+Schedule it with cron:
+
+```
+*/15 * * * * cd /path/to/zkella && NOTIFY_WEBHOOK=... INDEXER_URL=... scripts/testnet_health_check.sh
+```
+
+No notification destination is configured in this repository. Set `NOTIFY_WEBHOOK` to the team's chosen channel before relying on alerts.
