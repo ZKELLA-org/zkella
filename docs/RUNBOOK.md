@@ -186,3 +186,20 @@ Schedule it with cron:
 ```
 
 No notification destination is configured in this repository. Set `NOTIFY_WEBHOOK` to the team's chosen channel before relying on alerts.
+
+## Drill record
+
+Run on 2026-10-05 against the Testnet stack in `deployments.json` (`testnet_final`). Three faults were injected into `scripts/testnet_health_check.sh`, one at a time:
+
+| Fault | Expected | Observed |
+| --- | --- | --- |
+| Soroban RPC unreachable | RPC check fails, exit 1 | `FAIL rpc status='unreachable'`, exit 1 |
+| Indexer unreachable (`INDEXER_URL`) | Indexer lag check fails, exit 1 | `FAIL indexer lag='unreachable'`, exit 1 |
+| Deployment record points governance at a non-contract address | Governance check fails and names the address, exit 1 | `FAIL governance <address> timelock_ledgers unreadable`, exit 1 |
+
+Findings:
+
+- The third fault exposed a diagnostic gap: the governance failure did not name the address it tried. The messages now include the contract address for governance and token.
+- All three faults reached the failure path and the script exited non-zero. Delivery to a webhook was verified separately against a local receiver.
+
+Not yet done: a scheduled drill with people following the incident categories above, and an alerting channel for failures. Both need a decision on owners and a destination.

@@ -55,9 +55,9 @@ GOV=$(read_addr governance)
 TOKEN=$(read_addr token)
 NATIVE_SAC=$(stellar contract id asset --asset native --network testnet 2>/dev/null)
 timelock=$(stellar contract invoke --id "$GOV" --source "$SRC" --network testnet --send=no -- timelock_ledgers 2>/dev/null | tail -1)
-if [ -n "$timelock" ]; then pass "governance timelock_ledgers=$timelock"; else fail "governance timelock_ledgers unreadable"; fi
+if [ -n "$timelock" ]; then pass "governance timelock_ledgers=$timelock"; else fail "governance $GOV timelock_ledgers unreadable"; fi
 approved=$(stellar contract invoke --id "$TOKEN" --source "$SRC" --network testnet --send=no -- is_asset_approved --asset "$NATIVE_SAC" 2>/dev/null | tail -1)
-if [ "$approved" = "true" ]; then pass "token native asset approved"; else fail "token native asset approval='${approved:-unreadable}'"; fi
+if [ "$approved" = "true" ]; then pass "token native asset approved"; else fail "token $TOKEN native asset approval='${approved:-unreadable}'"; fi
 
 if [ "$failures" -gt 0 ]; then
   echo "$(date -u +%FT%TZ) $failures check(s) failed" >>"$LOG_FILE"
