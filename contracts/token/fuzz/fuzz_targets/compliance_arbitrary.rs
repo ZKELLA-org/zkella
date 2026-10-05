@@ -49,7 +49,9 @@ fuzz_target!(|data: &[u8]| {
         "a rejected proof left a compliance record behind"
     );
 
-    let authorized = BytesN::from_array(&env, &[0x5au8; 32]);
+    // The authorized root must differ from the input's root, or the input is genuinely authorized.
+    let bytes = if inputs.sanctions_root == BytesN::from_array(&env, &[0x5au8; 32]) { [0x5bu8; 32] } else { [0x5au8; 32] };
+    let authorized = BytesN::from_array(&env, &bytes);
     cclient.set_sanctions_root(&authorized);
     assert_eq!(
         cclient.try_publish_compliance_proof(&owner, &proof, &inputs),
