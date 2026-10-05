@@ -97,7 +97,7 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL.
 | swap | initialize | 602,003 | 0.15 |
 | swap | set_relayer | 624,340 | 0.16 |
 
-- **Open**: swap `cancel_swap` and `reclaim_expired_swap` need a committed swap, so they are not in this table yet. Their cost should be measured in the swap cost-parity test, which builds a committed swap.
+- Swap `cancel_swap` and `reclaim_expired_swap` are measured by `cost_parity_swap_cancel_and_reclaim` in the swap crate, on the compiled WASM: `cancel_swap` 1,076,688 instructions (0.27% of budget) and `reclaim_expired_swap` 1,449,177 (0.36%). Their native figures are 422,170 and 733,539. The WASM figures exceed native by more than 25%, because fixed WASM instantiation overhead dominates these small calls. The test applies the 2M-instruction allowance the governance parity test uses, and it asserts the absolute budget limit as well.
 
 ## Open items
 

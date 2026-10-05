@@ -1012,6 +1012,78 @@ mod tests {
         (commit_cost, reveal_cost)
     }
 
+    /// Instruction cost of `cancel_swap` (before execution, after expiry) and
+    /// `reclaim_expired_swap` (after execution and the claim window), on the native
+    /// contract or the compiled WASM artefact.
+    fn recovery_costs(wasm: bool) -> (u64, u64) {
+        let amount_in = 1_000_000i128;
+        let nullifier_in = BytesN::from_array(&Env::default(), &canon(99));
+        let _ = nullifier_in;
+
+        let cancel = {
+            let s = setup_with(wasm);
+            let shielder = Address::generate(&s.env);
+            shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
+            let nullifier_in = BytesN::from_array(&s.env, &canon(99));
+            let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+            let intent_commitment = BytesN::from_array(&s.env, &canon(42));
+            let refund_to = Address::generate(&s.env);
+            let expiry = s.env.ledger().sequence() + 1000;
+            let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+            let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+            let zc = zero_change(&s.env);
+            let swap_id = swap_client.commit_swap(
+                &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            );
+            s.env.ledger().with_mut(|li| li.sequence_number = expiry + 1);
+            s.env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
+            swap_client.cancel_swap(&swap_id);
+            s.env.cost_estimate().budget().cpu_instruction_cost()
+        };
+
+        let reclaim = {
+            let s = setup_with(wasm);
+            let shielder = Address::generate(&s.env);
+            shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
+            let nullifier_in = BytesN::from_array(&s.env, &canon(99));
+            let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+            let intent_commitment = BytesN::from_array(&s.env, &canon(42));
+            let refund_to = Address::generate(&s.env);
+            let expiry = s.env.ledger().sequence() + 1000;
+            let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+            let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+            let zc = zero_change(&s.env);
+            let swap_id = swap_client.commit_swap(
+                &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            );
+            let amount_out = 950_000i128;
+            soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &amount_out);
+            swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
+            s.env.ledger().with_mut(|li| li.sequence_number = expiry + 17_281 + 1);
+            s.env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
+            swap_client.reclaim_expired_swap(&swap_id);
+            s.env.cost_estimate().budget().cpu_instruction_cost()
+        };
+        (cancel, reclaim)
+    }
+
+    /// Real-WASM vs native cost of `cancel_swap` and `reclaim_expired_swap`; same limits as above.
+    #[test]
+    fn cost_parity_swap_cancel_and_reclaim() {
+        let (nc, nr) = recovery_costs(false);
+        let (wc, wr) = recovery_costs(true);
+        std::println!("PARITY swap cancel_swap native={nc} wasm={wc}; reclaim_expired_swap native={nr} wasm={wr}");
+        // These calls cost well under 2M instructions, so the fixed WASM instantiation
+        // overhead dominates and a purely relative bound would be meaningless; the same
+        // 2M allowance the governance parity test uses covers it.
+        for (name, n, w) in [("cancel_swap", nc, wc), ("reclaim_expired_swap", nr, wr)] {
+            assert!(w <= 400_000_000, "{name} on WASM uses {w}, over the 400M limit");
+            assert!(w <= n * 125 / 100 + 2_000_000, "{name}: WASM {w} exceeds 25% plus 2M over native {n}");
+        }
+    }
+
     /// Real-WASM vs native cost of the swap entrypoints; fails above the 400M limit or more than
     /// 25% over native (same rule as the token's parity tests).
     #[test]
