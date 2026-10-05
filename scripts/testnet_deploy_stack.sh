@@ -37,9 +37,16 @@ invoke() {
   stellar contract invoke --id "$id" --source "$SRC" --network "$NET" -- "$@"
 }
 
+# Retries on transient network errors; a failed lookup must not look like "ledger 0".
 ledger_now() {
-  curl -s "https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1" \
-    | python3 -c "import json,sys;print(json.load(sys.stdin)['_embedded']['records'][0]['sequence'])"
+  local attempt seq
+  for attempt in 1 2 3 4 5 6; do
+    seq=$(curl -s --max-time 20 "https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1" \
+      | python3 -c "import json,sys;print(json.load(sys.stdin)['_embedded']['records'][0]['sequence'])" 2>/dev/null) && { echo "$seq"; return 0; }
+    sleep 10
+  done
+  echo "ledger lookup failed after retries" >&2
+  return 1
 }
 
 echo "deployer=$ADMIN guardian=$GUARDIAN"
