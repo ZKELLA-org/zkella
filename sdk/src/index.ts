@@ -15,3 +15,4 @@ export type {
   RelayerQuoteHandler,
 } from './relayer/quote'
 export * from './types'
+export { TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC } from './config/testnet'
