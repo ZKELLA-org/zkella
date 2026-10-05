@@ -32,15 +32,21 @@ Each of the four contracts (verifier, governance, compliance, swap) has `pause` 
 
 The roadmap lists 18 gated entrypoints (verifier 3, governance 6, compliance 2, swap 7). Under one consistent rule (exclude the one-shot `initialize`, count only functions that write state), the count is verifier 3, governance 6, compliance 1, swap 6. This implementation gates 4 verifier entrypoints (the three state-changing ones plus `verify` and `verify_batch`, so proof acceptance stops), 4 governance, 1 compliance, and 4 swap. The cancel and revoke paths listed above stay callable during a pause. Compliance has one state-changing entrypoint, not two. The roadmap's total of 18 counts `initialize` for compliance and swap, but not for verifier and governance; this document applies the rule consistently.
 
-## Governance-settable parameters
+## Governance-controlled token settings
 
-`MIN_SHIELD_AMOUNT` is a storage value in the token contract. Only the token's admin can change it, so the token's admin must be the governance contract. Governance then changes it through the same timelock as a verifying-key update:
+The token's admin-only settings are changed through governance, so the token's admin is the governance contract. Governance applies three kinds of change, each through the same timelock as a verifying-key update:
 
-1. `queue_min_shield_amount(new_amount)` (admin, gated by pause). Rejects non-positive amounts.
-2. `execute_min_shield_amount()` after `timelock_ledgers()` ledgers (admin, gated by pause). Calls the token's `set_min_shield_amount`, which takes effect without a redeploy.
-3. `guardian_cancel_min_shield()` (guardian only, not gated by pause) cancels a queued change.
+- **Minimum shield amount** (`MinShieldAmount`), so `MIN_SHIELD_AMOUNT` changes without a redeploy.
+- **Asset approval** (`AssetApproval`), so an asset can be shielded only after governance approves it.
+- **Relayer approval** (`Relayer`), so a fee-paying relayer is allowed only after governance approves it.
 
-Tested against the real token contract: the value is unchanged before the timelock and changes after it. Deployment must set governance as the token admin; that is a Deliverable 4 step.
+The flow is the same for each:
+
+1. `queue_token_action(action)` (admin, gated by pause). A new queued action replaces any pending one and restarts the timelock. Non-positive minimum shield amounts are rejected.
+2. `execute_token_action()` after `timelock_ledgers()` ledgers (admin, gated by pause).
+3. `guardian_cancel_token_action()` (guardian only, not gated by pause) cancels a queued action.
+
+Tested against the real token contract: values are unchanged before the timelock and change after it, a cancelled action never applies, and asset and relayer approvals take effect after the timelock. Deployment must set governance as the token's admin.
 
 ## Deferred to a later governance upgrade
 

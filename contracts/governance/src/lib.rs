@@ -28,7 +28,7 @@ pub enum StorageKey {
     Guardian,
     Paused,
     Token,
-    PendingMinShield,
+    PendingTokenAction,
 }
 
 #[contracttype]
@@ -38,9 +38,19 @@ pub struct PendingVkUpdate {
     pub eta_ledger: u32,
 }
 
+/// An admin change to the token contract, which governance executes as the
+/// token's admin. Each variant is timelocked and guardian-cancellable.
 #[contracttype]
-pub struct PendingMinShield {
-    pub amount:     i128,
+#[derive(Clone)]
+pub enum TokenAdminAction {
+    MinShieldAmount(i128),
+    AssetApproval(Address, bool),
+    Relayer(Address, bool),
+}
+
+#[contracttype]
+pub struct PendingTokenAction {
+    pub action:     TokenAdminAction,
     pub eta_ledger: u32,
 }
 
@@ -58,8 +68,9 @@ impl ZKELLAGovernance {
     /// separate from `admin` means a compromised admin key can still be
     /// stopped from completing a rotation by a party that cannot itself rotate.
     /// `token` must have been deployed with this contract's address as its
-    /// admin, so that `execute_min_shield_amount` can change MIN_SHIELD_AMOUNT
-    /// through the same timelock as a verifying-key update.
+    /// admin, so that `execute_token_action` can change the token's admin-only
+    /// settings (minimum shield amount, asset approvals, relayers) through the
+    /// same timelock as a verifying-key update.
     pub fn initialize(env: Env, admin: Address, verifier: Address, guardian: Address, token: Address) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
@@ -70,36 +81,45 @@ impl ZKELLAGovernance {
         env.storage().instance().set(&StorageKey::Token, &token);
     }
 
-    pub fn queue_min_shield_amount(env: Env, new_amount: i128) {
+    /// Queues a change to the token. A new queued action replaces any pending
+    /// one and restarts the timelock, as with verifying-key updates.
+    pub fn queue_token_action(env: Env, action: TokenAdminAction) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
         Self::assert_not_paused(&env);
-        assert!(new_amount > 0, "amount must be positive");
+        if let TokenAdminAction::MinShieldAmount(amount) = &action {
+            assert!(*amount > 0, "amount must be positive");
+        }
 
         let eta = env.ledger().sequence().checked_add(VK_TIMELOCK_LEDGERS).expect("eta overflow");
-        let update = PendingMinShield { amount: new_amount, eta_ledger: eta };
-        env.storage().instance().set(&StorageKey::PendingMinShield, &update);
+        let pending = PendingTokenAction { action, eta_ledger: eta };
+        env.storage().instance().set(&StorageKey::PendingTokenAction, &pending);
     }
 
-    pub fn execute_min_shield_amount(env: Env) {
+    pub fn execute_token_action(env: Env) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
         Self::assert_not_paused(&env);
 
-        let update: PendingMinShield = env.storage().instance()
-            .get(&StorageKey::PendingMinShield)
-            .expect("no pending min shield update");
-        assert!(env.ledger().sequence() >= update.eta_ledger, "timelock not elapsed");
-        env.storage().instance().remove(&StorageKey::PendingMinShield);
+        let pending: PendingTokenAction = env.storage().instance()
+            .get(&StorageKey::PendingTokenAction)
+            .expect("no pending token action");
+        assert!(env.ledger().sequence() >= pending.eta_ledger, "timelock not elapsed");
+        env.storage().instance().remove(&StorageKey::PendingTokenAction);
 
         let token: Address = env.storage().instance().get(&StorageKey::Token).unwrap();
-        TokenClient::new(&env, &token).set_min_shield_amount(&update.amount);
+        let client = TokenClient::new(&env, &token);
+        match pending.action {
+            TokenAdminAction::MinShieldAmount(amount) => client.set_min_shield_amount(&amount),
+            TokenAdminAction::AssetApproval(asset, approved) => client.set_asset_approved(&asset, &approved),
+            TokenAdminAction::Relayer(relayer, approved) => client.set_relayer(&relayer, &approved),
+        }
     }
 
-    pub fn guardian_cancel_min_shield(env: Env) {
+    pub fn guardian_cancel_token_action(env: Env) {
         let guardian: Address = env.storage().instance().get(&StorageKey::Guardian).unwrap();
         guardian.require_auth();
-        env.storage().instance().remove(&StorageKey::PendingMinShield);
+        env.storage().instance().remove(&StorageKey::PendingTokenAction);
     }
 
     pub fn pause(env: Env) {
@@ -519,12 +539,12 @@ mod tests {
         let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
         let before = token.min_shield_amount();
 
-        gov.queue_min_shield_amount(&(before * 5));
-        assert!(gov.try_execute_min_shield_amount().is_err(), "must not execute before the timelock");
+        gov.queue_token_action(&TokenAdminAction::MinShieldAmount(before * 5));
+        assert!(gov.try_execute_token_action().is_err(), "must not execute before the timelock");
         assert_eq!(token.min_shield_amount(), before);
 
         env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
-        gov.execute_min_shield_amount();
+        gov.execute_token_action();
         assert_eq!(token.min_shield_amount(), before * 5);
     }
 
@@ -532,7 +552,7 @@ mod tests {
     #[should_panic(expected = "amount must be positive")]
     fn queue_min_shield_amount_rejects_non_positive_amounts() {
         let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
-        ZKELLAGovernanceClient::new(&env, &gov_id).queue_min_shield_amount(&0);
+        ZKELLAGovernanceClient::new(&env, &gov_id).queue_token_action(&TokenAdminAction::MinShieldAmount(0));
     }
 
     #[test]
@@ -541,7 +561,7 @@ mod tests {
         let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
         let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
         gov.pause();
-        gov.queue_min_shield_amount(&1_000);
+        gov.queue_token_action(&TokenAdminAction::MinShieldAmount(1_000));
     }
 
     #[test]
@@ -551,10 +571,10 @@ mod tests {
         let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
         let before = token.min_shield_amount();
 
-        gov.queue_min_shield_amount(&(before * 5));
-        gov.guardian_cancel_min_shield();
+        gov.queue_token_action(&TokenAdminAction::MinShieldAmount(before * 5));
+        gov.guardian_cancel_token_action();
         env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
-        assert!(gov.try_execute_min_shield_amount().is_err(), "cancelled update must not execute");
+        assert!(gov.try_execute_token_action().is_err(), "cancelled update must not execute");
         assert_eq!(token.min_shield_amount(), before);
     }
 
@@ -606,9 +626,28 @@ mod tests {
         gov.pause();
         gov.unpause();
         let target = token.min_shield_amount() * 2;
-        gov.queue_min_shield_amount(&target);
+        gov.queue_token_action(&TokenAdminAction::MinShieldAmount(target));
         env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
-        gov.execute_min_shield_amount();
+        gov.execute_token_action();
         assert_eq!(token.min_shield_amount(), target);
+    }
+
+    #[test]
+    fn governance_approves_an_asset_and_a_relayer_on_the_token_after_the_timelock() {
+        let (env, _admin, _guardian, gov_id, _verifier, token_id) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
+        let asset = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        gov.queue_token_action(&TokenAdminAction::AssetApproval(asset.clone(), true));
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_token_action();
+        assert!(token.is_asset_approved(&asset));
+
+        gov.queue_token_action(&TokenAdminAction::Relayer(relayer.clone(), true));
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_token_action();
+        assert!(token.is_approved_relayer(&relayer));
     }
 }
