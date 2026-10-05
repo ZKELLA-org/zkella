@@ -403,6 +403,11 @@ export class ZKELLAWallet {
     this.notes = this.notes.filter(n => n !== note)
   }
 
+  /** Unspent notes of `asset` this wallet currently holds, in the order it tracks them. */
+  spendableNotes(asset: string): Note[] {
+    return this.notes.filter(n => n.assetId === asset)
+  }
+
   /** The shielded-pool spending keys (nullifier and owner keys are needed for swaps). */
   spendingKey(): SpendingKey {
     return this.config.keys
