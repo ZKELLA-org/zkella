@@ -323,7 +323,7 @@ export class ZKELLAWallet {
       return { leafIndices }
     }
 
-    return { submit }
+    return { submit: this.withAnchorRetry(submit, () => this.transfer(opts)) }
   }
 
   /**
@@ -391,7 +391,7 @@ export class ZKELLAWallet {
       return { changeLeafIndex }
     }
 
-    return { submit }
+    return { submit: this.withAnchorRetry(submit, () => this.unshield(opts)) }
   }
 
   exportViewingKey(): ViewingKeyExport {
@@ -406,6 +406,23 @@ export class ZKELLAWallet {
   /** The shielded-pool spending keys (nullifier and owner keys are needed for swaps). */
   spendingKey(): SpendingKey {
     return this.config.keys
+  }
+
+  /**
+   * Wraps a submit closure so that a rejected anchor (aged out of the token's
+   * root-history window) rebuilds the whole call against the current root. The
+   * rebuild re-selects notes, so it does not reuse the stale proof.
+   */
+  private withAnchorRetry<T>(submit: () => Promise<T>, rebuild: () => Promise<{ submit: () => Promise<T> }>): () => Promise<T> {
+    return async () => {
+      try {
+        return await submit()
+      } catch (err) {
+        if (!isInvalidAnchor(err)) throw err
+        const fresh = await rebuild()
+        return fresh.submit()
+      }
+    }
   }
 
   /** The Stellar account that submits and owns this wallet's on-chain actions. */
@@ -488,18 +505,19 @@ export class ZKELLAWallet {
     method:     string,
     args:       xdr.ScVal[],
   ): Promise<xdr.ScVal> {
-    const server  = this.getServer()
-    const account = await server.getAccount(this.sourceKeypair.publicKey())
-
-    const tx = new TransactionBuilder(account, { fee: '10000000', networkPassphrase: this.getNetworkPassphrase() })
-      .addOperation(new Contract(contractId).call(method, ...args))
-      .setTimeout(30)
-      .build()
-
-    const prepared = await server.prepareTransaction(tx)
-    prepared.sign(this.sourceKeypair)
-
-    const response = await server.sendTransaction(prepared)
+    const server = this.getServer()
+    const response = await withTransientRetry(async () => {
+      const account = await server.getAccount(this.sourceKeypair.publicKey())
+      const tx = new TransactionBuilder(account, { fee: '10000000', networkPassphrase: this.getNetworkPassphrase() })
+        .addOperation(new Contract(contractId).call(method, ...args))
+        .setTimeout(30)
+        .build()
+      const prepared = await server.prepareTransaction(tx)
+      prepared.sign(this.sourceKeypair)
+      const sent = await server.sendTransaction(prepared)
+      if (sent.status === 'TRY_AGAIN_LATER') throw new TransientError(`${method}: RPC asked to retry`)
+      return sent
+    })
     if (response.status === 'ERROR') {
       throw new Error(`${method} submission error: ${JSON.stringify(response.errorResult)}`)
     }
@@ -579,3 +597,32 @@ function requireCircuit(
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+class TransientError extends Error {}
+
+const TRANSIENT_PATTERN = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|\b(502|503|504)\b|timed out|TRY_AGAIN_LATER/i
+
+function isTransient(err: unknown): boolean {
+  if (err instanceof TransientError) return true
+  return TRANSIENT_PATTERN.test(String((err as Error)?.message ?? err))
+}
+
+/** Token's `InvalidAnchor` (error code 5): the anchor is not in the root-history window. */
+function isInvalidAnchor(err: unknown): boolean {
+  return /Contract, #5\)|Error\(Contract, #5\)/.test(String((err as Error)?.message ?? err))
+}
+
+async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      last = err
+      if (!isTransient(err) || i === attempts - 1) throw err
+      await new Promise(r => setTimeout(r, 1000 * 2 ** i))
+    }
+  }
+  throw last
+}
+
