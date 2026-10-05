@@ -550,14 +550,14 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "amount must be positive")]
-    fn queue_min_shield_amount_rejects_non_positive_amounts() {
+    fn queue_token_action_rejects_non_positive_min_shield() {
         let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
         ZKELLAGovernanceClient::new(&env, &gov_id).queue_token_action(&TokenAdminAction::MinShieldAmount(0));
     }
 
     #[test]
     #[should_panic(expected = "paused")]
-    fn pause_blocks_queue_min_shield_amount() {
+    fn pause_blocks_queue_token_action() {
         let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
         let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
         gov.pause();
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn unpause_restores_queue_and_execute_min_shield_amount() {
+    fn unpause_restores_queue_and_execute_token_action() {
         let (env, _admin, _guardian, gov_id, _verifier, token_id) = setup_full();
         let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
         let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
