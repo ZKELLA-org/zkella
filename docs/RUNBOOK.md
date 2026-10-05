@@ -210,3 +210,23 @@ Not yet done: a scheduled drill with people following the incident categories ab
 - **Expected governance timelock.** The health check fails when the timelock differs from `EXPECTED_TIMELOCK` (default 60, the Testnet demo build). A production deployment sets it to 120960 (7 days at 5 seconds per ledger), so a demo build reaching production is caught.
 - **Drill cadence.** The health check runs every 15 minutes. A full drill, with people following the four incident categories, runs quarterly and after any contract redeployment.
 - **Indexer on mainnet.** The indexer refuses to start on `ZKELLA_NETWORK=mainnet` without `INDEXER_API_KEYS`, so query endpoints cannot run unauthenticated in production.
+
+## SDK artifacts
+
+Applies to `@zkella/sdk` (see `docs/SDK_RELEASE.md`).
+
+**Version pinning.** Pin the exact version in client projects (`"@zkella/sdk": "0.1.0"`, not a range). The SDK's proofs depend on the circuit artifacts and verifying keys deployed on the Testnet stack in `deployments.json`, so an unplanned upgrade can change which proofs verify.
+
+**Upgrade guidance.** Upgrade only when the release notes name the deployed stack the new version targets. Before upgrading, compare `TESTNET_CONTRACTS` in the new version with the addresses your application uses, and run the `testnet-config` test in this repository against them.
+
+**Troubleshooting client-side integrations:**
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `Error(Contract, #5)` on transfer or unshield | Anchor aged out of the root-history window | The wallet rebuilds the call against the current root. If it repeats, check the RPC is not lagging behind the indexer. |
+| `Error(Contract, #4)` on any proof call | Proof does not verify under the deployed key | The circuit artifacts in the client do not match the deployed verifying key. Check the client's artifact versions against `deployments.json`. |
+| `UnknownSanctionsRoot` on compliance publish | The client's sanctions list differs from the root the admin published | Obtain the current list from the maintainer; do not change the root locally. |
+| `paused` panic in a swap call | The swap contract is paused | Check the pause status with the contract admin. Cancel and reclaim stay callable. |
+| `fetch failed`, `ECONNRESET`, `503` on a contract call | Transient RPC or network failure | The wallet retries three times with backoff. If it still fails, check `scripts/testnet_health_check.sh` output for the RPC. |
+| Balance or notes look wrong after a restart | Viewing-key epoch or sync cursor not persisted | Persist `wallet.currentEpoch` and the last synced ledger, and pass the epoch back as `viewingEpoch`. |
+| `npm audit` reports findings in a fresh install | Transitive dependencies (see `docs/SDK_RELEASE.md`) | Not reachable from the SDK's library use. Track the planned replacement of `circomlibjs` and `snarkjs`. |
