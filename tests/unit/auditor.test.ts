@@ -84,6 +84,26 @@ describe('ZKELLAAuditor sync', () => {
     expect(auditor.transactionHistory(ASSET)).toEqual([{ type: 'receive', amount: 100n, ledger: 10 }])
   })
 
+  test('zero-value padding notes are not reported as receipts', async () => {
+    const keys = await owner()
+    const page = [
+      await indexerRecord(keys, 0n, 0, 10),
+      await indexerRecord(keys, 25n, 1, 11),
+    ]
+    const responses = [
+      { notes: page, nextLedger: 20 },
+      { notes: [],   nextLedger: 20 },
+    ]
+    jest.spyOn(global, 'fetch').mockImplementation(async () => {
+      const body = responses.shift()!
+      return { ok: true, status: 200, json: async () => body } as unknown as Response
+    })
+
+    const auditor = new ZKELLAAuditor({ viewingKeyExport: exportFor(keys, 0), indexerUrl: 'http://x' })
+    await auditor.sync()
+    expect(auditor.transactionHistory(ASSET)).toEqual([{ type: 'receive', amount: 25n, ledger: 11 }])
+  })
+
   test('sync stops when the indexer does not advance its cursor', async () => {
     const keys = await owner()
     const page = [await indexerRecord(keys, 5n, 0, 1)]

@@ -69,10 +69,11 @@ export class ZKELLAAuditor {
   /**
    * Receipts visible to this viewing key. Spends are not reported: they need a
    * nullifier, which is derived from the nullifier key, not the viewing key.
+   * Zero-value notes are padding outputs of a transfer or unshield, not receipts.
    */
   transactionHistory(asset: string): Array<{ type: 'receive'; amount: bigint; ledger: number }> {
     return this.notes
-      .filter(n => n.assetId === asset)
+      .filter(n => n.assetId === asset && n.value > 0n)
       .map(n => ({ type: 'receive' as const, amount: n.value, ledger: n.ledger }))
   }
 }
