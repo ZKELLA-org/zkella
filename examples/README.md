@@ -16,7 +16,7 @@ Wallet seed: the wallet examples read a 32-byte seed from `SPENDING_SEED` (64 he
 | `02-shield.cjs` | Shield a native amount into the pool through the wallet. | `STELLAR_SECRET`, `SHIELD_AMOUNT` |
 | `03-indexer-query.cjs` | Query notes and Merkle paths from an indexer. | `INDEXER_URL` |
 | `04-viewing-key-audit.cjs` | Recover receipts with a granted viewing key. | `INDEXER_URL`, `VIEWING_KEY_EXPORT` (JSON file) |
-| `05-transfer.cjs` | Transfer shielded value to another wallet. Needs two spendable notes. | `STELLAR_SECRET`, `INDEXER_URL`, `RECIPIENT_TK`, `TRANSFER_AMOUNT` |
+| `05-transfer.cjs` | Transfer shielded value to another wallet. Needs two spendable notes. | `STELLAR_SECRET`, `INDEXER_URL`, `RECIPIENT_TK`, `RECIPIENT_OWNER_KEY`, `TRANSFER_AMOUNT`, `ASSET_ID` |
 | `06-unshield.cjs` | Withdraw part of a note to a public address. | `STELLAR_SECRET`, `INDEXER_URL`, `UNSHIELD_AMOUNT`, `UNSHIELD_TO` |
 | `07-swap.cjs` | Commit a note into a swap intent and cancel it after expiry. Reveal needs a relayer's execution, which is outside this script. | `STELLAR_SECRET`, `INDEXER_URL`, `SWAP_AMOUNT` |
 
