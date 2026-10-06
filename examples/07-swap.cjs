@@ -25,7 +25,9 @@ const build = path.join(__dirname, '..', 'circuits')
   const note = wallet.spendableNotes(native).find(n => n.value >= amount)
   if (!note) throw new Error('no spendable note of at least SWAP_AMOUNT; shield one first with 02-shield.cjs')
   const latest = (await new (require('@stellar/stellar-sdk').rpc.Server)(TESTNET_SOROBAN_RPC).getLatestLedger()).sequence
-  const intent = await swap.commitSwap({ note, assetOut: native, amountOut: (amount * 99n) / 100n, maxSlippageBps: 100n, expiry: latest + 400 })
+  // The SDK sets min_amount_out to the whole note's value minus maxSlippageBps, so the
+  // quote must be at least that. Quoting the note's value at parity meets the bound.
+  const intent = await swap.commitSwap({ note, assetOut: native, amountOut: note.value, maxSlippageBps: 100n, expiry: latest + 400 })
   console.log('committed swap', intent.swapId, 'expiry', intent.expiry)
   console.log('a relayer must now execute this swap with execute_swap; then call revealAndClaim(intent).')
   console.log('if no relayer executes it before expiry, cancelSwap(intent.swapId) refunds the escrow.')
