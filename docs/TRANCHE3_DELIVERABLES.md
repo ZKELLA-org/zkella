@@ -115,15 +115,14 @@ fine-grained parameter adjustment beyond what this deliverable adds.
 
 **4. `MIN_SHIELD_AMOUNT` and similar constants are governance-settable parameters rather than
 hardcoded values, confirmed by changing one through governance without a contract redeploy.
-Met by test; not yet exercised as its own live Testnet transaction.** `TokenAdminAction::MinShieldAmount`,
+Met, by test and by a live Testnet transaction.** `TokenAdminAction::MinShieldAmount`,
 `AssetApproval` and `Relayer` all route through `queue_token_action`/`execute_token_action`,
 timelocked the same way as a VK update (`contracts/governance/src/lib.rs`'s
 `min_shield_amount_changes_on_the_real_token_only_after_the_timelock` and related tests, run
-against a real `token` contract, not a mock). On `testnet_final` specifically, the token-action
-path that ran live was `AssetApproval` (approving the native SAC for shielding, part of
-`scripts/testnet_deploy_stack.sh`) — the same mechanism, but not a `MinShieldAmount` change.
-The criterion is satisfied by test; a live `MinShieldAmount` change on Testnet would close that
-specific gap.
+against a real `token` contract, not a mock). On `testnet_final`: queued at tx
+`e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840`, executed after the timelock
+at tx `ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07`, with `token.min_shield_amount()`
+read back as `500` afterward (it was `1000` before) — no contract redeploy involved.
 
 ---
 
@@ -290,7 +289,11 @@ skipped (the skipped tests need a real PostgreSQL instance, not SQLite). SDK typ
   targets have no committed regression corpus yet.
 - **No independent third-party audit** has been done; `docs/SECURITY_TOOLING_REPORT.md` says
   so explicitly, and that remains the honest status.
-- **`MIN_SHIELD_AMOUNT` governance-settability** is proven by test, not yet by its own live
-  Testnet transaction (the live token-action run on `testnet_final` was `AssetApproval`).
 - **The SDK is `0.1.0`**, not `1.0.0` — a deliberate first release, not the literal version the
   original roadmap wording named; see `docs/SDK_RELEASE.md`.
+- **`swap`'s `reclaim_expired_swap` recovery path** (the post-*execution* unwind, for a relayer
+  that fronted liquidity but the claimant never claims) is still unit-tested only. Its claim
+  window is `CLAIM_WINDOW_LEDGERS = 17_280` ledgers (~24 hours at 5s/ledger) after the swap's
+  original expiry, which makes a live exercise a multi-hour undertaking, not something a single
+  session can close inline — unlike `cancel_swap`'s pre-execution path, which was exercised
+  live twice this pass.
