@@ -142,8 +142,9 @@ rationale). Nine `cargo-fuzz` targets, one per contract's state-changing surface
 with. `compliance_arbitrary` has a committed regression seed
 (`contracts/token/fuzz/corpus/compliance_arbitrary/regression_root_equals_authorized`) from a
 real crash the harness found during this pass (a fuzzer input whose random root happened to
-equal the authorized one) and the fix that followed. CI runs all nine for 60 seconds each on
-every push.
+equal the authorized one) and the fix that followed. All nine targets have a committed,
+minimized corpus (`cargo +nightly fuzz cmin`), so CI's smoke job starts from real coverage
+rather than an empty corpus. CI runs all nine for 60 seconds each on every push.
 
 **2. Findings are triaged and either remediated or explicitly documented as accepted risk, with
 a full findings-and-remediation report published alongside the code changes. Met.**
@@ -285,8 +286,8 @@ skipped (the skipped tests need a real PostgreSQL instance, not SQLite). SDK typ
   tooling exists, the decision to run it continuously belongs to whoever operates the deployed
   stack.
 - **No drill with people**, only a tabletop fault-injection exercise.
-- **Fuzzing is smoke-level** (60-to-90-second runs), not a sustained campaign; five of the nine
-  targets have no committed regression corpus yet.
+- **Fuzzing is smoke-level** (60-to-90-second runs), not a sustained campaign, even though all
+  nine targets now have a committed, minimized corpus.
 - **No independent third-party audit** has been done; `docs/SECURITY_TOOLING_REPORT.md` says
   so explicitly, and that remains the honest status.
 - **The SDK is `0.1.0`**, not `1.0.0` — a deliberate first release, not the literal version the
