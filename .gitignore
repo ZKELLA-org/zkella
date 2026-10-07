@@ -52,6 +52,7 @@ Cargo.lock
 .claude/
 .vscode/
 *.local
+*.docx
 contracts/token/fuzz/target/
 contracts/token/fuzz/artifacts/
 # Corpus is committed, minimized (`cargo +nightly fuzz cmin`), so new fuzzing runs and CI's
