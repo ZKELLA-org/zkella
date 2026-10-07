@@ -3,7 +3,7 @@
 **Version:** 0.1.0  
 **Audience:** Soroban developers building on top of the ZKELLA Protocol
 
-**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries) and the SDK's core crypto, note, and prover modules are real and exercised on live Stellar Testnet — not stubs. Some SDK convenience wrapper classes are still stubs, though (`ZKELLASwap` — flagged explicitly in the relevant sections below). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
+**Implementation status:** the Soroban contracts (shield/transfer/unshield, the shielded swap, the verifier/governance/compliance/viewing-key registries), the SDK's core crypto, note, and prover modules, and the `ZKELLASwap`/`ZKELLAAuditor`/`ZKELLACompliance` wrapper classes are all real and exercised on live Stellar Testnet — not stubs (see `docs/TRANCHE3_DELIVERABLES.md` for the live transactions each one produced). None of this has been through an *external* security review or a production (multi-party) trusted-setup ceremony yet, so treat everything here as real but not yet production-hardened, and check `docs/POC_IMPLEMENTATION.md` for exactly what's validated where before building anything that handles real value.
 
 ---
 
@@ -189,17 +189,34 @@ await submit()
 
 ## 10. Shielded Swap
 
-**The underlying `contracts/swap` contract is real, audited, and has been run end-to-end on live Stellar Testnet** (real escrow, real relayer-fronted liquidity, real fairness-proof-gated payout and re-shield — see `docs/POC_IMPLEMENTATION.md` for transaction hashes). **The `ZKELLASwap` SDK wrapper class shown in earlier drafts of this guide is not implemented** — `sdk/src/wallet/swap.ts`'s `commitSwap`/`waitForExecution`/`revealAndClaim`/`cancelSwap` all return placeholder values today. Do not build against it yet.
+**Both the `contracts/swap` contract and the `ZKELLASwap` SDK wrapper (`sdk/src/wallet/swap.ts`) are real and have run end-to-end on live Stellar Testnet** — a full commit → relayer execute → reveal-and-claim lifecycle, and separately a commit → cancel-after-expiry refund, each a genuine transaction (see `docs/TRANCHE3_DELIVERABLES.md`, Deliverable 5, for the hashes).
 
-Until it's wired up, integrating with the swap contract means calling it directly, the way the live-Testnet demonstration did: build a real `unshield.circom` ownership proof (`generateUnshieldProof` from `sdk/src/prover/unshield.ts`, with `recipient` set to the swap contract's own address) and a real `swap_fairness.circom` proof (`generateSwapFairnessProof` from `sdk/src/prover/swapFairness.ts`), then invoke `commit_swap` / `execute_swap` / `reveal_and_claim` on the swap contract (via `stellar contract invoke` or your own `@stellar/stellar-sdk` transaction-building code — `ZKELLAWallet`'s private `submitContractCall` helper shows the pattern, though it isn't exposed publicly for swap calls yet). See `docs/TECHNICAL_SPEC.md` §6.5 and §9.3 for the exact contract signatures and call sequence.
+```typescript
+const swap = new ZKELLASwap({ wallet, swapContractAddress: TESTNET_CONTRACTS.swap, circuits: {
+  swapFairness: { wasmPath: '.../swap/build/swap_fairness_js/swap_fairness.wasm', zkeyPath: '.../swap/build/swap_fairness.zkey' },
+  unshield:     { wasmPath: '.../unshield/build/unshield_js/unshield.wasm',       zkeyPath: '.../unshield/build/unshield.zkey' },
+  shield:       { wasmPath: '.../shield/build/shield_js/shield.wasm',             zkeyPath: '.../shield/build/shield.zkey' },
+} })
+
+const note = wallet.spendableNotes(assetIn).find(n => n.value >= amount)
+// min_amount_out is derived from the note's own value, not the requested amount — quote at
+// or above note.value * (10000 - maxSlippageBps) / 10000, or the contract's fairness check rejects it.
+const intent = await swap.commitSwap({ note, assetOut, amountOut: note.value, maxSlippageBps: 100n, expiry: latestLedger + 400 })
+// A relayer calls execute_swap; once it has, claim the output:
+// await swap.revealAndClaim(intent)
+// If no relayer executes before expiry, refund the escrow instead:
+// await swap.cancelSwap(intent.swapId)
+```
+
+See `examples/07-swap.cjs` for a runnable version of the commit step, and `sdk/src/wallet/swap.ts` for `revealAndClaim`/`cancelSwap`. See `docs/TECHNICAL_SPEC.md` §6.5 and §9.3 for the underlying contract signatures and call sequence, if you need to call `contracts/swap` directly instead.
 
 ---
 
 ## 11. Viewing Key Export (for auditors)
 
 ```typescript
-// Export viewing key — safe to share with auditors
-const vkJson = wallet.exportViewingKey()
+// Export the current epoch's viewing key — safe to share with an auditor
+const vkJson = await wallet.exportCurrentViewingKey()
 // {
 //   "version": 1,
 //   "network": "testnet",
@@ -207,15 +224,35 @@ const vkJson = wallet.exportViewingKey()
 //   "transmission_key": "...",
 //   "birthday_ledger": 12345678
 // }
+
+// The holder can later start a new epoch, which only an auditor holding the new
+// epoch's key can decrypt — see docs/VIEWING_KEYS.md for exactly what this does and
+// does not guarantee for notes already received under the old key.
+const newEpoch = wallet.rotateViewingKey()
 ```
 
-`ZKELLAAuditor` (`sdk/src/wallet/auditor.ts`) decrypts notes with a viewing key granted by the account holder and reports receipts (value, asset, leaf position). It is covered by unit tests against encrypted notes and a mocked indexer, but has not yet been run against live Testnet data. It does not report spends, because those need the nullifier key, which a viewing key does not hold. See `docs/VIEWING_KEYS.md` for the grant and revocation workflow.
+`ZKELLAAuditor` (`sdk/src/wallet/auditor.ts`) decrypts notes with a viewing key granted by the account holder and reports receipts (value, asset, leaf position). Beyond its unit tests, it has run against live Testnet data: a granted export recovered five real receipts from `testnet_final`'s shield, transfer, and unshield activity (`docs/TRANCHE3_DELIVERABLES.md`, Deliverable 1). It does not report spends, because those need the nullifier key, which a viewing key does not hold. See `docs/VIEWING_KEYS.md` for the grant and revocation workflow.
 
 ---
 
 ## 12. Sanctions Compliance Proof
 
-The on-chain side is real: `contracts/compliance::publish_compliance_proof` verifies a real Groth16 non-membership proof against `contracts/verifier`'s `NonMembership` circuit before storing anything. **The `ZKELLACompliance` SDK wrapper (`sdk/src/compliance/compliance.ts`) is a stub**, though — `generateNonSanctionedProof()` returns 192 zero bytes and an empty `ComplianceProof`, and `publishProof()` doesn't actually submit anything. There is no working end-to-end compliance-proof flow at the SDK level yet; integrating today means calling `contracts/compliance` directly with your own real `non_membership.circom` proof, the same way §10 describes for swaps.
+Both sides are real: `contracts/compliance::publish_compliance_proof` verifies a real Groth16 non-membership proof against `contracts/verifier`'s `NonMembership` circuit before storing anything, and the `ZKELLACompliance` SDK wrapper (`sdk/src/compliance/compliance.ts`) generates and submits that proof — `publishProof()` ran as a genuine live Testnet transaction (`docs/TRANCHE3_DELIVERABLES.md`, Deliverable 1).
+
+```typescript
+const compliance = new ZKELLACompliance({
+  wallet, complianceAddress: TESTNET_CONTRACTS.compliance,
+  sanctionedAddresses: [], // the maintainer's published list (247-bit field values); empty on Testnet today
+  wasmPath: '.../compliance/build/non_membership_js/non_membership.wasm',
+  zkeyPath: '.../compliance/build/non_membership.zkey',
+})
+const root = await compliance.sanctionsRoot()        // must match the root the admin published on-chain
+const proof = await compliance.generateNonSanctionedProof()
+const { submit } = await compliance.publishProof(proof)
+await submit()
+```
+
+See `docs/VIEWING_KEYS.md`'s "Sanctions list maintenance" for who publishes the root and how the account holder gets the current sanctioned-address list to prove against.
 
 ---
 

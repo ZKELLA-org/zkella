@@ -5,7 +5,7 @@ This document describes how the governance contract (`contracts/governance`) and
 ## Roles
 
 - **Admin.** Queues and executes verifying-key updates, pauses and unpauses governance, and transfers admin (two-step: propose, then accept from the new key).
-- **Guardian.** Set once at `initialize`. Can cancel a queued verifying-key update through `guardian_cancel_vk_update`, and nothing else. A guardian cannot queue, execute, pause, or transfer admin.
+- **Guardian.** Set once at `initialize`. Can cancel a queued verifying-key update (`guardian_cancel_vk_update`) or a queued token-admin action (`guardian_cancel_token_action`), and nothing else. A guardian cannot queue, execute, pause, or transfer admin.
 
 ## Timelock
 
