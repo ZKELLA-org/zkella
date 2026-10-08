@@ -121,10 +121,13 @@ Met, by test and by a live Testnet transaction.** `TokenAdminAction::MinShieldAm
 `AssetApproval` and `Relayer` all route through `queue_token_action`/`execute_token_action`,
 timelocked the same way as a VK update (`contracts/governance/src/lib.rs`'s
 `min_shield_amount_changes_on_the_real_token_only_after_the_timelock` and related tests, run
-against a real `token` contract, not a mock). On `testnet_final`: queued at tx
-`e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840`, executed after the timelock
-at tx `ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07`, with `token.min_shield_amount()`
-read back as `500` afterward (it was `1000` before) — no contract redeploy involved.
+against a real `token` contract, not a mock). Run live twice: on the original `testnet_final`
+(queue tx `e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840`, execute tx
+`ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07`), and again on the current,
+post-audit `testnet_final` (queue tx `3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3`,
+execute tx `f3ef72ee1e4ad65fafb5f5eb4c99d8094f61b696e7517081964cc172f84297b5`) — both runs read
+`token.min_shield_amount()` back as `500` afterward (it was `1000` before), no contract redeploy
+involved.
 
 ---
 
