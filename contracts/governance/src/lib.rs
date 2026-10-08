@@ -7,6 +7,7 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short,
     Address, Bytes, Env,
 };
+use zkella_token_interface::TokenClient;
 use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 // TESTNET-ONLY OVERRIDE — see the `testnet-fast-timelock` feature's doc
@@ -24,12 +25,22 @@ pub enum StorageKey {
     Verifier, // address of the zkella-verifier registry this governance contract administers
     PendingAdmin,
     PendingVkUpdate(CircuitType),
+    Guardian,
+    Paused,
+    Token,
+    PendingMinShield,
 }
 
 #[contracttype]
 pub struct PendingVkUpdate {
     pub circuit:    CircuitType,
     pub new_vk:     Bytes,
+    pub eta_ledger: u32,
+}
+
+#[contracttype]
+pub struct PendingMinShield {
+    pub amount:     i128,
     pub eta_ledger: u32,
 }
 
@@ -43,12 +54,64 @@ impl ZKELLAGovernance {
     /// as its admin, so that the cross-contract calls below (which run with
     /// this contract as the calling context) satisfy the verifier's
     /// `admin.require_auth()` implicitly, without a signature.
-    pub fn initialize(env: Env, admin: Address, verifier: Address) {
+    /// `guardian` may cancel a queued VK update and nothing else. Keeping it
+    /// separate from `admin` means a compromised admin key can still be
+    /// stopped from completing a rotation by a party that cannot itself rotate.
+    /// `token` must have been deployed with this contract's address as its
+    /// admin, so that `execute_min_shield_amount` can change MIN_SHIELD_AMOUNT
+    /// through the same timelock as a verifying-key update.
+    pub fn initialize(env: Env, admin: Address, verifier: Address, guardian: Address, token: Address) {
         if env.storage().instance().has(&StorageKey::Admin) {
             panic!("already initialized");
         }
         env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&StorageKey::Verifier, &verifier);
+        env.storage().instance().set(&StorageKey::Guardian, &guardian);
+        env.storage().instance().set(&StorageKey::Token, &token);
+    }
+
+    pub fn queue_min_shield_amount(env: Env, new_amount: i128) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        Self::assert_not_paused(&env);
+        assert!(new_amount > 0, "amount must be positive");
+
+        let eta = env.ledger().sequence().checked_add(VK_TIMELOCK_LEDGERS).expect("eta overflow");
+        let update = PendingMinShield { amount: new_amount, eta_ledger: eta };
+        env.storage().instance().set(&StorageKey::PendingMinShield, &update);
+    }
+
+    pub fn execute_min_shield_amount(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        Self::assert_not_paused(&env);
+
+        let update: PendingMinShield = env.storage().instance()
+            .get(&StorageKey::PendingMinShield)
+            .expect("no pending min shield update");
+        assert!(env.ledger().sequence() >= update.eta_ledger, "timelock not elapsed");
+        env.storage().instance().remove(&StorageKey::PendingMinShield);
+
+        let token: Address = env.storage().instance().get(&StorageKey::Token).unwrap();
+        TokenClient::new(&env, &token).set_min_shield_amount(&update.amount);
+    }
+
+    pub fn guardian_cancel_min_shield(env: Env) {
+        let guardian: Address = env.storage().instance().get(&StorageKey::Guardian).unwrap();
+        guardian.require_auth();
+        env.storage().instance().remove(&StorageKey::PendingMinShield);
+    }
+
+    pub fn pause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &true);
+    }
+
+    pub fn unpause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &false);
     }
 
     /// Queue a verifying key for `circuit` — enforces the 7-day timelock
@@ -70,6 +133,7 @@ impl ZKELLAGovernance {
     pub fn queue_vk_update(env: Env, circuit: CircuitType, new_vk: Bytes) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
+        Self::assert_not_paused(&env);
 
         let eta = env.ledger().sequence().checked_add(VK_TIMELOCK_LEDGERS).expect("eta overflow");
         let update = PendingVkUpdate { circuit, new_vk, eta_ledger: eta };
@@ -91,6 +155,7 @@ impl ZKELLAGovernance {
     pub fn execute_vk_update(env: Env, circuit: CircuitType) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
+        Self::assert_not_paused(&env);
 
         let update: PendingVkUpdate = env.storage().instance()
             .get(&StorageKey::PendingVkUpdate(circuit))
@@ -139,9 +204,19 @@ impl ZKELLAGovernance {
         env.storage().instance().remove(&StorageKey::PendingVkUpdate(circuit));
     }
 
+    /// Cancels a queued update. Deliberately not gated by `pause`: a pause is
+    /// often declared because of a bad queued update, and cancelling it must
+    /// remain possible while paused.
+    pub fn guardian_cancel_vk_update(env: Env, circuit: CircuitType) {
+        let guardian: Address = env.storage().instance().get(&StorageKey::Guardian).unwrap();
+        guardian.require_auth();
+        env.storage().instance().remove(&StorageKey::PendingVkUpdate(circuit));
+    }
+
     pub fn transfer_admin(env: Env, new_admin: Address) {
         let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
         admin.require_auth();
+        Self::assert_not_paused(&env);
         env.storage().instance().set(&StorageKey::PendingAdmin, &new_admin);
     }
 
@@ -149,8 +224,14 @@ impl ZKELLAGovernance {
         let pending: Address = env.storage().instance()
             .get(&StorageKey::PendingAdmin).expect("no pending admin");
         pending.require_auth();
+        Self::assert_not_paused(&env);
         env.storage().instance().set(&StorageKey::Admin, &pending);
         env.storage().instance().remove(&StorageKey::PendingAdmin);
+    }
+
+    fn assert_not_paused(env: &Env) {
+        let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
+        assert!(!paused, "paused");
     }
 }
 
@@ -163,16 +244,31 @@ mod tests {
     /// Deploys governance + verifier wired together, with governance's own
     /// contract address as the verifier's admin (per this module's contract).
     fn setup() -> (Env, Address, Address, Address) {
+        let (env, admin, _guardian, governance_id, verifier_id) = setup_with_guardian();
+        (env, admin, governance_id, verifier_id)
+    }
+
+    fn setup_with_guardian() -> (Env, Address, Address, Address, Address) {
+        let (env, admin, guardian, governance_id, verifier_id, _token_id) = setup_full();
+        (env, admin, guardian, governance_id, verifier_id)
+    }
+
+    /// Like `setup_with_guardian`, plus a real `ShieldedToken` whose admin is governance.
+    fn setup_full() -> (Env, Address, Address, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
         let governance_id = env.register(ZKELLAGovernance, ());
         let verifier_id = env.register(VerifierContract, ());
+        let token_id = env.register(zkella_token::ShieldedToken, ());
 
         VerifierContractClient::new(&env, &verifier_id).initialize(&governance_id);
-        ZKELLAGovernanceClient::new(&env, &governance_id).initialize(&admin, &verifier_id);
+        zkella_token::ShieldedTokenClient::new(&env, &token_id).initialize(&governance_id, &verifier_id);
+        ZKELLAGovernanceClient::new(&env, &governance_id)
+            .initialize(&admin, &verifier_id, &guardian, &token_id);
 
-        (env, admin, governance_id, verifier_id)
+        (env, admin, guardian, governance_id, verifier_id, token_id)
     }
 
     fn vk_bytes(env: &Env, len: u32) -> Bytes {
@@ -201,7 +297,9 @@ mod tests {
         };
         VerifierContractClient::new(&env, &verifier_id).initialize(&gov_id);
         let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
-        gov.initialize(&admin, &verifier_id);
+        let guardian = Address::generate(&env);
+        let token_placeholder = Address::generate(&env);
+        gov.initialize(&admin, &verifier_id, &guardian, &token_placeholder);
         let vk = vk_bytes(&env, 768);
         let mut budget = env.cost_estimate().budget();
         budget.reset_limits(2_000_000_000, 100_000_000);
@@ -343,5 +441,120 @@ mod tests {
 
         let stored = verifier.get_verifying_key(&CircuitType::Shield.into());
         assert_eq!(stored, original_vk);
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_queue_vk_update() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.pause();
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_execute_vk_update() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.pause();
+        gov.execute_vk_update(&CircuitType::Shield);
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_transfer_admin() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.pause();
+        gov.transfer_admin(&Address::generate(&env));
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_accept_admin() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.transfer_admin(&Address::generate(&env));
+        gov.pause();
+        gov.accept_admin();
+    }
+
+    #[test]
+    fn pause_does_not_block_cancel_or_revoke() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+        gov.pause();
+        gov.cancel_vk_update(&CircuitType::Shield);
+        gov.revoke_previous_vk(&CircuitType::Shield);
+    }
+
+    #[test]
+    fn guardian_can_cancel_a_queued_update_even_while_paused() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+        gov.pause();
+        gov.guardian_cancel_vk_update(&CircuitType::Shield);
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        assert!(gov.try_execute_vk_update(&CircuitType::Shield).is_err(), "cancelled update must not execute");
+    }
+
+    #[test]
+    fn unpause_restores_queue_vk_update() {
+        let (env, _admin, _guardian, gov_id, _verifier) = setup_with_guardian();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.pause();
+        gov.unpause();
+        gov.queue_vk_update(&CircuitType::Shield, &vk_bytes(&env, 768));
+    }
+
+    #[test]
+    fn min_shield_amount_changes_on_the_real_token_only_after_the_timelock() {
+        let (env, _admin, _guardian, gov_id, _verifier, token_id) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
+        let before = token.min_shield_amount();
+
+        gov.queue_min_shield_amount(&(before * 5));
+        assert!(gov.try_execute_min_shield_amount().is_err(), "must not execute before the timelock");
+        assert_eq!(token.min_shield_amount(), before);
+
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        gov.execute_min_shield_amount();
+        assert_eq!(token.min_shield_amount(), before * 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "amount must be positive")]
+    fn queue_min_shield_amount_rejects_non_positive_amounts() {
+        let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
+        ZKELLAGovernanceClient::new(&env, &gov_id).queue_min_shield_amount(&0);
+    }
+
+    #[test]
+    #[should_panic(expected = "paused")]
+    fn pause_blocks_queue_min_shield_amount() {
+        let (env, _admin, _guardian, gov_id, _verifier, _token) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.pause();
+        gov.queue_min_shield_amount(&1_000);
+    }
+
+    #[test]
+    fn guardian_can_cancel_a_queued_min_shield_update() {
+        let (env, _admin, _guardian, gov_id, _verifier, token_id) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
+        let before = token.min_shield_amount();
+
+        gov.queue_min_shield_amount(&(before * 5));
+        gov.guardian_cancel_min_shield();
+        env.ledger().with_mut(|li| { li.sequence_number += VK_TIMELOCK_LEDGERS; });
+        assert!(gov.try_execute_min_shield_amount().is_err(), "cancelled update must not execute");
+        assert_eq!(token.min_shield_amount(), before);
     }
 }

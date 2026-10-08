@@ -76,6 +76,6 @@ jobs:
       - name: Run fuzz targets
         working-directory: contracts/token
         run: |
-          for t in shield_arbitrary transfer_arbitrary verifier_arbitrary; do
+          for t in shield_arbitrary transfer_arbitrary verifier_arbitrary swap_arbitrary governance_arbitrary compliance_arbitrary viewing_keys_arbitrary token_admin_arbitrary verifier_admin_arbitrary; do
             cargo fuzz run "$t" -- -max_total_time=60 -max_len=1024
           done
