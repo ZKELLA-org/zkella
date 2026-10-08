@@ -59,9 +59,10 @@ disclosure, epochs, revocation-by-rotation, and sanctions-list maintenance; `doc
 
 **4. `publish_compliance_proof` is exercised in a real, published live Testnet transaction, not
 only in source review and local tests. Met.** Tx
-`e489e10014615fbaaa6f078934479c0fc089ab4175df85a46d6bc6f75674d52d`
-(https://horizon-testnet.stellar.org/transactions/e489e10014615fbaaa6f078934479c0fc089ab4175df85a46d6bc6f75674d52d),
-submitted through the SDK's `ZKELLACompliance.publishProof()`, not raw CLI.
+`e489e10014615fbaaa6f078934479c0fc089ab4175df85a46d6bc6f75674d52d` on the original stack, and
+re-run live on the current, post-audit stack at tx
+`533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442`, both submitted through the
+SDK's `ZKELLACompliance.publishProof()`, not raw CLI.
 
 **5. An account holder can revoke a previously-granted viewing key, confirmed by a test showing
 the designated party can no longer decrypt note history after revocation. Met, under a
@@ -229,7 +230,11 @@ the correct indexer endpoint. Met.** `sdk/src/config/testnet.ts`'s `TESTNET_CONT
 `tests/unit/testnet-config.test.ts` fails the build if it drifts from `deployments.json`.
 
 **4. Example code for shield, transfer, unshield, viewing-key, indexer, and shielded-swap flows
-runs successfully against the Testnet deployment. Met — all six ran live this pass.**
+runs successfully against the Testnet deployment. Met — all six ran live, and all six were
+re-run after the audit redeploy against the current stack specifically, not carried over from a
+predecessor.**
+
+First run (original `testnet_final`, now `testnet_final_superseded_2026_10_08`):
 - Shield: tx `1126edc56b34bc38836eb9d14a12450fa80c763332604238f8bdc7fc8e62cbc6` (leaf 0, ledger 5038957).
 - Indexer query (`examples/03-indexer-query.cjs`): returned 5 notes and a 32-level Merkle path.
 - Viewing-key audit (`examples/04-viewing-key-audit.cjs`): recovered 5 real receipts from a granted export.
@@ -239,11 +244,23 @@ runs successfully against the Testnet deployment. Met — all six ran live this 
   cancelled after expiry at tx `d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887`, refunding the escrow.
   A separate, earlier full commit → relayer execute → reveal-and-claim lifecycle also ran live on this
   same stack (swap id `089678d3aba9f4b0837cd8504973d51e828f480db51ab4262e705de11a2810f3`, claimed into leaf 4; see
-  `deployments.json`'s `testnet_final._live_checks`).
+  `deployments.json`'s `testnet_final_superseded_2026_10_08._live_checks`).
 
-Two real bugs surfaced and were fixed by these live runs, not found by unit tests alone: the
-transfer example didn't pass the recipient's owner key (`toOwnerKey`) and pointed at circuit
-artifact paths `circuits/build.sh` doesn't produce; the swap example quoted 99% of the
+Second run (current, post-audit `testnet_final`, carrying the fixes in the audit section
+above): shield (leaves 4-5), indexer query (5 notes, 32-level path), viewing-key audit (4
+receipts, zero-value padding notes correctly excluded — the auditor dedup fix), transfer (new
+leaves 6-7), unshield (change note at leaf 8), a compliance publish (tx
+`533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442`), and a full shield →
+commit_swap → execute_swap → reveal_and_claim lifecycle through the fixed `ZKELLASwap` wrapper
+(shield tx `d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973`, commit tx
+`d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6`, execute tx
+`9aa8b8cd7cb0f335f109d6387334fcaac17aad9cc033518c415f57eebe023120`, reveal tx
+`1320f2a101e0adaf9475d0d00b76082cbc59105b99885ad66e090b6f6cf1e1fc`) — see `deployments.json`'s
+`testnet_final._live_checks`.
+
+Two real bugs surfaced and were fixed by the first run's live testing, not found by unit tests
+alone: the transfer example didn't pass the recipient's owner key (`toOwnerKey`) and pointed at
+circuit artifact paths `circuits/build.sh` doesn't produce; the swap example quoted 99% of the
 requested amount instead of the input note's full value, which the fairness check correctly
 rejected, since the SDK sets `min_amount_out` from the note's value, not the requested amount.
 
