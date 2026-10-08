@@ -63,9 +63,15 @@ const struct = obj => xdr.ScVal.scvMap(
     { anchor, recipient: SWAP_ID, bindingTag },
     b('unshield/build/unshield_js/unshield.wasm'), b('unshield/build/unshield.zkey'),
     changeNote => encryptNote(changeNote, keys.spendingKey.transmissionKey))
+  // Built now, not at reveal time: out_note_binding commits to this exact note's
+  // randomness, so reveal_and_claim can't be resubmitted with substitute rho/rcm
+  // under the same owner key — see contracts/swap::SwapState::out_note_binding.
+  const outNote = await buildNote(AMOUNT_OUT, ASSET_ID, keys.spendingKey.ownerKey)
+  const outNoteBinding = require('crypto').createHash('sha256')
+    .update(Buffer.concat([Buffer.from(outNote.rho), Buffer.from(outNote.rcm)])).digest()
   const swapId = scValToNative(await wallet.submitContractCall(SWAP_ID, 'commit_swap', [
     bytes(own.nullifier), bytes(fair.intentCommitment), addr(ASSET_ID), addr(ASSET_ID),
-    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey),
+    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey), bytes(outNoteBinding),
     i128(MIN_OUT), bytes(own.changeNote.commitment), bytes(own.changeValueCommit), bytes(own.encryptedChangeNote),
     bytes(own.proof), nativeToScVal(expiry, { type: 'u32' }),
   ]))
@@ -75,7 +81,6 @@ const struct = obj => xdr.ScVal.scvMap(
   await wallet.submitContractCall(SWAP_ID, 'execute_swap', [bytes(swapId), i128(AMOUNT_OUT), addr(me)])
 
   console.log('reveal_and_claim (real fairness proof + real shield proof for the output note)')
-  const outNote = await buildNote(AMOUNT_OUT, ASSET_ID, keys.spendingKey.ownerKey)
   const sh = await generateShieldProof(outNote, { commitment: outNote.commitment, asset: ASSET_ID, amount: AMOUNT_OUT },
     b('shield/build/shield_js/shield.wasm'), b('shield/build/shield.zkey'))
   const enc = await encryptNote(outNote, keys.spendingKey.transmissionKey)

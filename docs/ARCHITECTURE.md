@@ -693,9 +693,9 @@ It:
 Key methods:
 
 - `initialize(admin, verifier, token)`
-- `commit_swap(nullifier_in, intent_commitment, asset_in, asset_out, amount_in, anchor, refund_to, out_owner_pk, ownership_proof, expiry_ledger) -> swap_id` — the claimant's owner key is committed here
+- `commit_swap(nullifier_in, intent_commitment, asset_in, asset_out, amount_in, anchor, refund_to, out_owner_pk, out_note_binding, min_amount_out, ..., ownership_proof, expiry_ledger) -> swap_id` — the claimant's owner key *and* a commitment to the output note's own randomness (`out_note_binding = sha256(out_rho || out_rcm)`) are both fixed here
 - `execute_swap(swap_id, amount_out, relayer)`
-- `reveal_and_claim(swap_id, out_rho, out_rcm, out_owner_pk, out_commitment, out_value_commit, encrypted_note, fairness_proof, fairness_pub, shield_proof) -> leaf_index` — `out_owner_pk` must equal the key committed at `commit_swap`
+- `reveal_and_claim(swap_id, out_rho, out_rcm, out_owner_pk, out_commitment, out_value_commit, encrypted_note, fairness_proof, fairness_pub, shield_proof) -> leaf_index` — `out_owner_pk` must equal the key committed at `commit_swap`, and `sha256(out_rho || out_rcm)` must equal `out_note_binding`. The second check closed a real finding: without it, anyone who observed a pending reveal could resubmit the same fairness proof with their own `out_rho`/`out_rcm` under the real claimant's owner key, permanently destroying the escrowed value (see `docs/TRANCHE3_DELIVERABLES.md`'s audit section).
 - `cancel_swap(swap_id)` / `reclaim_expired_swap(swap_id)`
 - `set_relayer(relayer, approved)` — admin-gated, scoped to this contract (not governance)
 

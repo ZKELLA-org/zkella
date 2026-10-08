@@ -714,6 +714,13 @@ pub trait ShieldedSwap {
         env: Env, nullifier_in: BytesN<32>, intent_commitment: BytesN<32>,
         asset_in: Address, asset_out: Address, amount_in: i128, anchor: BytesN<32>,
         refund_to: Address, out_owner_pk: BytesN<32>,
+        // out_note_binding = sha256(out_rho || out_rcm) for the output note the
+        // committer intends to claim later — fixed now, re-checked at
+        // reveal_and_claim. Closes a real finding: without it, out_owner_pk
+        // alone let anyone who observed a pending reveal resubmit the same
+        // fairness proof with their own out_rho/out_rcm under the real
+        // claimant's key, permanently destroying the escrowed value.
+        out_note_binding: BytesN<32>,
         // Tranche 2: declared here in plaintext by the swap creator — see
         // docs/TRANCHE2_DELIVERABLES.md Deliverable 3.5 for why this is sound.
         min_amount_out: i128, change_commitment: BytesN<32>, change_value_commit: BytesN<32>,
@@ -721,8 +728,9 @@ pub trait ShieldedSwap {
         ownership_proof: Bytes, expiry_ledger: u32,
     ) -> BytesN<32>; // swap_id = sha256(intent_commitment)
 
-    // `out_owner_pk` is the claimant's owner key, committed here; `reveal_and_claim`
-    // must use the same key. Swap state is held in persistent storage (TTL-bumped).
+    // `out_owner_pk` and `out_note_binding` are both committed here; `reveal_and_claim`
+    // must reveal the exact owner key and note randomness they commit to. Swap
+    // state is held in persistent storage (TTL-bumped).
 
     /// Relayer really fronts `amount_out` of `asset_out` into escrow (a real
     /// SEP-41 transfer), in exchange for the already-escrowed `asset_in` once
@@ -739,7 +747,7 @@ pub trait ShieldedSwap {
         env: Env, swap_id: BytesN<32>, out_rho: BytesN<32>, out_rcm: BytesN<32>,
         out_owner_pk: BytesN<32>, out_commitment: BytesN<32>, out_value_commit: BytesN<32>, encrypted_note: Bytes,
         fairness_proof: Bytes, fairness_pub: SwapFairnessPublicInputs, shield_proof: Bytes,
-    ) -> u32; // output note leaf index
+    ) -> u32; // output note leaf index; rejects unless out_owner_pk and sha256(out_rho||out_rcm) both match commit_swap
 
     /// Refunds `asset_in` to `refund_to` if never executed, once expired.
     fn cancel_swap(env: Env, swap_id: BytesN<32>);
@@ -1028,7 +1036,10 @@ Step 1 — User: build the fairness-circuit witness off-chain
   (amount_out and min_amount_out stay private until reveal_and_claim)
 
 Step 2 — User: commit_swap(nullifier_in, intent_commitment, asset_in, asset_out,
-                            amount_in, anchor, refund_to, out_owner_pk, ownership_proof, expiry_ledger)
+                            amount_in, anchor, refund_to, out_owner_pk, out_note_binding,
+                            ownership_proof, expiry_ledger)
+  - out_note_binding = sha256(out_rho || out_rcm) for the output note being
+    claimed, so reveal_and_claim can't be resubmitted with substitute randomness
   - ownership_proof is a real unshield.circom proof; the call cross-calls
     ShieldedToken::unshield(nullifier_in, swap_contract_address, ownership_proof, ...),
     which both verifies note ownership and atomically escrows amount_in of

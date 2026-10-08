@@ -21,13 +21,14 @@ scripts/testnet_health_check.sh                              # RPC, indexer, con
 node examples/0{2,3,4,5,6,7}-*.cjs                           # shield, indexer query, audit, transfer, unshield, swap
 ```
 
-Current Testnet stack (`deployments.json`'s `testnet_final` block): verifier
-`CBVZCE42NSL34LGUJNRKBJTU2RSDIKGJSK4WV5NUPCNWAUCYKK56GWC2`, governance
-`CA3QHKWLHLVBXFYUGTBWA5GWOX6KWMITIQ6LIJU6LTEZQUW5777XEYST`, token
-`CAE63TOLHJDZ3AREF22RA26ASF46TIT4Y5JBTREUWJJQ7EJBOUBHPUIG`, swap
-`CDXUPIAJSGXITDYY3OMWSOP2CW4JEMZHHHXLRDVX6WPG5IBOJ3TEVZOV`, compliance
-`CCM4NTFPH3D7IYDHVP7HPXHOPSYZMBLB3GRVEXF4YOJ7NJLAHTSEIKW3`, viewing_keys
-`CD2TTLHD3EY3QRRALPPDSTPRQDR5G3IKNIIYIQGWQZVW2EKHY67YTUS2` — deployed by
+Current Testnet stack (`deployments.json`'s `testnet_final` block, redeployed 2026-10-08 to
+carry the audit fixes below): verifier
+`CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3`, governance
+`CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q`, token
+`CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ`, swap
+`CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524`, compliance
+`CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ`, viewing_keys
+`CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` (reused unchanged) — deployed by
 `scripts/testnet_deploy_stack.sh`, not hand-typed CLI invocations. Governance is built with the
 `testnet-fast-timelock` feature (`timelock_ledgers() == 60`, not the 7-day production value) so
 the full timelock path could be demonstrated live within the session; see
@@ -271,12 +272,12 @@ hashes above and in `deployments.json`), `ZKELLAAuditor` (live receipt recovery 
 
 ## Test totals at the time of writing
 
-Full contract workspace (`cd contracts && cargo test --workspace --release`): 229 tests,
-all passing — token 124, swap 29, verifier 37, governance 21, compliance 13, viewing_keys 5
+Full contract workspace (`cd contracts && cargo test --workspace --release`): 237 tests,
+all passing — token 127, swap 30, verifier 37, governance 25, compliance 13, viewing_keys 5
 (`token-interface` and `verifier-interface` have no tests of their own; they're trait
-definitions). JS unit tests (`npm test`, covering circuits, SDK, and indexer): 172 passing, 9
-skipped (the skipped tests need a real PostgreSQL instance, not SQLite). SDK typecheck
-(`cd sdk && npm run typecheck`) passes with no errors.
+definitions). JS unit tests (`npx jest tests/unit`): 178 passing, 9 skipped (the skipped tests
+need a real PostgreSQL instance, not SQLite). SDK typecheck (`cd sdk && npx tsc --noEmit`)
+passes with no errors.
 
 ## Independent audit pass and fixes (2026-10-08)
 
