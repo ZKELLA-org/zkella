@@ -2,7 +2,10 @@
 # Health check for the Testnet stack: RPC health, indexer health, and contract state.
 #
 # Exits non-zero if any check fails. Each failure is appended to LOG_FILE and,
-# if NOTIFY_WEBHOOK is set, posted to it as JSON. Schedule with cron, e.g.
+# if NOTIFY_WEBHOOK is set, POSTed to it as a plain-text body (matches ntfy.sh;
+# for a JSON-expecting provider like Slack's incoming webhooks, change the
+# curl call in fail() below to wrap $msg as {"text": ...} instead). Schedule
+# with cron, e.g.
 #   */15 * * * * cd /path/to/zkella && NOTIFY_WEBHOOK=... scripts/testnet_health_check.sh
 #
 # Environment:
@@ -24,9 +27,8 @@ fail() {
   local msg="$(date -u +%FT%TZ) FAIL $1"
   echo "$msg" | tee -a "$LOG_FILE" >&2
   if [ -n "${NOTIFY_WEBHOOK:-}" ]; then
-    curl -s --max-time 15 -H 'Content-Type: application/json' \
-      -d "$(python3 -c 'import json,sys;print(json.dumps({"text": sys.argv[1]}))' "$msg")" \
-      "$NOTIFY_WEBHOOK" >/dev/null || echo "$(date -u +%FT%TZ) WARN notification delivery failed" >>"$LOG_FILE"
+    curl -s --max-time 15 -d "$msg" "$NOTIFY_WEBHOOK" >/dev/null \
+      || echo "$(date -u +%FT%TZ) WARN notification delivery failed" >>"$LOG_FILE"
   fi
 }
 
