@@ -211,13 +211,56 @@ Findings:
 - The third fault exposed a diagnostic gap: the governance failure did not name the address it tried. The messages now include the contract address for governance and token.
 - All three faults reached the failure path and the script exited non-zero. Delivery to a webhook was verified separately against a local receiver.
 
-Not yet done: a scheduled drill with people following the incident categories above, and an alerting channel for failures. Both need a decision on owners and a destination.
+### Second drill: a real fault, with a person, after the 2026-10-08 redeploy
+
+Run on 2026-10-08 against the current `testnet_final` stack, after the audit-fix redeploy. Unlike
+the first drill (which injected faults into the health check's own inputs), this one caused a
+genuine Category 2 incident — the indexer process was actually stopped, not simulated — and a
+person watched the real alert arrive and confirmed the response, not just a script's exit code.
+
+1. The indexer was stopped (`SIGTERM`). The scheduled check (the same command the cron job
+   runs) was run against the live, genuinely-down indexer, which failed:
+   `FAIL indexer lag='unreachable' (limit 100)`, exit 1. The failure POSTed a real notification to
+   the team's `ntfy.sh` channel, which a person subscribed to and confirmed receiving before any
+   further step was taken — the drill's success condition from the roadmap ("including a case
+   surfaced by that automated check, rather than only a manual read of the checklist") is met by
+   this run specifically, not by the first drill's manual fault injection.
+2. `RUNBOOK.md` Category 2's own first two steps were followed for real: process status checked
+   (confirmed down), then restarted against the existing `INDEXER_DB_PATH`. The restart resumed
+   from ledger 5090457 (the persisted cursor), not from `INDEXER_START_LEDGER` — confirmed
+   directly against the database's `sync_state` table, not inferred from how fast it caught up.
+3. Category 2's claim that `merkle_root`/`merkle_path` stay available during an indexer outage
+   was checked directly while the indexer was still down: `token.merkle_root()` read correctly
+   straight from the contract.
+4. A second health-check run after the restart passed clean.
+
+Findings:
+
+- **Real diagnostic gap, fixed:** the indexer's own startup log always printed
+  `syncing ... from ledger <INDEXER_START_LEDGER>`, even when a persisted cursor meant it was
+  about to resume from a much later ledger — during a real incident this reads as "about to
+  re-sync from scratch," which it isn't. `indexer/src/main.ts` now reads the actual resume
+  point before logging and says so explicitly when it differs from the configured start.
+  The first drill's fix (naming the contract address) was a diagnostic gap in the health check
+  itself; this one was a diagnostic gap in the indexer being checked.
+- **The webhook payload format was wrong for the configured destination:** `testnet_health_check.sh`
+  POSTed `{"text": ...}` as a raw body, which matches Slack's incoming-webhook format but is not
+  parsed by `ntfy.sh` — a subscriber would have seen the literal JSON string, braces included,
+  instead of a readable message. Found and fixed before the drill's real alert was sent, by
+  testing the exact webhook call against the exact configured destination rather than assuming
+  the existing format was provider-agnostic.
+- The scheduled check itself (`*/15 * * * *` via cron, `scripts/testnet_health_check.sh`) is
+  now actually installed and running on the operating host, not just documented as possible.
 
 ## Decisions
 
-- **Failure notifications.** Notifications go to `NOTIFY_WEBHOOK` when it is set, and every failure is also written to `LOG_FILE`. No external messaging service is configured or created by this repository. The team sets the webhook to its chosen channel; until then, failures are visible only in the log and in the script's exit status.
+- **Failure notifications.** The scheduled health check (cron, every 15 minutes) posts to a
+  `ntfy.sh` channel on failure, and every failure is also written to `LOG_FILE`. This is a
+  real, currently-running destination, not a placeholder — see the second drill above for a
+  real alert delivered through it. A JSON-expecting provider (e.g. Slack) needs the `curl` call
+  in `testnet_health_check.sh`'s `fail()` changed back to wrap the message as `{"text": ...}`.
 - **Expected governance timelock.** The health check fails when the timelock differs from `EXPECTED_TIMELOCK` (default 60, the Testnet demo build). A production deployment sets it to 120960 (7 days at 5 seconds per ledger), so a demo build reaching production is caught.
-- **Drill cadence.** The health check runs every 15 minutes. A full drill, with people following the four incident categories, runs quarterly and after any contract redeployment.
+- **Drill cadence.** The health check runs every 15 minutes. A full drill, with people following the four incident categories, runs quarterly and after any contract redeployment — the second drill above is the first instance of that commitment being kept, run the same day as the 2026-10-08 redeploy.
 - **Indexer on mainnet.** The indexer refuses to start on `ZKELLA_NETWORK=mainnet` without `INDEXER_API_KEYS`, so query endpoints cannot run unauthenticated in production.
 
 ## SDK artifacts

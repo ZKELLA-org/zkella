@@ -61,7 +61,14 @@ async function main() {
   process.on('SIGTERM', shutdown)
 
   console.log(`[indexer] backend: ${databaseUrl ? 'postgres' : 'sqlite (' + sqlitePath + ')'}`)
-  console.log(`[indexer] syncing ${tokenAddress} on ${network} from ledger ${startLedger}`)
+  // db.getLastSyncedLedger falls back to startLedger only when no cursor was ever
+  // persisted; logging startLedger unconditionally here used to make a restart
+  // against an existing database look like it was about to re-sync from scratch,
+  // which it isn't — see RUNBOOK.md Category 2.
+  const resumeLedger = await db.getLastSyncedLedger(startLedger)
+  console.log(resumeLedger === startLedger
+    ? `[indexer] syncing ${tokenAddress} on ${network} from ledger ${startLedger}`
+    : `[indexer] syncing ${tokenAddress} on ${network}, resuming from persisted ledger ${resumeLedger} (configured start was ${startLedger})`)
   if (apiKeys.length === 0) {
     console.log('[indexer] WARNING: INDEXER_API_KEYS is unset - query endpoints are unauthenticated')
   }
