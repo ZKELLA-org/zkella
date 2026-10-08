@@ -680,6 +680,22 @@ impl ShieldedToken {
             return Err(Error::InvalidInputCount);
         }
 
+        // ── 1.5. Each encrypted note must be exactly ENCRYPTED_NOTE_LEN bytes ──
+        // shield()/shield_batch() enforce this same format on their own note
+        // ciphertexts; transfer()/transfer4() must too. The commitment binds
+        // an output note cryptographically but carries none of its (value,
+        // rho, rcm, owner) fields — `encrypted_note` is the only copy of
+        // them, so a malformed ciphertext here isn't caught by proof
+        // verification (which never looks at it) and would silently insert a
+        // real, value-bearing commitment whose owner can never decrypt it
+        // and therefore can never spend it — a permanent, unrecoverable loss
+        // of that output's value.
+        for i in 0..n {
+            if encrypted_notes.get(i).unwrap().len() != ENCRYPTED_NOTE_LEN {
+                return Err(Error::InvalidNote);
+            }
+        }
+
         // ── 2. Public inputs must match the call's actual parameters ─────────
         for i in 0..n {
             if nullifiers.get(i).unwrap() != pub_inputs.nullifiers.get(i).unwrap() {
@@ -912,6 +928,19 @@ impl ShieldedToken {
         let provided_recipient_hash: [u8; 32] = pub_inputs.recipient_hash.clone().into();
         if expected_recipient_hash != provided_recipient_hash {
             return Err(Error::RecipientMismatch);
+        }
+
+        // ── 2.5. Validate encrypted change-note length ────────────────────────
+        // Same ENCRYPTED_NOTE_LEN format shield()/shield_batch() enforce on
+        // their own note ciphertexts. The change note always exists (see
+        // this function's doc comment) and `encrypted_change_note` is the
+        // only copy of its hidden (value, rho, rcm, owner) fields — proof
+        // verification never looks at it, so a malformed ciphertext here
+        // would otherwise silently insert a real, value-bearing change
+        // commitment whose owner can never decrypt it and therefore can
+        // never spend it.
+        if encrypted_change_note.len() != ENCRYPTED_NOTE_LEN {
+            return Err(Error::InvalidNote);
         }
 
         // ── 3. Anchor must be a recent Merkle root ────────────────────────────
