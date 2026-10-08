@@ -102,13 +102,24 @@ export class RateLimiter {
   private windowMs: number
   private limit: number
   private counts = new Map<string, { windowStart: number; count: number }>()
+  // Last time `sweep` ran, so it only does its O(n) pass at most once per
+  // window instead of on every call. Starts at 0 (not `Date.now()`) so the
+  // very first `hit()` - whenever it happens - triggers one, rather than
+  // depending on how much wall-clock time elapsed since construction.
+  private lastSweep = 0
 
   constructor(limitPerWindow: number, windowMs = 60_000) {
     this.limit = limitPerWindow
     this.windowMs = windowMs
   }
 
+  /** Current number of identities being tracked. Exported for direct testing of `sweep`. */
+  get size(): number {
+    return this.counts.size
+  }
+
   hit(id: string, now = Date.now()): boolean {
+    this.sweep(now)
     const entry = this.counts.get(id)
     if (!entry || now - entry.windowStart >= this.windowMs) {
       this.counts.set(id, { windowStart: now, count: 1 })
@@ -116,6 +127,26 @@ export class RateLimiter {
     }
     entry.count += 1
     return entry.count <= this.limit
+  }
+
+  /**
+   * Evicts windows that have already expired. Without this, `counts` grows
+   * by one entry per distinct identity ever seen, for the lifetime of the
+   * process, and never shrinks - a slow, unbounded memory leak. `/health`
+   * and `/metrics` are rate-limited by client IP even when API keys are
+   * configured for everything else (see this file's doc comment), so a
+   * long-running deployment fielding traffic from many distinct source IPs
+   * - a botnet deliberately rotating IPs to inflate this, or just ordinary
+   * monitoring/load-balancer traffic over weeks - would otherwise hold one
+   * entry per IP forever. Runs at most once per `windowMs`, not on every
+   * call, so the amortized cost stays O(1) per `hit`.
+   */
+  private sweep(now: number): void {
+    if (now - this.lastSweep < this.windowMs) return
+    this.lastSweep = now
+    for (const [id, entry] of this.counts) {
+      if (now - entry.windowStart >= this.windowMs) this.counts.delete(id)
+    }
   }
 }
 
@@ -133,13 +164,18 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /**
- * Proxies `token.merkle_path`/`merkle_root` view calls directly rather than
- * maintaining a redundant second copy of the Merkle tree — the contract is
- * already the source of truth for current tree state; the indexer's own
- * database only needs to cover what the contract *can't* serve itself
- * (historical note/nullifier events past Stellar RPC's retention window).
+ * Proxies a `token` view call directly rather than maintaining a redundant
+ * second copy of the Merkle tree — the contract is already the source of
+ * truth for current tree state; the indexer's own database only needs to
+ * cover what the contract *can't* serve itself (historical note/nullifier
+ * events past Stellar RPC's retention window). Returns the RPC node's
+ * `latestLedger` alongside the decoded value so callers that issue more than
+ * one of these in a row can check whether the node's view of the chain moved
+ * between calls — see `callConsistentViews`.
  */
-async function callView(config: HttpConfig, method: string, args: ReturnType<typeof nativeToScVal>[]): Promise<unknown> {
+async function simulateView(
+  config: HttpConfig, method: string, args: ReturnType<typeof nativeToScVal>[],
+): Promise<{ value: unknown; latestLedger: number }> {
   const server = new rpc.Server(config.rpcUrl)
   // A read-only simulation doesn't need a real funded account — any valid
   // account ID works as the simulation's nominal source.
@@ -156,7 +192,38 @@ async function callView(config: HttpConfig, method: string, args: ReturnType<typ
   if (rpc.Api.isSimulationError(sim)) {
     throw new Error(`${method} simulation error: ${sim.error}`)
   }
-  return scValToNative((sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval)
+  const success = sim as rpc.Api.SimulateTransactionSuccessResponse
+  return { value: scValToNative(success.result!.retval), latestLedger: success.latestLedger }
+}
+
+/**
+ * Runs several view calls and retries (up to `MAX_ATTEMPTS` times) until they
+ * all land on the same `latestLedger`. Each call is its own independent
+ * `simulateTransaction` against whatever the RPC node's current tip happens
+ * to be when it runs, so e.g. `merkle_path` followed by `merkle_root` can
+ * straddle a ledger close that inserts a new leaf — returning a path from
+ * the old tree alongside a root from the new one. That pair doesn't
+ * reconstruct to each other, so a wallet building a proof from it gets a
+ * path that fails to verify against the root it was handed, even though
+ * both values were individually read correctly. Calls run concurrently
+ * (`Promise.all`) to keep the window small, and are retried as a batch
+ * rather than call-by-call since partial consistency isn't useful here.
+ */
+async function callConsistentViews(
+  config: HttpConfig,
+  calls: Array<{ method: string; args: ReturnType<typeof nativeToScVal>[] }>,
+): Promise<unknown[]> {
+  const MAX_ATTEMPTS = 5
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const results = await Promise.all(calls.map(c => simulateView(config, c.method, c.args)))
+    if (results.every(r => r.latestLedger === results[0].latestLedger)) return results.map(r => r.value)
+    if (attempt === MAX_ATTEMPTS) {
+      throw new Error('could not read a ledger-consistent snapshot for merkle view calls')
+    }
+  }
+  // Unreachable — the loop above always either returns or throws on its last
+  // attempt — but keeps TypeScript happy about the function's return type.
+  throw new Error('unreachable')
 }
 
 export function startHttpServer(config: HttpConfig): ReturnType<typeof createServer> {
@@ -232,8 +299,10 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
       }
 
       if (req.method === 'GET' && url.pathname === '/merkle/root') {
-        const root = await callView(config, 'merkle_root', [])
-        const leafCount = await callView(config, 'leaf_count', [])
+        const [root, leafCount] = await callConsistentViews(config, [
+          { method: 'merkle_root', args: [] },
+          { method: 'leaf_count', args: [] },
+        ])
         sendJson(res, 200, {
           root: Buffer.from(root as Uint8Array).toString('hex'),
           leafCount: Number(leafCount),
@@ -244,8 +313,10 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createSer
       const merklePathMatch = url.pathname.match(/^\/merkle\/path\/(\d+)$/)
       if (req.method === 'GET' && merklePathMatch) {
         const leafIndex = Number(merklePathMatch[1])
-        const path = await callView(config, 'merkle_path', [nativeToScVal(leafIndex, { type: 'u32' })]) as Uint8Array[]
-        const root = await callView(config, 'merkle_root', [])
+        const [path, root] = await callConsistentViews(config, [
+          { method: 'merkle_path', args: [nativeToScVal(leafIndex, { type: 'u32' })] },
+          { method: 'merkle_root', args: [] },
+        ]) as [Uint8Array[], Uint8Array]
         sendJson(res, 200, {
           path: path.map(p => Buffer.from(p).toString('hex')),
           index: pathIndicesFor(leafIndex, path.length),
