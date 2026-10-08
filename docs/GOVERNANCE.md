@@ -15,6 +15,8 @@ Every verifying-key change goes through `queue_vk_update`, then `execute_vk_upda
 
 Each of the four contracts (verifier, governance, compliance, swap) has `pause` and `unpause`, restricted to its admin. The flag is stored in instance storage. When the flag is set, the gated entrypoints below reject the call with an error or a `paused` panic. Reads are never gated.
 
+**Reachability.** `verifier`'s and `token`'s admin is governance's own contract address (see `docs/RUNBOOK.md` §1), not a private key — only a direct call from governance's own code can satisfy `admin.require_auth()` there. Calling `verifier.pause()` or `token.pause()` directly, from any key, fails. Governance exposes `pause_verifier`/`unpause_verifier` and `pause_token`/`unpause_token` for exactly this: admin-gated forwarding calls, deliberately not gated by governance's own pause flag (an incident responder must be able to halt either one regardless of whether governance itself is paused). `compliance` and `swap` use a single admin key directly (the deployer on Testnet), so their own `pause`/`unpause` are called straight, with no governance forwarding needed.
+
 | Contract | Gated while paused | Callable while paused, and why |
 | --- | --- | --- |
 | verifier | `register_verifying_key`, `update_verifying_key`, `verify`, `verify_batch` | `revoke_previous_vk`: narrows what `verify` accepts, and is the response a pause is meant to enable. |
