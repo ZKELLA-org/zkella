@@ -20,4 +20,4 @@ zkella-verifier = { path = "../verifier" }
 ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"
-ark-std = "0.5"
+ark-std = "0.6"
