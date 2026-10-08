@@ -68,6 +68,19 @@ fn address_to_field_bytes(env: &Env, addr: &Address) -> [u8; 32] {
     le
 }
 
+/// Commitment to the output note's own randomness, fixed at `commit_swap`
+/// time via `SwapState::out_note_binding` and re-derived here from whatever
+/// `out_rho`/`out_rcm` are actually supplied at `reveal_and_claim` — see that
+/// field's doc comment for the front-running scenario this closes. A plain
+/// `sha256` over the concatenation is enough: this is a Soroban-side
+/// consistency check, not a circuit input, so it doesn't need to be a
+/// canonical field element the way Poseidon-hashed values do.
+fn out_note_binding_hash(env: &Env, out_rho: &BytesN<32>, out_rcm: &BytesN<32>) -> BytesN<32> {
+    let mut bytes: Bytes = out_rho.clone().into();
+    bytes.append(&out_rcm.clone().into());
+    env.crypto().sha256(&bytes).into()
+}
+
 /// Tag folded into the ownership proof's `recipient_hash`. Binds the proof to
 /// this exact swap: the intent, the refund address, the claimant's owner key,
 /// the output asset and the expiry. Anything left out could be swapped by
@@ -120,6 +133,29 @@ pub struct SwapState {
     /// bound into the ownership proof, so a copied fairness proof cannot be
     /// redirected to another claimant.
     pub out_owner_pk:      BytesN<32>,
+    /// `out_note_binding_hash(out_rho, out_rcm)` for the output note's own
+    /// randomness, fixed here (while only the hash, not the preimage, is
+    /// public) and re-checked at `reveal_and_claim` against whatever
+    /// `out_rho`/`out_rcm` are actually supplied there. `out_owner_pk` alone
+    /// doesn't stop a front-runner here: `SwapFairnessPublicInputs` never
+    /// references `out_rho`/`out_rcm`/`out_commitment` at all, and
+    /// `shield.circom`'s proof needs no secret from `out_owner_pk`'s holder
+    /// to construct — anyone can build a valid shield proof for an
+    /// arbitrary (`out_rho`, `out_rcm`) pair under someone else's public
+    /// key, exactly like any ordinary `shield()` call lets a sender pick a
+    /// recipient's note randomness. Without this field, anyone who observed
+    /// a pending `reveal_and_claim` transaction (e.g. in the mempool) could
+    /// resubmit the same, untouched `fairness_proof`/`fairness_pub` with
+    /// their *own* `out_rho`/`out_rcm` and a garbage `encrypted_note`,
+    /// landing a note under the real claimant's `out_owner_pk` whose
+    /// randomness only the attacker knows — permanently unspendable by the
+    /// real owner (the attacker has no spending key for `out_owner_pk`
+    /// either), a real value-destroying griefing path, not just a
+    /// soundness nicety. Fixing it to a hash only the real claimant knows
+    /// the preimage of at commit time — before `amount_out` even exists,
+    /// since `out_rho`/`out_rcm` don't depend on it — closes this the same
+    /// way `out_owner_pk` already closes owner redirection.
+    pub out_note_binding:  BytesN<32>,
     /// Set at `execute_swap` time; the relayer who fronted `asset_out`
     /// liquidity and is owed `asset_in` once the claimant reveals a valid
     /// fairness proof (or who can reclaim their `asset_out` back after
@@ -231,6 +267,13 @@ impl ShieldedSwap {
     /// makes `reveal_and_claim`'s own consistency check fail later (funds
     /// recoverable via `reclaim_expired_swap` after `expiry_ledger`, same as
     /// any other stalled swap) — never a path to steal value from anyone else.
+    ///
+    /// `out_note_binding` is `out_note_binding_hash(out_rho, out_rcm)` for
+    /// the output note the committer intends to claim later — a commitment
+    /// to randomness they alone know the preimage of, fixed now and
+    /// re-checked at `reveal_and_claim` against whatever `out_rho`/`out_rcm`
+    /// are actually revealed there. See `SwapState::out_note_binding`'s doc
+    /// comment for exactly why this is needed alongside `out_owner_pk`.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_swap(
         env:                   Env,
@@ -242,6 +285,7 @@ impl ShieldedSwap {
         anchor:                BytesN<32>,
         refund_to:             Address,
         out_owner_pk:          BytesN<32>,
+        out_note_binding:      BytesN<32>,
         min_amount_out:        i128,
         change_commitment:     BytesN<32>,
         change_value_commit:   BytesN<32>,
@@ -348,6 +392,7 @@ impl ShieldedSwap {
             asset_out,
             refund_to,
             out_owner_pk,
+            out_note_binding,
             relayer: None,
             min_amount_out,
         };
@@ -457,6 +502,17 @@ impl ShieldedSwap {
         // escrowed `asset_out` by supplying their own `out_commitment` — a
         // real fund-theft path, not just a soundness nicety.
         assert!(out_owner_pk == state.out_owner_pk, "output owner key does not match the one committed");
+        // Without this, `out_owner_pk` alone doesn't stop a front-runner:
+        // neither the fairness proof nor its public inputs reference
+        // out_rho/out_rcm/out_commitment at all, and a valid shield proof
+        // for an arbitrary (out_rho, out_rcm) pair needs no secret from
+        // out_owner_pk's holder to construct — see
+        // `SwapState::out_note_binding`'s doc comment for the full
+        // value-destroying griefing scenario this closes.
+        assert!(
+            out_note_binding_hash(&env, &out_rho, &out_rcm) == state.out_note_binding,
+            "output note randomness does not match the commitment fixed at commit_swap time"
+        );
         assert!(fairness_pub.intent_commitment == state.intent_commitment, "intent_commitment mismatch");
         assert!(fairness_pub.asset_in == state.asset_in, "asset_in mismatch");
         assert!(fairness_pub.asset_out == state.asset_out, "asset_out mismatch");
@@ -984,9 +1040,12 @@ mod tests {
         budget.reset_limits(2_000_000_000, 100_000_000);
         let min_amount_out = 900_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
         let commit_cost = s.env.cost_estimate().budget().cpu_instruction_cost();
 
@@ -994,8 +1053,6 @@ mod tests {
         soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &amount_out);
         swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, 900_000);
-        let out_rho = BytesN::from_array(&s.env, &canon(20));
-        let out_rcm = BytesN::from_array(&s.env, &canon(21));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1034,7 +1091,7 @@ mod tests {
             let zc = zero_change(&s.env);
             let swap_id = swap_client.commit_swap(
                 &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
             );
             s.env.ledger().with_mut(|li| li.sequence_number = expiry + 1);
             s.env.cost_estimate().budget().reset_limits(2_000_000_000, 100_000_000);
@@ -1056,7 +1113,7 @@ mod tests {
             let zc = zero_change(&s.env);
             let swap_id = swap_client.commit_swap(
                 &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+                &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &900_000i128, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
             );
             let amount_out = 950_000i128;
             soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &amount_out);
@@ -1117,9 +1174,12 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let min_amount_out = 900_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
@@ -1141,8 +1201,6 @@ mod tests {
 
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
 
-        let out_rho = BytesN::from_array(&s.env, &canon(20));
-        let out_rcm = BytesN::from_array(&s.env, &canon(21));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1195,9 +1253,12 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let min_amount_out = 900_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         // commit_swap really pulled amount_in into swap's own balance via
@@ -1219,8 +1280,6 @@ mod tests {
 
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
 
-        let out_rho = BytesN::from_array(&s.env, &canon(20));
-        let out_rcm = BytesN::from_array(&s.env, &canon(21));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1240,6 +1299,85 @@ mod tests {
             &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
         );
 
+    }
+
+    /// Regression test for a real front-running/griefing path closed by
+    /// `SwapState::out_note_binding`: unlike `out_owner_pk`, neither
+    /// `SwapFairnessPublicInputs` nor `shield.circom`'s own proof reference
+    /// `out_rho`/`out_rcm`/`out_commitment` at all, so the exact same
+    /// `fairness_proof`/`fairness_pub` built below (unchanged by the
+    /// substitution — they don't depend on the output note's randomness)
+    /// can be resubmitted with *different* `out_rho`/`out_rcm` and a fresh,
+    /// independently valid `shield_proof` for them, still targeting the
+    /// real claimant's `out_owner_pk` — exactly what a party who observed a
+    /// pending `reveal_and_claim` transaction (e.g. in the mempool) could
+    /// do before this field existed, permanently stranding the claimant's
+    /// output note under randomness only the attacker knows. This must now
+    /// fail: the attacker never learned the randomness the real claimant
+    /// committed to at `commit_swap` time.
+    #[test]
+    #[should_panic(expected = "output note randomness does not match")]
+    fn reveal_and_claim_rejects_output_note_randomness_other_than_the_committed_one() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+
+        let amount_in = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 10, 11);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(99));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(42));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        let min_amount_out = 900_000i128;
+        let zc = zero_change(&s.env);
+        // The real claimant's own randomness, committed to now — before
+        // amount_out even exists, since out_rho/out_rcm don't depend on it.
+        let out_rho = BytesN::from_array(&s.env, &canon(20));
+        let out_rcm = BytesN::from_array(&s.env, &canon(21));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+        );
+
+        let amount_out = 950_000i128;
+        let stellar_asset_out = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out);
+        stellar_asset_out.mint(&s.relayer, &amount_out);
+        swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
+
+        let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
+        let fairness_pub = SwapFairnessPublicInputs {
+            intent_commitment,
+            asset_in: s.asset_in.clone(),
+            asset_out: s.asset_out.clone(),
+            amount_out,
+            min_amount_out,
+        };
+
+        // A front-runner, having observed the real claimant's pending
+        // transaction, resubmits the exact same fairness_proof/fairness_pub
+        // above but with their own randomness and a fresh, independently
+        // valid shield proof for it — still under the real out_owner_pk.
+        let attacker_out_rho = BytesN::from_array(&s.env, &canon(222));
+        let attacker_out_rcm = BytesN::from_array(&s.env, &canon(223));
+        let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
+        let attacker_out_commitment = note_commitment(
+            &s.env, &mut hasher, amount_out, &s.asset_out, &attacker_out_rho, &attacker_out_rcm, &test_pk(&s.env),
+        );
+        let attacker_out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
+        let attacker_shield_proof = prove_and_register_output_shield(
+            &s, &attacker_out_commitment, &attacker_out_value_commit, amount_out,
+        );
+        let garbage_encrypted_note = Bytes::from_array(&s.env, &[0xffu8; 176]);
+
+        swap_client.reveal_and_claim(
+            &swap_id, &attacker_out_rho, &attacker_out_rcm, &test_pk(&s.env), &attacker_out_commitment, &attacker_out_value_commit,
+            &garbage_encrypted_note, &fairness_proof, &fairness_pub, &attacker_shield_proof,
+        );
     }
 
     /// Regression test for a real gap flagged in `docs/POC_IMPLEMENTATION.md`
@@ -1286,9 +1424,12 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let min_amount_out = 350_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(160));
+        let out_rcm = BytesN::from_array(&s.env, &canon(161));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 380_000i128;
@@ -1320,8 +1461,6 @@ mod tests {
             .execute_swap(&swap_id, &amount_out, &s.relayer);
 
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
-        let out_rho = BytesN::from_array(&s.env, &canon(160));
-        let out_rcm = BytesN::from_array(&s.env, &canon(161));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1405,9 +1544,12 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let min_amount_out = 900_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(220));
+        let out_rcm = BytesN::from_array(&s.env, &canon(221));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 950_000i128;
@@ -1423,8 +1565,6 @@ mod tests {
         let fairness_proof =
             prove_and_register_fairness(&s, &attacker_intent_commitment, amount_out, min_amount_out);
 
-        let out_rho = BytesN::from_array(&s.env, &canon(220));
-        let out_rcm = BytesN::from_array(&s.env, &canon(221));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1489,7 +1629,7 @@ mod tests {
         let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &attacker_refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &attacker_refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
     }
 
@@ -1522,7 +1662,7 @@ mod tests {
         let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_a, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
         );
 
         // Same intent_commitment again — must be rejected before this
@@ -1533,7 +1673,7 @@ mod tests {
         let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_b, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &bogus_proof, &expiry,
+            &amount_in, &anchor_a, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &bogus_proof, &expiry,
         );
     }
 
@@ -1570,7 +1710,7 @@ mod tests {
         let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &(bound_expiry + 1),
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &(bound_expiry + 1),
         );
     }
 
@@ -1599,7 +1739,7 @@ mod tests {
         let zc = zero_change(&s.env);
         swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
     }
 
@@ -1622,7 +1762,7 @@ mod tests {
         let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let asset_in_client = token::Client::new(&s.env, &s.asset_in);
@@ -1654,7 +1794,7 @@ mod tests {
         let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 650_000i128;
@@ -1691,9 +1831,12 @@ mod tests {
         let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
         let min_amount_out = 250_000i128;
         let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(60));
+        let out_rcm = BytesN::from_array(&s.env, &canon(61));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         let amount_out = 280_000i128;
@@ -1705,8 +1848,6 @@ mod tests {
         let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
         let bad_proof = test_groth16::corrupt_proof(&s.env, &fairness_proof);
 
-        let out_rho = BytesN::from_array(&s.env, &canon(60));
-        let out_rcm = BytesN::from_array(&s.env, &canon(61));
         let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
         let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
         let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
@@ -1754,7 +1895,7 @@ mod tests {
         let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         // A technically-positive but economically poor offer, well under the
@@ -1785,7 +1926,7 @@ mod tests {
         let zc = zero_change(&s.env);
         let swap_id = swap_client.commit_swap(
             &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
-            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &test_pk(&s.env), &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
         );
 
         soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &min_amount_out);
@@ -1847,12 +1988,12 @@ mod tests {
         let min_a = 0i128;
         let swap_id_a = swap_client.commit_swap(
             &nullifier_a, &intent_commitment_a, &s.asset_in, &s.asset_out,
-            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &min_a, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
+            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &test_pk(&s.env), &min_a, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
         );
         let min_b = 0i128;
         let swap_id_b = swap_client.commit_swap(
             &nullifier_b, &intent_commitment_b, &s.asset_in, &s.asset_out,
-            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &min_b, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
+            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &test_pk(&s.env), &min_b, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
         );
         assert_ne!(swap_id_a, swap_id_b);
 
@@ -1927,11 +2068,11 @@ mod tests {
         let min0 = 0i128;
         let swap_id_a = swap_client.commit_swap(
             &nullifier_a, &intent_commitment_a, &s.asset_in, &s.asset_out,
-            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &min0, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
+            &amount_in_a, &anchor_a, &refund_to_a, &test_pk(&s.env), &test_pk(&s.env), &min0, &zc.0, &zc.1, &zc.2, &proof_a, &expiry,
         );
         let swap_id_b = swap_client.commit_swap(
             &nullifier_b, &intent_commitment_b, &s.asset_in, &s.asset_out,
-            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &min0, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
+            &amount_in_b, &anchor_b, &refund_to_b, &test_pk(&s.env), &test_pk(&s.env), &min0, &change_b, &zc.1, &zc.2, &proof_b, &expiry,
         );
 
         // Only enough for ONE of the two offers.
@@ -1973,6 +2114,7 @@ mod tests {
             &BytesN::from_array(&s.env, &[3u8; 32]),
             &Address::generate(&s.env),
             &BytesN::from_array(&s.env, &[4u8; 32]),
+            &BytesN::from_array(&s.env, &[41u8; 32]),
             &0i128,
             &BytesN::from_array(&s.env, &[5u8; 32]),
             &BytesN::from_array(&s.env, &[6u8; 32]),
@@ -2070,6 +2212,7 @@ mod tests {
             &BytesN::from_array(&s.env, &[3u8; 32]),
             &Address::generate(&s.env),
             &BytesN::from_array(&s.env, &[4u8; 32]),
+            &BytesN::from_array(&s.env, &[41u8; 32]),
             &0i128,
             &BytesN::from_array(&s.env, &[5u8; 32]),
             &BytesN::from_array(&s.env, &[6u8; 32]),

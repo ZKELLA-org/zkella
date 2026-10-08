@@ -51,5 +51,5 @@ The table in `docs/RUNBOOK.md` ("SDK artifacts") lists the common failures and w
 ## What to keep between sessions
 
 - The wallet's current viewing-key epoch (`currentEpoch`) and last synced ledger. A restarted wallet without them can miss notes.
-- The swap intent returned by `commitSwap`: the nonce and fairness proof are needed to reveal and claim.
+- The swap intent returned by `commitSwap`, including `outNote` — the output note's randomness is committed on-chain at commit time, so `revealAndClaim` must reveal the exact same note, not a freshly built one; keep the whole `SwapIntent` object, not just the nonce and fairness proof.
 - Spending keys. Losing them makes notes unspendable; nothing on-chain can recover them.

@@ -27,6 +27,13 @@ export interface SwapIntent {
   minAmountOut:     bigint
   fairnessProof:    Uint8Array
   expiry:           number
+  /**
+   * The output note's own randomness is fixed at commit time and committed
+   * on-chain (`out_note_binding`), not generated fresh at reveal time —
+   * `revealAndClaim` must reveal this exact note, not a new one, or the
+   * contract rejects it. See `commitSwap`'s doc comment for why.
+   */
+  outNote:          Note
 }
 
 /**
@@ -41,7 +48,17 @@ export class ZKELLASwap {
     circuits:            SwapCircuits
   }) {}
 
-  /** Commits `note` into a swap. The intent nonce and proofs in the result must be kept until reveal. */
+  /**
+   * Commits `note` into a swap. The output note is built *now*, not at
+   * reveal time: its randomness is committed on-chain (`out_note_binding`,
+   * `contracts/swap::out_note_binding_hash`) so that whoever later calls
+   * `reveal_and_claim` must reveal this exact note, not substitute their own
+   * randomness under the real claimant's owner key — see
+   * `contracts/swap/src/lib.rs`'s `SwapState::out_note_binding` doc comment
+   * for the front-running/value-destruction scenario this closes. The
+   * intent nonce, proofs, and `outNote` in the result must all be kept
+   * until reveal.
+   */
   async commitSwap(opts: {
     note:           Note
     assetOut:       string
@@ -70,6 +87,9 @@ export class ZKELLASwap {
       circuits.unshield.wasmPath, circuits.unshield.zkeyPath,
       changeNote => encryptNote(changeNote, keys.transmissionKey))
 
+    const outNote = await buildNote(opts.amountOut, opts.assetOut, keys.ownerKey)
+    const outNoteBinding = await sha256Concat(outNote.rho, outNote.rcm)
+
     const swapId = scValToNative(await wallet.submitContractCall(swapContractAddress, 'commit_swap', [
       nativeToScVal(own.nullifier,                   { type: 'bytes' }),
       nativeToScVal(fair.intentCommitment,           { type: 'bytes' }),
@@ -79,6 +99,7 @@ export class ZKELLASwap {
       nativeToScVal(anchor,                          { type: 'bytes' }),
       nativeToScVal(me,                              { type: 'address' }),
       nativeToScVal(keys.ownerKey,                   { type: 'bytes' }),
+      nativeToScVal(outNoteBinding,                  { type: 'bytes' }),
       nativeToScVal(minAmountOut,                    { type: 'i128' }),
       nativeToScVal(own.changeNote.commitment,       { type: 'bytes' }),
       nativeToScVal(own.changeValueCommit,           { type: 'bytes' }),
@@ -99,6 +120,7 @@ export class ZKELLASwap {
       minAmountOut,
       fairnessProof:    fair.proof,
       expiry:           opts.expiry,
+      outNote,
     }
   }
 
@@ -110,7 +132,11 @@ export class ZKELLASwap {
   async revealAndClaim(intent: SwapIntent): Promise<{ leafIndex: number }> {
     const { wallet, circuits, swapContractAddress } = this.config
     const keys = wallet.spendingKey()
-    const outNote = await buildNote(intent.amountOut, intent.assetOut, keys.ownerKey)
+    // Must reveal the exact note committed to at commitSwap time (`outNote`,
+    // bound on-chain via `out_note_binding`) — building a fresh one here
+    // would be rejected by the contract and, before that fix existed, was
+    // exactly the front-running hole it closes.
+    const outNote = intent.outNote
     const shield = await generateShieldProof(
       outNote,
       { commitment: outNote.commitment, asset: intent.assetOut, amount: intent.amountOut },
@@ -152,4 +178,17 @@ export class ZKELLASwap {
 
 function hexToBytes(hex: string): Uint8Array {
   return Uint8Array.from(Buffer.from(hex, 'hex'))
+}
+
+/**
+ * `contracts/swap::out_note_binding_hash`: sha256 of the two 32-byte buffers
+ * concatenated, in this exact order. Not a circuit input, so no field
+ * reduction — must match the Soroban side's `sha256(rho || rcm)` byte-for-byte.
+ */
+async function sha256Concat(a: Uint8Array, b: Uint8Array): Promise<Uint8Array> {
+  const combined = new Uint8Array(a.length + b.length)
+  combined.set(a, 0)
+  combined.set(b, a.length)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', combined)
+  return new Uint8Array(digest)
 }
