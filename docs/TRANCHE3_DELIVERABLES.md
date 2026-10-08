@@ -278,6 +278,46 @@ definitions). JS unit tests (`npm test`, covering circuits, SDK, and indexer): 1
 skipped (the skipped tests need a real PostgreSQL instance, not SQLite). SDK typecheck
 (`cd sdk && npm run typecheck`) passes with no errors.
 
+## Independent audit pass and fixes (2026-10-08)
+
+A second, independent review covering `token`, `verifier`+`governance`, `swap`,
+`compliance`+`viewing_keys`, the SDK, and the indexer each separately — found and fixed five
+real defects, the most severe since the swap incidents `contracts/swap/src/lib.rs`'s own doc
+comments already reference:
+
+- **Critical, `swap`:** `reveal_and_claim` never bound the output note's own randomness to
+  anything fixed at `commit_swap` time, only its owner key. Anyone who observed a pending reveal
+  could resubmit the same fairness proof with their own `out_rho`/`out_rcm`, permanently
+  destroying the escrowed `amount_out` at zero cost. Fixed with `out_note_binding_hash`,
+  committed at `commit_swap` and re-checked at reveal. The SDK's `ZKELLASwap` wrapper now builds
+  and commits to the output note at `commitSwap` time instead of generating a fresh one at
+  reveal.
+- **High, `governance`/`verifier`/`token`:** `verifier.pause()` and `token.pause()`, both
+  documented in `docs/RUNBOOK.md` as primary incident-response levers, were completely
+  unreachable — governance is each one's admin, and neither had a function that actually calls
+  through. Fixed with `pause_verifier`/`unpause_verifier` and `pause_token`/`unpause_token`.
+- **Medium, `token`:** `transfer()`/`transfer4()`/`unshield()` never validated `encrypted_note`
+  length, unlike `shield()`. A malformed ciphertext could pass proof verification (the proof
+  only binds the commitment) while permanently stranding the recipient's ability to decrypt and
+  spend that note.
+- **Medium, SDK:** `ZKELLAAuditor.sync()` had no dedup; a second call — the normal way to keep
+  an audit view current — would double-count every receipt.
+- **Medium + Low, indexer:** `/merkle/root` and `/merkle/path` could serve a root/path pair
+  computed against two different ledgers (two independent, unsynchronized RPC simulations), and
+  `RateLimiter` never evicted an identity once seen (unbounded memory growth).
+
+`contracts/compliance`/`contracts/viewing_keys` held up with no fixable finding.
+
+All fixes shipped with regression tests, and the full stack (`token`, `governance`, `verifier`,
+`swap`; `compliance` redeployed only to re-point at the new `verifier`; `viewing_keys` reused
+unchanged) was redeployed to Testnet — the prior `testnet_final` stack predated every one of
+these fixes, so none of them protected anything until redeployed. Live-confirmed on the new
+stack: `pause_verifier`/`pause_token` each actually block their target
+(`Error(Contract, #10)`/`#3` == `Paused`) and unpause restores them; a full shield → commit_swap
+→ execute_swap → reveal_and_claim lifecycle through the fixed SDK wrapper completed successfully
+(shield tx `d8b3c78e...fd973`, commit tx `d84ff18f...76ec6`, execute tx `9aa8b8cd...23120`,
+reveal tx `1320f2a1...e1fc` — see `deployments.json`'s `testnet_final._live_checks`).
+
 ## What is left open, honestly
 
 - **Admin multisig** on every contract remains a single key, by design deferred to a mainnet
