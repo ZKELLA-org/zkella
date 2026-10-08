@@ -110,4 +110,6 @@ pub trait Token {
         proof:                 Bytes,
         pub_inputs:            UnshieldPublicInputs,
     ) -> Result<u32, Error>;
+
+    fn set_min_shield_amount(env: Env, new_amount: i128) -> Result<(), Error>;
 }

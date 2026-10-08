@@ -21,7 +21,9 @@ use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 #[contracttype]
 pub enum StorageKey {
+    Admin,
     Verifier,
+    Paused,
     ComplianceRecord(Address),
 }
 
@@ -50,6 +52,7 @@ pub enum Error {
     AlreadyInitialized = 1,
     NotInitialized     = 2,
     InvalidProof        = 3,
+    Paused             = 4,
 }
 
 #[contract]
@@ -57,11 +60,24 @@ pub struct ComplianceContract;
 
 #[contractimpl]
 impl ComplianceContract {
-    pub fn initialize(env: Env, verifier: Address) {
+    pub fn initialize(env: Env, admin: Address, verifier: Address) {
         if env.storage().instance().has(&StorageKey::Verifier) {
             panic!("already initialized");
         }
+        env.storage().instance().set(&StorageKey::Admin, &admin);
         env.storage().instance().set(&StorageKey::Verifier, &verifier);
+    }
+
+    pub fn pause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &true);
+    }
+
+    pub fn unpause(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&StorageKey::Paused, &false);
     }
 
     /// Publishes a verified sanctions-list non-membership proof for `owner`.
@@ -76,6 +92,10 @@ impl ComplianceContract {
         pub_inputs: CompliancePublicInputs,
     ) -> Result<(), Error> {
         owner.require_auth();
+        let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
+        if paused {
+            return Err(Error::Paused);
+        }
 
         let verifier: Address = env
             .storage()
@@ -223,7 +243,7 @@ mod tests {
         let contract = env.register(ComplianceContract, ());
         let verifier = env.register(zkella_verifier::VerifierContract, ());
         zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&owner);
-        ComplianceContractClient::new(&env, &contract).initialize(&verifier);
+        ComplianceContractClient::new(&env, &contract).initialize(&owner, &verifier);
         (env, owner, contract, verifier)
     }
 
@@ -245,7 +265,7 @@ mod tests {
         };
         zkella_verifier::VerifierContractClient::new(&env, &verifier).initialize(&owner);
         let client = ComplianceContractClient::new(&env, &contract);
-        client.initialize(&verifier);
+        client.initialize(&owner, &verifier);
         let sanctions_root = BytesN::from_array(&env, &[3u8; 32]);
         let tk_commitment = BytesN::from_array(&env, &[4u8; 32]);
         let pub_inputs = CompliancePublicInputs { sanctions_root: sanctions_root.clone(), tk_commitment: tk_commitment.clone() };
@@ -333,6 +353,41 @@ mod tests {
 
         let result = client.try_publish_compliance_proof(&owner, &bad_proof, &pub_inputs);
         assert!(result.is_err());
+        assert!(client.get_compliance_proof(&owner).is_none());
+    }
+
+    fn empty_inputs(env: &Env) -> CompliancePublicInputs {
+        CompliancePublicInputs {
+            sanctions_root: BytesN::from_array(env, &[0u8; 32]),
+            tk_commitment:  BytesN::from_array(env, &[0u8; 32]),
+        }
+    }
+
+    #[test]
+    fn pause_blocks_publish_compliance_proof() {
+        let (env, owner, contract, _verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.pause();
+        let result = client.try_publish_compliance_proof(&owner, &Bytes::new(&env), &empty_inputs(&env));
+        assert_eq!(result, Err(Ok(Error::Paused)));
+        assert!(client.get_compliance_proof(&owner).is_none());
+    }
+
+    #[test]
+    fn unpause_restores_publish_compliance_proof() {
+        let (env, owner, contract, _verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.pause();
+        client.unpause();
+        let result = client.try_publish_compliance_proof(&owner, &Bytes::new(&env), &empty_inputs(&env));
+        assert_ne!(result, Err(Ok(Error::Paused)), "publish must no longer be blocked after unpause");
+    }
+
+    #[test]
+    fn pause_does_not_block_reads() {
+        let (env, owner, contract, _verifier) = setup();
+        let client = ComplianceContractClient::new(&env, &contract);
+        client.pause();
         assert!(client.get_compliance_proof(&owner).is_none());
     }
 }

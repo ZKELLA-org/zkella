@@ -1,0 +1,20 @@
+[package]
+name    = "zkella-budget"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+
+[dependencies]
+soroban-sdk = { version = "27.0.0", features = ["hazmat-crypto", "testutils"] }
+zkella-token = { path = "../token", features = ["testutils"] }
+zkella-verifier = { path = "../verifier" }
+zkella-verifier-interface = { path = "../verifier-interface" }
+zkella-swap = { path = "../swap" }
+zkella-governance = { path = "../governance" }
+zkella-compliance = { path = "../compliance" }
+zkella-viewing-keys = { path = "../viewing_keys" }
