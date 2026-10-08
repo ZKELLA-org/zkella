@@ -211,6 +211,56 @@ impl ZKELLAGovernance {
         VerifierClient::new(&env, &verifier).revoke_previous_vk(&circuit);
     }
 
+    /// Pauses the verifier contract this governance administers. The
+    /// verifier was deployed with *this contract's own address* as its
+    /// admin (see `initialize`'s doc comment), so `verifier::pause`'s
+    /// `admin.require_auth()` can only ever be satisfied by a direct call
+    /// from this contract's own code — no private key exists that could
+    /// sign for a contract address. Without this entrypoint,
+    /// `verifier.pause()` (the runbook's primary fail-closed lever for an
+    /// actively-exploited verification bug: it stops `verify`/`verify_batch`
+    /// from accepting any proof) was permanently unreachable. Deliberately
+    /// not gated by this contract's own `pause`: an incident responder must
+    /// be able to halt the verifier regardless of whether governance itself
+    /// has been paused yet.
+    pub fn pause_verifier(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        let verifier: Address = env.storage().instance().get(&StorageKey::Verifier).unwrap();
+        VerifierClient::new(&env, &verifier).pause();
+    }
+
+    /// Reverses `pause_verifier`, for the same reachability reason.
+    pub fn unpause_verifier(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        let verifier: Address = env.storage().instance().get(&StorageKey::Verifier).unwrap();
+        VerifierClient::new(&env, &verifier).unpause();
+    }
+
+    /// Same reachability problem as `pause_verifier`, same reason: `token`
+    /// is also deployed with this contract's own address as its admin, so
+    /// `token::pause`'s `admin.require_auth()` could likewise only ever be
+    /// satisfied by a direct call from this contract's own code. Without
+    /// this entrypoint, `token.pause()` — the runbook's primary lever for
+    /// halting `shield`/`transfer`/`transfer4`/`unshield` — was permanently
+    /// unreachable too. Deliberately not gated by this contract's own
+    /// `pause`, for the same incident-response reason as `pause_verifier`.
+    pub fn pause_token(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        let token: Address = env.storage().instance().get(&StorageKey::Token).unwrap();
+        TokenClient::new(&env, &token).pause();
+    }
+
+    /// Reverses `pause_token`, for the same reachability reason.
+    pub fn unpause_token(env: Env) {
+        let admin: Address = env.storage().instance().get(&StorageKey::Admin).unwrap();
+        admin.require_auth();
+        let token: Address = env.storage().instance().get(&StorageKey::Token).unwrap();
+        TokenClient::new(&env, &token).unpause();
+    }
+
     /// The timelock length this build enforces, in ledgers. Lets anyone check
     /// on-chain that a deployment is not the short-timelock testnet build.
     pub fn timelock_ledgers(_env: Env) -> u32 {
@@ -258,6 +308,7 @@ impl ZKELLAGovernance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::BytesN;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use zkella_verifier::{VerifierContract, VerifierContractClient};
 
@@ -594,6 +645,104 @@ mod tests {
             gov.try_guardian_cancel_vk_update(&CircuitType::Shield).is_err(),
             "guardian cancel must require guardian authorization"
         );
+    }
+
+    /// Regression test for the audit finding that `verifier.pause()`/
+    /// `unpause()` were unreachable: the verifier's admin is this contract's
+    /// own address, so only a direct call from governance's own code can
+    /// ever satisfy `admin.require_auth()` there. Before `pause_verifier`/
+    /// `unpause_verifier` existed, nothing in this contract made that call,
+    /// so the runbook's documented "pause the verifier" incident lever
+    /// could never actually be exercised by anyone, admin or otherwise.
+    #[test]
+    fn pause_verifier_actually_pauses_and_unpause_verifier_restores_it() {
+        let (env, _admin, gov_id, verifier_id) = setup();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let verifier = VerifierContractClient::new(&env, &verifier_id);
+        let vk = vk_bytes(&env, 512);
+
+        gov.pause_verifier();
+        assert_eq!(
+            verifier.try_register_verifying_key(&CircuitType::Shield.into(), &vk),
+            Err(Ok(zkella_verifier::Error::Paused)),
+            "pause_verifier must actually pause the verifier contract it administers"
+        );
+
+        gov.unpause_verifier();
+        assert_eq!(
+            verifier.try_register_verifying_key(&CircuitType::Shield.into(), &vk),
+            Ok(Ok(())),
+            "unpause_verifier must restore normal verifier operation"
+        );
+    }
+
+    #[test]
+    fn pause_verifier_and_unpause_verifier_require_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let token = Address::generate(&env);
+        let gov_id = env.register(ZKELLAGovernance, ());
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.initialize(&admin, &verifier, &guardian, &token);
+        assert!(gov.try_pause_verifier().is_err(), "pause_verifier must require admin authorization");
+        assert!(gov.try_unpause_verifier().is_err(), "unpause_verifier must require admin authorization");
+    }
+
+    /// Same reachability gap as `pause_verifier`'s own test, for `token`:
+    /// its admin is also this contract's own address (see `setup_full`), so
+    /// without `pause_token` nothing could ever satisfy `token::pause`'s
+    /// `admin.require_auth()`. Dummy, deliberately-invalid arguments are
+    /// enough here: `shield`'s pause check runs immediately after
+    /// `require_auth`, before any asset-approval or proof check, so a
+    /// `Paused` result (and only that result) proves the flag, not the
+    /// argument values, is what's being exercised.
+    #[test]
+    fn pause_token_actually_pauses_and_unpause_token_restores_it() {
+        let (env, _admin, _guardian, gov_id, _verifier_id, token_id) = setup_full();
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        let token = zkella_token::ShieldedTokenClient::new(&env, &token_id);
+        let from = Address::generate(&env);
+        let asset = Address::generate(&env);
+        let dummy32 = BytesN::from_array(&env, &[0u8; 32]);
+        let shield_pub = zkella_token::ShieldPublicInputs {
+            commitment: dummy32.clone(), value_commit: dummy32.clone(), pub_value: 0, pub_asset_id: asset.clone(),
+        };
+
+        gov.pause_token();
+        assert_eq!(
+            token.try_shield(
+                &from, &asset, &0, &dummy32, &dummy32, &dummy32, &dummy32,
+                &Bytes::new(&env), &Bytes::new(&env), &shield_pub,
+            ),
+            Err(Ok(zkella_token::Error::Paused)),
+            "pause_token must actually pause the token contract it administers"
+        );
+
+        gov.unpause_token();
+        assert_ne!(
+            token.try_shield(
+                &from, &asset, &0, &dummy32, &dummy32, &dummy32, &dummy32,
+                &Bytes::new(&env), &Bytes::new(&env), &shield_pub,
+            ),
+            Err(Ok(zkella_token::Error::Paused)),
+            "unpause_token must restore normal operation (no longer rejected merely for being paused)"
+        );
+    }
+
+    #[test]
+    fn pause_token_and_unpause_token_require_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        let token = Address::generate(&env);
+        let gov_id = env.register(ZKELLAGovernance, ());
+        let gov = ZKELLAGovernanceClient::new(&env, &gov_id);
+        gov.initialize(&admin, &verifier, &guardian, &token);
+        assert!(gov.try_pause_token().is_err(), "pause_token must require admin authorization");
+        assert!(gov.try_unpause_token().is_err(), "unpause_token must require admin authorization");
     }
 
     #[test]

@@ -72,4 +72,6 @@ pub trait Verifier {
     fn revoke_previous_vk(e: Env, circuit: CircuitType) -> Result<(), Error>;
     fn get_verifying_key(e: Env, circuit: CircuitType) -> Result<Bytes, Error>;
     fn verify(e: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> Result<bool, Error>;
+    fn pause(e: Env) -> Result<(), Error>;
+    fn unpause(e: Env) -> Result<(), Error>;
 }
