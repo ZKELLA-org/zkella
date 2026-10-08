@@ -46,24 +46,43 @@ export class ZKELLAAuditor {
   private indexer: IndexerClient
   private vkExport: ViewingKeyExport
   private notes: AuditedNote[] = []
+  private lastSyncLedger: number
 
   constructor(config: { viewingKeyExport: ViewingKeyExport; indexerUrl: string }) {
     this.vkExport = config.viewingKeyExport
     this.indexer  = new IndexerClient(config.indexerUrl)
+    this.lastSyncLedger = config.viewingKeyExport.birthday_ledger
   }
 
+  /**
+   * Resumes from `lastSyncLedger`, not the viewing key's birthday — calling
+   * `sync()` again (the normal way an auditor keeps `transactionHistory`
+   * current as new notes land) must pick up only what's new. Starting over
+   * from the birthday every time would re-decrypt and re-push every note
+   * already in `this.notes`, silently doubling (tripling, ...) every
+   * reported receipt on each additional call — exactly the kind of drift a
+   * compliance report can't afford. The commitment check mirrors
+   * `ZKELLAWallet.sync()`'s own dedup, so a page the indexer re-serves (e.g.
+   * a resumed sync starting at a ledger already covered) is also harmless.
+   */
   async sync(): Promise<void> {
-    let cursor = this.vkExport.birthday_ledger
+    let cursor = this.lastSyncLedger
+    const seen = new Set(this.notes.map(n => n.commitment))
 
     while (true) {
       const { notes, nextLedger } = await this.indexer.getNotes(cursor)
       for (const raw of notes) {
+        if (seen.has(raw.commitment)) continue
         const note = await decryptNoteForAuditor(this.vkExport.viewing_key, raw)
-        if (note) this.notes.push(note)
+        if (note) {
+          seen.add(raw.commitment)
+          this.notes.push(note)
+        }
       }
       if (notes.length === 0 || nextLedger <= cursor) break
       cursor = nextLedger
     }
+    this.lastSyncLedger = cursor
   }
 
   /**

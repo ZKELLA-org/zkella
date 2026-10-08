@@ -104,6 +104,30 @@ describe('ZKELLAAuditor sync', () => {
     expect(auditor.transactionHistory(ASSET)).toEqual([{ type: 'receive', amount: 25n, ledger: 11 }])
   })
 
+  test('a second sync() resumes from the last ledger instead of re-reporting notes already seen', async () => {
+    const keys = await owner()
+    const page1 = [await indexerRecord(keys, 100n, 0, 10)]
+    const page2 = [await indexerRecord(keys, 50n, 1, 21)]
+    // A real indexer serves notes by `from_ledger`, so mirror that here: a
+    // sync that (buggily) restarts from the viewing key's birthday ledger
+    // would re-request ledger 0 and get `page1` all over again.
+    jest.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const fromLedger = Number(new URL(String(url)).searchParams.get('from_ledger'))
+      const body = fromLedger >= 20
+        ? { notes: page2, nextLedger: 30 }
+        : { notes: page1, nextLedger: 20 }
+      return { ok: true, status: 200, json: async () => body } as unknown as Response
+    })
+
+    const auditor = new ZKELLAAuditor({ viewingKeyExport: exportFor(keys, 0), indexerUrl: 'http://x' })
+    await auditor.sync()
+    await auditor.sync()
+    expect(auditor.transactionHistory(ASSET)).toEqual([
+      { type: 'receive', amount: 100n, ledger: 10 },
+      { type: 'receive', amount: 50n,  ledger: 21 },
+    ])
+  })
+
   test('sync stops when the indexer does not advance its cursor', async () => {
     const keys = await owner()
     const page = [await indexerRecord(keys, 5n, 0, 1)]
