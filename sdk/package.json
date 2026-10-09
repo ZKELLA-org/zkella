@@ -1,7 +1,31 @@
 {
   "name": "@zkella/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for the ZKELLA confidential finance protocol on Stellar Soroban",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "zero-knowledge",
+    "zk-snarks",
+    "groth16",
+    "privacy",
+    "confidential-transactions",
+    "shielded-pool",
+    "blockchain",
+    "web3"
+  ],
+  "homepage": "https://github.com/ZKELLA-org/zkella#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZKELLA-org/zkella.git#e93154bd9efd40cf6e4d3d035c8797b378658f29",
+    "directory": "sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/ZKELLA-org/zkella/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
