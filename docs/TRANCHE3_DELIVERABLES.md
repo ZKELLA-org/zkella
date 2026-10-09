@@ -438,6 +438,20 @@ reference:
 
 `contracts/compliance`/`contracts/viewing_keys` held up with no fixable finding.
 
+**A sixth finding, caught by CI rather than by review.** This branch's push trigger was only
+added to CI after the fixes above
+(https://github.com/ZKELLA-org/zkella/commit/26f80e5048451a844c169b2d04b74e73330769ec), and its
+first real run failed: the swap fix's new `out_note_binding` parameter on `commit_swap` broke
+`contracts/token/fuzz/fuzz_targets/swap_arbitrary.rs`'s own call to it — a straight compile
+error in the fuzz crate, not a runtime crash, since the harness still passed the old
+14-argument list. Fixed at
+https://github.com/ZKELLA-org/zkella/commit/324885b747f3cf39d8e8e6ff19d9fa1d0745e268
+by adding the missing argument and re-minimizing the corpus; confirmed locally by running all
+nine targets with the exact flags CI uses before pushing. Worth recording plainly: the audit
+pass's own test suite (`cargo test --workspace`) never exercises the separate fuzz crate, so
+this kind of drift between a contract's signature and its fuzz harness is exactly the gap CI's
+dedicated fuzz-build step exists to catch — and, once wired up on this branch, did.
+
 All fixes shipped with regression tests, and the full stack was redeployed
 (https://github.com/ZKELLA-org/zkella/commit/4661d5ca4b00ec5248c141b0903694c11690e7ab) — the
 prior stack predated every one of these fixes, so none of them protected anything until
