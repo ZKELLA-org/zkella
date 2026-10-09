@@ -449,8 +449,10 @@ redeploy received.
 Full contract workspace (`cd contracts && cargo test --workspace --release`): 237 tests,
 all passing — token 127, swap 30, verifier 37, governance 25, compliance 13, viewing_keys 5
 (`token-interface` and `verifier-interface` have no tests of their own; they're trait
-definitions). JS unit tests (`npx jest tests/unit`): 178 passing, 9 skipped (the skipped tests
-need a real PostgreSQL instance, not SQLite). SDK typecheck (`cd sdk && npx tsc --noEmit`)
+definitions). JS unit tests (`DATABASE_URL=postgres://... npx jest tests/unit`): 188 passing, 0
+skipped, including `tests/unit/indexer-db-postgres.test.ts` against a real PostgreSQL server
+(without `DATABASE_URL` set, that one file's 9 tests are skipped rather than failed, so a local
+`npm test` run doesn't require standing up Postgres just to pass). SDK typecheck (`cd sdk && npx tsc --noEmit`)
 passes with no errors.
 
 ## What is left open, honestly
