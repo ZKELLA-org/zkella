@@ -329,11 +329,13 @@ Testnet only; mainnet network configuration is out of scope for this release."*
 `sdk/src/compliance`, `sdk/src/indexer`
 (https://github.com/ZKELLA-org/zkella/tree/compliance-governance-security-testnet-release/sdk/src).
 
-**2. Published on npm. Met, as `0.1.0`, deliberately not `1.0.0`.** `npm view @zkella/sdk
-version` returns `0.1.0`: https://www.npmjs.com/package/@zkella/sdk. `docs/SDK_RELEASE.md`
+**2. Published on npm. Met, as `0.1.1`, deliberately not `1.0.0`.** `npm view @zkella/sdk
+version` returns `0.1.1`: https://www.npmjs.com/package/@zkella/sdk. (First published as `0.1.0`
+on 2026-10-05; bumped to `0.1.1` to add the package's README, a bundled `LICENSE`, and complete
+`package.json` metadata — no dependency or API change.) `docs/SDK_RELEASE.md`
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/SDK_RELEASE.md)
 records the decision — semver reserves `1.0.0` for an API-stability commitment, and the team
-chose to say that honestly with a `0.1.0` first release rather than overclaim a `1.0` the
+chose to say that honestly with a pre-1.0 first release rather than overclaim a `1.0` the
 original roadmap wording assumed. The API itself (typings, documented surface, Testnet
 targeting) is exactly what the criterion asks for otherwise.
 
@@ -479,7 +481,7 @@ passes with no errors.
   nine targets now have a committed, minimized corpus.
 - **No independent third-party audit** has been done; `docs/SECURITY_TOOLING_REPORT.md` says
   so explicitly, and that remains the honest status.
-- **The SDK is `0.1.0`**, not `1.0.0` — a deliberate first release, not the literal version the
+- **The SDK is `0.1.1`**, not `1.0.0` — a deliberate pre-1.0 release, not the literal version the
   original roadmap wording named; see `docs/SDK_RELEASE.md`.
 - **`swap`'s `reclaim_expired_swap` recovery path** (the post-*execution* unwind, for a relayer
   that fronted liquidity but the claimant never claims) is still unit-tested only. Its claim
