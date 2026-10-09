@@ -2,7 +2,7 @@
 
 This document describes the full architecture of the ZKELLA protocol. It is intended as the single reference for the complete design of the system, including how on-chain contracts, off-chain proving, indexer infrastructure, client SDKs, and compliance capabilities fit together.
 
-The repository currently contains a PoC implementation only. Existing contracts and SDK code validate early design assumptions, but they are not final versions of the protocol contracts and must be reviewed, optimized, hardened, and improved before any production deployment.
+The repository contains a Testnet-deployed implementation of this design, built and hardened across three development phases — real contracts and SDK code validated against live Stellar Testnet, not a local-only prototype. §2.9 describes exactly what has shipped against this target architecture and what remains ahead of a mainnet release (see also the README's "Roadmap to mainnet").
 
 ## Contents
 
@@ -32,7 +32,7 @@ The repository currently contains a PoC implementation only. Existing contracts 
   - [2.6 Shielded swap contract](#26-shielded-swap-contract)
   - [2.7 Off-chain prover and SDK](#27-off-chain-prover-and-sdk)
   - [2.8 Persistent indexer and wallet sync](#28-persistent-indexer-and-wallet-sync)
-  - [2.9 PoC implementation versus target architecture](#29-poc-implementation-versus-target-architecture)
+  - [2.9 Current implementation versus target architecture](#29-current-implementation-versus-target-architecture)
 - [3. Core data model](#3-core-data-model)
   - [3.1 Shielded note](#31-shielded-note)
   - [3.2 Note commitment](#32-note-commitment)
@@ -70,7 +70,7 @@ ZKELLA implements a confidential-finance protocol on Stellar: shielded notes, pr
 
 The most important open item right now: the 4-in/4-out transfer entrypoint's compiled-WASM instruction cost was at essentially the mainnet limit (397.9M); after the Merkle and verifier optimisations it is 80.8M (20% of the limit). See `docs/PERFORMANCE_OPTIMISATION.md` for the measurements and method.
 
-Real improvement and optimization work remains on the contracts themselves, not just external review: the minimum shield amount is now admin-settable (`set_min_shield_amount`) but other constants remain hardcoded, and a pause mechanism exists only on the token contract, not on verifier, governance, compliance, or swap. The verifier registry's public-input aggregation, which used to loop individual point operations instead of using Soroban's native batched multi-scalar-multiplication call, has been fixed; see §6.1's Verifier registry entry for the real, measured result. The SDK and indexer are not finished either: the SDK's higher-level wrapper classes are still stubs, its wallet has no retry logic for a transient RPC failure, and witness generation runs single-threaded with no Web Worker offloading; the indexer is a single-operator SQLite reference implementation with no request authentication and no production database migration yet. §6.1 has the full account, component by component.
+Real improvement and optimization work has closed most of what used to be open here: the minimum shield amount is now a governance-timelocked parameter (`TokenAdminAction::MinShieldAmount`, live-demonstrated moving from 1000 to 500 without a redeploy), and a pause mechanism now exists on all five contracts — token, verifier, governance, compliance, and swap — each scoped to its own specific entrypoints, reachable through governance's own forwarding calls for the token and verifier (see `docs/GOVERNANCE.md`, "Reachability"). The verifier registry's public-input aggregation, which used to loop individual point operations instead of using Soroban's native batched multi-scalar-multiplication call, has been fixed; see §6.1's Verifier registry entry for the real, measured result. The SDK's higher-level wrapper classes (`ZKELLASwap`, `ZKELLACompliance`, `ZKELLAAuditor`) are real and wired to the live contracts, published as `@zkella/sdk`; still open: the wallet has no retry logic for a transient RPC failure, and witness generation runs single-threaded with no Web Worker offloading. The indexer now supports SQLite or PostgreSQL, with bearer-token authentication and rate limiting on its HTTP API — still open: a single-operator deployment model and no production database migration tooling. §6.1 has the full account, component by component.
 
 None of this has been through an independent, external security review yet, and no production, multi-party trusted-setup ceremony has been run; both remain required before any mainnet deployment. See §1.4 and §6 for the complete maturity boundary and remaining roadmap.
 
@@ -173,18 +173,16 @@ ZKELLA is not a private smart contract VM. It is an application-layer confidenti
 
 ### 1.4 Implementation maturity boundary
 
-The architecture in this document describes the intended protocol. The current repository implementation has closed most of the gaps this section used to describe, but is still deliberately narrower than the full target design:
+The architecture in this document describes the intended protocol. The current repository implementation now covers nearly all of it:
 
-- shield, transfer (2-in/2-out and 4-in/4-out), and unshield are all implemented with real on-chain Groth16/BN254 verification (not stubs), validated both locally and with real transactions on live Stellar Testnet — see `docs/POC_IMPLEMENTATION.md`,
-- the shielded swap contract (`contracts/swap`) genuinely moves value — real escrow via a `ShieldedToken::unshield` cross-call, real relayer-fronted liquidity, real payout and re-shield — and has been through a senior-auditor pass (three fixed issues) and a full live-Testnet run of its commit → execute → reveal-and-claim lifecycle with real circuit proofs at every stage,
-- the verifying-key registry is its own contract (`contracts/verifier`), separate from `contracts/governance` (which timelocks key rotation) — this split didn't exist when this document was first written,
-- `contracts/viewing_keys` (viewing-key commitment registry) and `contracts/compliance` (sanctions non-membership proofs, verified against the real verifier) are now two separate contracts, not one,
-- the persistent indexer (`indexer/`) is a real, running TypeScript/Node service — not design-only — validated against live Stellar Testnet event data (see `docs/POC_IMPLEMENTATION.md` and `indexer/README.md`),
-- the SDK's cryptographic core (`sdk/src/keys`, `sdk/src/notes`, `sdk/src/crypto`, `sdk/src/prover`) and the base wallet flows (`shield()`/`transfer()`/`unshield()` in `sdk/src/wallet/wallet.ts`) are real, exercised against real Soroban RPC — but the higher-level `ZKELLASwap` and `ZKELLACompliance` wrapper classes are implemented (`ZKELLAAuditor` and `ZKELLACompliance` are implemented, see `docs/VIEWING_KEYS.md`) (their methods return placeholder values; the underlying Soroban contracts they'd call are real, just not yet wired up at the SDK convenience-API layer),
-- all existing contract and SDK modules still require an *external, independent* security review, a real (non-dev, multi-party) trusted-setup ceremony, and further hardening before finalization — the audit work documented in this repository so far was performed by the team building the protocol, not a third party,
-- any deployed testnet addresses should be interpreted as evidence of a working implementation, not canonical, permanent, or production infrastructure — they are redeployed when circuit/contract changes require it (see `deployments.json` for the current set).
-
-This boundary is important for contributors: the repository should be read as a technical specification plus a substantially real, but not yet externally audited or production-hardened, implementation — not as a finished protocol release.
+- shield, transfer (2-in/2-out and 4-in/4-out), and unshield are all implemented with real on-chain Groth16/BN254 verification (not stubs), validated both locally and with real transactions on live Stellar Testnet — see `docs/TRANCHE1_DELIVERABLES.md`,
+- the shielded swap contract (`contracts/swap`) genuinely moves value — real escrow via a `ShieldedToken::unshield` cross-call, real relayer-fronted liquidity, real payout and re-shield — and has been through two security passes (including a critical fund-destruction fix in the output-note binding) and a full live-Testnet run of its commit → execute → reveal-and-claim lifecycle with real circuit proofs at every stage,
+- the verifying-key registry is its own contract (`contracts/verifier`), separate from `contracts/governance`, which timelocks key rotation and also forwards the only reachable path to pause or unpause the verifier and token contracts (see `docs/GOVERNANCE.md`, "Reachability"),
+- `contracts/viewing_keys` (viewing-key commitment registry, with epoch-based revocation by rotation) and `contracts/compliance` (sanctions non-membership proofs, verified against the real verifier) are two separate contracts,
+- the persistent indexer (`indexer/`) is a real, running TypeScript/Node service backed by SQLite or PostgreSQL, validated against live Stellar Testnet event data and a real outage drill (see `docs/RUNBOOK.md`),
+- the SDK's cryptographic core (`sdk/src/keys`, `sdk/src/notes`, `sdk/src/crypto`, `sdk/src/prover`), the base wallet flows, and the higher-level `ZKELLASwap`, `ZKELLACompliance`, and `ZKELLAAuditor` wrapper classes are all real and wired to the live contracts — published as `@zkella/sdk` on npm,
+- what's still ahead of a mainnet release: an *external, independent* security review (every pass to date has been performed by the team building the protocol), a real multi-party trusted-setup ceremony per circuit, and admin multisig custody — see the README's "Roadmap to mainnet",
+- any deployed Testnet address should be read as evidence of a working implementation, not permanent infrastructure — stacks are redeployed when circuit/contract changes require it (see `deployments.json` for the current set).
 
 ### 1.5 Technical stack detail
 
@@ -517,11 +515,11 @@ Finality and recovery assumptions:
 
 #### 1.7.7 Deployment topology on Stellar
 
-Planned testnet deployment:
+Testnet deployment (done, repeated across three phases as the contracts matured — see `deployments.json` and `docs/TESTNET_DEPLOYMENT.md`):
 
-- deploy PoC and reviewed testnet ShieldedToken contracts to Stellar Testnet,
+- deploy the full contract set to Stellar Testnet,
 - publish contract IDs, WASM hashes, verifier key versions, and supported asset IDs,
-- operate a public testnet indexer,
+- operate a Testnet indexer,
 - document known limitations and resource-budget findings for each deployment.
 
 Planned mainnet deployment:
@@ -611,7 +609,7 @@ Key contract interfaces (real, current):
 
 The contract stores a persistent Merkle root and incremental tree state for note commitments.
 
-**Why transfer's input/output count is fixed, not variable.** `transfer()` takes exactly 2 input notes and produces exactly 2 outputs (`circuits/transfer_2in2out/transfer.circom` hard-codes `N_IN = N_OUT = 2`); `transfer4()` is a separate, similarly fixed 4-in/4-out circuit. This is a deliberate shielded-pool design pattern (the same one Zcash Sapling uses), not an arbitrary limitation of the current PoC, for two reasons:
+**Why transfer's input/output count is fixed, not variable.** `transfer()` takes exactly 2 input notes and produces exactly 2 outputs (`circuits/transfer_2in2out/transfer.circom` hard-codes `N_IN = N_OUT = 2`); `transfer4()` is a separate, similarly fixed 4-in/4-out circuit. This is a deliberate shielded-pool design pattern (the same one Zcash Sapling uses), not an arbitrary implementation limitation, for two reasons:
 
 - **Uniform transaction shape.** Every `transfer()` call looks identical on-chain regardless of how many notes the sender actually holds or is consolidating. A variable-arity circuit would make transaction structure itself leak information — an observer could infer how fragmented a user's holdings are just from the shape of their calls, which a note-based privacy design is specifically trying to avoid.
 - **Circuit cost.** A variable number of inputs requires padding/dummy notes and conditional in-circuit logic for "was this slot used," which adds constraints and complexity beyond what a fixed shape needs.
@@ -640,11 +638,13 @@ Key methods:
 
 Key methods:
 
-- `initialize(admin, verifier)`
-- `queue_vk_update(circuit, new_vk)` / `execute_vk_update(circuit)` / `cancel_vk_update(circuit)` — 7-day-timelocked, for *both* first-time registration and replacement of an already-registered key. There used to be a separate `register_vk` offering instant, untimelocked first-time activation; removed after an external review found it let a malicious VK for *any* circuit — even a brand-new one — immediately forge proofs against value already resting in `ShieldedToken`'s shared pool via an already-legitimate circuit. `execute_vk_update` now picks `register_verifying_key` or `update_verifying_key` on the verifier depending on whether the circuit already has a key (`docs/POC_IMPLEMENTATION.md`'s "Update: external audit").
+- `initialize(admin, verifier, guardian, token)`
+- `queue_vk_update(circuit, new_vk)` / `execute_vk_update(circuit)` / `cancel_vk_update(circuit)` — 7-day-timelocked (60 ledgers under the `testnet-fast-timelock` feature), for *both* first-time registration and replacement of an already-registered key. There used to be a separate `register_vk` offering instant, untimelocked first-time activation; removed after an external review found it let a malicious VK for *any* circuit — even a brand-new one — immediately forge proofs against value already resting in `ShieldedToken`'s shared pool via an already-legitimate circuit. `execute_vk_update` now picks `register_verifying_key` or `update_verifying_key` on the verifier depending on whether the circuit already has a key.
+- `queue_token_action(action)` / `execute_token_action()` — the same timelock pattern for `TokenAdminAction::MinShieldAmount`/`AssetApproval`/`Relayer`.
+- `pause_verifier()` / `unpause_verifier()` / `pause_token()` / `unpause_token()` — forwarding calls, admin-gated, not timelocked; the only reachable path to pause either contract, since both name governance's own contract address as their admin (see `docs/GOVERNANCE.md`, "Reachability").
 - `transfer_admin(new_admin)` / `accept_admin()` — two-step admin handover
 
-**Guardian role (planned, not yet implemented).** `cancel_vk_update` currently requires the same single admin key as `queue_vk_update`. If that key is compromised, the party that queues a malicious verifying-key rotation is the only party able to cancel it, so the seven-day delay gives outside observers advance warning but gives the team no actual on-chain recourse. The planned fix adds a distinct `guardian` address, separate from `admin`, with authority to call `cancel_vk_update` on its own, a small, contained change to this contract's storage and auth checks, not a new contract or architecture. Moving `admin` itself to a classic Stellar multisig account is a deployment-time decision available today with no code change at all, since `require_auth()` on a classic multisig account already enforces that account's own signer/threshold policy; it is deferred to the mainnet deployment rather than built here, since it changes nothing about this contract's code. A fuller custom smart-account with on-chain proposal and voting logic (the pattern OpenZeppelin's own Stellar contracts package implements) was considered and deliberately deferred as disproportionate for a small team at Testnet stage, worth reconsidering only if operational needs grow after mainnet.
+**Guardian role.** A distinct `guardian` address, separate from `admin`, can call `guardian_cancel_vk_update(circuit)` or `guardian_cancel_token_action()` to cancel a queued action on its own — including while the contract is paused — without needing the admin key. This closes the gap where a compromised admin key queuing a malicious action would otherwise be the only party able to cancel it. Moving `admin` itself to a classic Stellar multisig account is a deployment-time decision available today with no code change at all, since `require_auth()` on a classic multisig account already enforces that account's own signer/threshold policy; it is deferred to the mainnet deployment rather than built here (see the README's "Roadmap to mainnet"). A fuller custom smart-account with on-chain proposal and voting logic (the pattern OpenZeppelin's own Stellar contracts package implements) was considered and deliberately deferred as disproportionate for a small team at Testnet stage, worth reconsidering only if operational needs grow after mainnet.
 
 ### 2.4 Viewing key registry contract
 
@@ -711,14 +711,14 @@ Primary functions, and their current status:
 - transaction assembly and submission to Soroban RPC for `shield()`/`transfer()`/`unshield()` — real (`sdk/src/wallet/wallet.ts`),
 - wallet sync via the indexer — real (`sdk/src/indexer`),
 - off-chain relayer price discovery for shielded swaps (RFQ) — real (`sdk/src/relayer/quote.ts`): `SwapQuoteClient.requestQuote()` and the `RelayerQuoteHandler` type specify the wire protocol closing `docs/TECHNICAL_SPEC.md` §12.4's Known Limitation 1; `quoteRespectsSlippage()` enforces the same floor `circuits/swap/swap_fairness.circom` checks on-chain, so a wallet acting only on quotes this module validates cannot be misled into a swap that would fail its own fairness proof later — see the module's own doc comment for the full security model, including what it deliberately does not guarantee (no execution reservation for the quoting relayer),
-- higher-level swap (`ZKELLASwap`), compliance (`ZKELLACompliance`), and auditor (`ZKELLAAuditor`) wrapper classes are implemented; the swap and compliance paths were run live on Testnet, and the auditor is described in `docs/VIEWING_KEYS.md`: their methods exist and type-check but return placeholder values rather than calling the real, already-working contracts and provers underneath them.
+- higher-level swap (`ZKELLASwap`), compliance (`ZKELLACompliance`), and auditor (`ZKELLAAuditor`) wrapper classes — real, calling the actual deployed contracts and provers, each confirmed by a real, verified live Testnet transaction (see `docs/TRANCHE3_DELIVERABLES.md`), not stubs or placeholder returns.
 
 Primary SDK modules:
 
 - `sdk/src/keys`, `sdk/src/notes`, `sdk/src/crypto`, `sdk/src/prover`
-- `sdk/src/wallet` (`wallet.ts` real; `swap.ts`/`auditor.ts` stubs)
+- `sdk/src/wallet` (`wallet.ts`, `swap.ts`, `auditor.ts` — all real)
 - `sdk/src/relayer` (`quote.ts` real — RFQ client/handler shape, not a full relayer service)
-- `sdk/src/compliance` (stub)
+- `sdk/src/compliance` (`compliance.ts` — real, wired to the deployed `contracts/compliance`)
 - `sdk/src/indexer`
 
 ### 2.8 Persistent indexer and wallet sync
@@ -749,9 +749,9 @@ This is now a real, running reference implementation (`indexer/`, Node/TypeScrip
 - `POST /nullifiers/batch`
 - `GET /health`
 
-Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail, and `docs/TECHNICAL_SPEC.md` §13.3 for the planned production deployment target (dual-provider RPC failover, AWS ECS Fargate, RDS PostgreSQL Multi-AZ, and a second operator in a different region or cloud provider). An operational runbook now exists (`docs/RUNBOOK.md`, first version, not yet exercised in a real incident) and covers the indexer alongside every other component.
+Not yet covered: horizontal scaling and multiple independent operators — see `indexer/README.md` for the current status in detail, and `docs/TECHNICAL_SPEC.md` §13.3 for the planned production deployment target (dual-provider RPC failover, AWS ECS Fargate, RDS PostgreSQL Multi-AZ, and a second operator in a different region or cloud provider). An operational runbook covers the indexer alongside every other component (`docs/RUNBOOK.md`), exercised in two drills, one of them a real indexer outage with a real alert delivered and confirmed by a person — not just a written procedure.
 
-### 2.9 PoC implementation versus target architecture
+### 2.9 Current implementation versus target architecture
 
 The repository intentionally separates implemented material from the full target architecture. Most of the gap this table used to describe has closed:
 
@@ -945,37 +945,36 @@ Steps:
 
 ## 6. Implementation lifecycle and remaining roadmap
 
-The target architecture is delivered through a staged lifecycle. The repository has moved past the first stage — see §1.4 and §2.9 above for exactly what's real — and sits between the first two:
+The target architecture is delivered through a staged lifecycle. The repository is past the first two stages — see §1.4 and §2.9 above for exactly what's real — and sits at the third, ahead of a mainnet release:
 
 ```
 +------------------+     +------------------+     +------------------+
-| PoC              | --> | Reviewed testnet  | --> | Production-ready |
-| (fully passed)   |     | (repo is here)    |     | - final contracts|
+| Design           | --> | Testnet-proven    | --> | Production-ready |
+| (closed)         |     | (repo is here)    |     | - final contracts|
 +------------------+     +------------------+     +------------------+
                                    |                         |
                                    v                         v
                           real proofs, real value      deploy after
-                          movement, live-Testnet        completed review
-                          evidence — not yet an          + real ceremony
-                          external review
+                          movement, live-Testnet        external review
+                          evidence, internal            + real ceremony
+                          security review
 ```
 
-What moved the repository past "PoC": real on-chain Groth16 verification for shield/transfer/unshield (not placeholders), a real, audited, live-Testnet-run shielded swap lifecycle, a real running indexer, and a real SDK cryptographic/proving core — all with live Stellar Testnet transaction evidence (`docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`).
+What got the repository here: real on-chain Groth16 verification for shield/transfer/unshield (not placeholders), a real, audited, live-Testnet-run shielded swap lifecycle, a real running indexer, and a real SDK cryptographic/proving core wired end-to-end — all with live Stellar Testnet transaction evidence (`docs/TRANCHE1_DELIVERABLES.md` through `docs/TRANCHE3_DELIVERABLES.md`, `docs/TESTNET_DEPLOYMENT.md`).
 
 What's still needed to reach "Production-ready", at a high level:
 
 - an *external*, independent security review of every contract and circuit — everything to date, including the audit pass described in §1.4, was done by the team building the protocol, not a third party,
 - a real (non-dev), multi-party trusted-setup ceremony per circuit — every proof and verifying key in this repository so far comes from a local, single-contributor dev ceremony,
-- the SDK's higher-level wrapper classes (`ZKELLASwap`, `ZKELLACompliance`, `ZKELLAAuditor`) are implemented and run live on Testnet (see §2.7),
-- indexer production hardening: horizontal scaling and multiple independent operators (still open — see §2.8); a first-version operational runbook now exists (`docs/RUNBOOK.md`) but is still unproven by real incident use,
+- indexer production hardening: horizontal scaling and multiple independent operators (still open — see §2.8); the operational runbook (`docs/RUNBOOK.md`) has been exercised in two drills, including a real indexer outage, but not yet a real incident at production scale,
 - resource profiling at production scale (current measurements are from a single local host environment plus a handful of live-Testnet transactions, not sustained load),
-- finalized operational controls for verifier-key rotation, pause/unpause, relayer authorization, and deployment monitoring beyond what's already implemented.
+- admin multisig custody and finalized operational controls for verifier-key rotation, pause/unpause, and relayer authorization beyond the single-key admin this repository runs today.
 
 ### 6.1 Component-by-component: what is built and what remains
 
 The bullets above are the summary. This section is the detail: for each component, what is real and already exercised on live Stellar Testnet (with the transaction as evidence, not just a claim), against what specific, named work is still required. Every transaction hash below is a genuine, independently-verifiable Testnet transaction — see `docs/TESTNET_DEPLOYMENT.md` and `docs/POC_IMPLEMENTATION.md` for the complete, chronological record this section draws from.
 
-**ShieldedToken — shield.** Built and proven live: `shield()` accepts any SEP-41 asset (the code is asset-generic, not XLM-specific — see `address_to_field_bytes` in `contracts/token/src/lib.rs`), validates the amount and encrypted-note length, computes a Poseidon2 commitment, inserts it into the Merkle tree, and only then pulls the real funds into custody via a standard SEP-41 token transfer, deliberately ordered last (checks-effects-interactions) so a malicious or reentrant token cannot exploit partially-committed state. Two real transactions confirm this end-to-end against the Native XLM Stellar Asset Contract: https://stellar.expert/explorer/testnet/tx/0722df0e01bd81ee256fb317c44a97a4e713c19fe019e27460216887fb7cacee and https://stellar.expert/explorer/testnet/tx/bbeecaeaba30517bd3a2cbc4c2f7512fd9f57b3e3b0e28b9f3bcb2998a55e945. Remaining: `MIN_SHIELD_AMOUNT` is a hardcoded Rust constant, not a governance-settable parameter, so changing it means a redeploy; no non-native SEP-41 asset has actually been shielded live yet, only native XLM, which has no issuer and therefore no clawback right, so the question of what happens to a shielded note if a real issuer claws back the contract's own custodied balance after deposit is unresolved in code; and shield handles exactly one deposit per call, with no batched multi-deposit entrypoint.
+**ShieldedToken — shield.** Built and proven live: `shield()` accepts any SEP-41 asset (the code is asset-generic, not XLM-specific — see `address_to_field_bytes` in `contracts/token/src/lib.rs`), validates the amount and encrypted-note length, computes a Poseidon2 commitment, inserts it into the Merkle tree, and only then pulls the real funds into custody via a standard SEP-41 token transfer, deliberately ordered last (checks-effects-interactions) so a malicious or reentrant token cannot exploit partially-committed state. Two real transactions confirm this end-to-end against the Native XLM Stellar Asset Contract: https://stellar.expert/explorer/testnet/tx/0722df0e01bd81ee256fb317c44a97a4e713c19fe019e27460216887fb7cacee and https://stellar.expert/explorer/testnet/tx/bbeecaeaba30517bd3a2cbc4c2f7512fd9f57b3e3b0e28b9f3bcb2998a55e945. Since Tranche 3, `MIN_SHIELD_AMOUNT` is a governance-settable parameter (`TokenAdminAction::MinShieldAmount`), changed through the timelock without a redeploy — live-demonstrated on the current stack (queued and executed, `token.min_shield_amount()` confirmed to move from 1000 to 500; see `docs/TRANCHE3_DELIVERABLES.md`). Remaining: no non-native SEP-41 asset has actually been shielded live yet, only native XLM, which has no issuer and therefore no clawback right, so the question of what happens to a shielded note if a real issuer claws back the contract's own custodied balance after deposit is unresolved in code; and `shield_batch` exists for multiple deposits in one call, but no live Testnet transaction has shielded a non-native asset through either entrypoint yet.
 
 **ShieldedToken — Merkle tree.** Built and proven live: incremental insertion, root computation, and shield/note-commitment event emission all work, exercised at https://stellar.expert/explorer/testnet/tx/23d681296467f36021b2adca87d8f648acec821d1db34d37950a23816b28a711 and https://stellar.expert/explorer/testnet/tx/041460cf1932384a8ada14aa36801f314bcfbb1e1a27ce7582ce72c216f32f60. Remaining: the contract declares a `MerkleTreeFull` error for when the tree reaches capacity, and the insert paths now check the leaf count against it; per-insert cost is measured only up to a few hundred leaves (the per-transaction 400-entry footprint limit prevents a single-transaction test at thousands; see `merkle_insert_cost_as_tree_depth_grows`), not the thousands where the fixed 32-level path starts to matter.
 
@@ -1084,7 +1083,7 @@ This is a credible architectural direction, grounded in a live precedent and reu
 - `docs/TECHNICAL_SPEC.md` contains full protocol details and contract interfaces.
 - `docs/CIRCUIT_SPEC.md` contains circuit-level design and proof structure.
 - `docs/INTEGRATION_GUIDE.md` describes SDK and integrator workflows.
-- `docs/POC_IMPLEMENTATION.md` describes the dedicated PoC/current implementation status separately from the full architecture.
+- `docs/POC_IMPLEMENTATION.md` (filename retained for history) and `docs/TRANCHE1_DELIVERABLES.md`–`docs/TRANCHE3_DELIVERABLES.md` describe the implementation status against each phase's original success criteria, separately from this full architecture.
 - `docs/TESTNET_DEPLOYMENT.md` is the current live-Testnet address and transaction record.
 
 ### 9.2 Documentation tooling note

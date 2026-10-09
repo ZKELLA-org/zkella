@@ -126,5 +126,5 @@ running concurrently, and a live alerting pipeline wired to `/metrics` (see
 "Multi-operator interface" above for what's specified vs. what's actually run). Dual-provider
 RPC failover and Multi-AZ managed hosting are described in `docs/TECHNICAL_SPEC.md` §13.3 —
 planned, mainnet-stage work, not part of this tranche. An operational runbook covering this
-service alongside the rest of the stack exists at `docs/RUNBOOK.md` (not yet exercised in a
-real incident).
+service alongside the rest of the stack exists at `docs/RUNBOOK.md`, exercised in two drills,
+including a real indexer outage.

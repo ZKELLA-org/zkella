@@ -1,8 +1,8 @@
 # ZKELLA — Operational Runbook and Incident Response
 
-This is the operational runbook referenced as an open item throughout `docs/POC_IMPLEMENTATION.md`, `docs/ARCHITECTURE.md`, `README.md`, and the roadmap. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
+This is the operational runbook referenced throughout `docs/ARCHITECTURE.md`, `README.md`, and the roadmap. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
 
-**Status of this document itself:** first version, written against the current soft-PoC deployment (single team, single indexer operator, Stellar Testnet only). It has not yet been exercised in a real incident or run through a drill. Treat it as a starting operational baseline, not a mature, battle-tested process — see "Known limitations" at the end.
+**Status of this document itself:** written against the current Testnet deployment (single team, single indexer operator, Stellar Testnet only), and exercised in two drills — one with injected faults, one a real indexer outage with a real alert delivered and confirmed by a person (see "Drill record" below). Treat it as a working operational baseline, proven once at small scale, not yet a mature process proven at production scale — see "Known limitations" at the end.
 
 ---
 
@@ -179,22 +179,22 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 This runbook describes a real but early operational posture, not a mature one. Specifically:
 
 - **Single admin key per contract**, not multi-sig, except for `governance`'s VK-update timelock. A single admin key compromise is a real, unmitigated risk for every contract except the specific VK-rotation path — see Category 3 above for exactly what is and isn't exposed by that.
-- **No automated alerting or paging.** Every check in §2 and §5 is manual today. Wiring these into an actual alerting pipeline (e.g. a monitoring service watching the endpoints and thresholds described above) is planned, not done.
+- **Alerting exists but is minimal.** The scheduled health check (below) posts a plain-text failure message to a single `ntfy.sh` channel — real and running, not a placeholder — but there is no paging, escalation, or on-call rotation behind it; a dropped notification has no backstop beyond `LOG_FILE`.
 - **No indexer failover.** One process, one SQLite file, no secondary instance, and a single RPC provider for event ingestion. `docs/ARCHITECTURE.md` and `docs/POC_IMPLEMENTATION.md` describe multi-operator indexing as target architecture; `docs/TECHNICAL_SPEC.md` §13.3 sets out the planned production design (dual-provider RPC failover, managed Postgres with Multi-AZ, a second operator in a different region or cloud provider) — none of it is built yet.
 - **A compromised admin key is still a real, largely unmitigated risk**, except for `governance`'s own VK/token-admin timelock (where a separate guardian key can cancel a malicious queued update without needing the admin key at all). None of the five contracts use a multisig admin — see Category 3 for what each contract's pause does and does not protect against.
-- **This document is untested.** It has not been exercised in a real incident or a scheduled drill. Treat every procedure above as a first draft to be corrected by the first real use, not a proven playbook.
+- **Exercised twice, not battle-tested.** This document has been run through two drills (see "Drill record" below), one of them a real incident, not simulated. That is still a small sample — treat the procedures above as validated once at small scale, not a playbook proven across many incidents or at production scale.
 
 ## Testnet stack health check
 
 `scripts/testnet_health_check.sh` checks the Soroban RPC, the indexer (when `INDEXER_URL` is set), and the deployed contract state recorded under `testnet_final` in `deployments.json`: governance's timelock value and the token's approval of the native asset. Any failure is appended to `LOG_FILE` and posted to `NOTIFY_WEBHOOK` if that is set; the script exits non-zero.
 
-Schedule it with cron:
+Scheduled with cron, every 15 minutes, on the operating host for the current stack:
 
 ```
 */15 * * * * cd /path/to/zkella && NOTIFY_WEBHOOK=... INDEXER_URL=... scripts/testnet_health_check.sh
 ```
 
-No notification destination is configured in this repository. Set `NOTIFY_WEBHOOK` to the team's chosen channel before relying on alerts.
+This is live today, not a suggested setup — it posts to a real `ntfy.sh` channel on failure (see the second drill below for a real alert delivered through it) and appends every failure to `LOG_FILE`. No notification destination is committed to this repository, since `NOTIFY_WEBHOOK` is operator-specific; set your own before relying on alerts for a different deployment.
 
 ## Drill record
 

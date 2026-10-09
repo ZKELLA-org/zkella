@@ -1,12 +1,18 @@
-# ZKELLA Protocol
+<div align="center">
 
-[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg?branch=compliance-governance-security-testnet-release)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/%40zkella%2Fsdk.svg)](https://www.npmjs.com/package/@zkella/sdk)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+# ZKELLA Protocol
 
 **ZK-native confidential finance infrastructure for the Stellar Soroban ecosystem.**
 
-Shielded balances, confidential transfers, auditor viewing keys, sanctions-list non-membership proofs, a commit-reveal private swap, timelocked governance, and the indexer and SDK needed to use all of it — live on Stellar Testnet with real Groth16 proofs at every step, not simulated ones.
+Shielded balances · Confidential transfers · Auditor viewing keys · Sanctions non-membership proofs · Private swap · Timelocked governance
+
+[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg?branch=compliance-governance-security-testnet-release)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40zkella%2Fsdk.svg)](https://www.npmjs.com/package/@zkella/sdk)
+[![Tests](https://img.shields.io/badge/tests-425%20passing-brightgreen)](#status-at-a-glance)
+[![Network](https://img.shields.io/badge/network-Stellar%20Testnet-7D00FF)](#live-testnet-deployment)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+</div>
 
 ---
 
@@ -22,7 +28,8 @@ Shielded balances, confidential transfers, auditor viewing keys, sanctions-list 
 - [Repository structure](#repository-structure)
 - [Development](#development)
 - [Documentation](#documentation)
-- [Security and scope](#security-and-scope)
+- [Roadmap to mainnet](#roadmap-to-mainnet)
+- [Security](#security)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -30,11 +37,13 @@ Shielded balances, confidential transfers, auditor viewing keys, sanctions-list 
 
 ## Overview
 
-Stellar is transparent by default. Protocol 25 (X-Ray) put BN254 pairing, Poseidon hashing, and Groth16 verification into the Soroban host — the cryptographic primitives needed for confidential finance now exist on-chain. What didn't exist was the infrastructure built on top of them: a shielded token, a compliance layer regulators can actually use, a way to recover wallet state past Stellar RPC's retention window, a private swap, and the governance to operate all of it safely over time.
+Stellar is transparent by default. Protocol 25 (X-Ray) put BN254 pairing, Poseidon hashing, and Groth16 verification into the Soroban host — the cryptographic primitives for confidential finance now exist on-chain. ZKELLA is the infrastructure built on top of them: a shielded token, a compliance layer regulators can actually use, an indexer that recovers wallet state past Stellar RPC's short retention window, a private swap, and the timelocked governance to operate all of it safely over time.
 
-ZKELLA is that infrastructure: eight Soroban contracts, five Circom circuits, a TypeScript SDK, and a reference indexer, developed and proven out across three funded tranches. Every claim below is backed by a real transaction on Stellar Testnet or a real, currently-passing test — linked, not just asserted.
+Eight Soroban contracts, five Circom circuits, a TypeScript SDK, and a reference indexer — built and hardened across three development phases, each ending in a real deployment to Stellar Testnet rather than a local-only milestone. Every claim in this README is backed by a real transaction or a real, currently-passing test, linked rather than asserted — see [`docs/TRANCHE1_DELIVERABLES.md`](docs/TRANCHE1_DELIVERABLES.md) through [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md) for the full record.
 
-**Scope.** This is a Testnet deployment, not a mainnet launch. The circuits' trusted setup is a single-contributor dev ceremony, there is no admin multisig, and the security review so far is an internal six-agent self-audit — not a third-party one. See [Security and scope](#security-and-scope) for the precise boundary.
+**What sets it apart.** Commit-reveal private swaps exist elsewhere — Railgun's Relay Adapt on Ethereum, Penumbra's protocol-native batched DEX, Aztec Connect before its 2024 shutdown — but none of that is native to Stellar/Soroban today. ZKELLA's swap reuses `ShieldedToken`'s own shield/unshield circuits directly instead of a separate bridge contract, and a relayer fronts output liquidity rather than the contract calling a DEX itself (see [`docs/TECHNICAL_SPEC.md`](docs/TECHNICAL_SPEC.md) §9). Combined with viewing-key-based selective disclosure and on-chain sanctions non-membership proofs, it's positioned as compliance-aware infrastructure other Stellar builders can wrap, not a generic shielded-token clone.
+
+**Scope.** Testnet only — see [Roadmap to mainnet](#roadmap-to-mainnet) for exactly what stands between here and a mainnet release.
 
 ---
 
@@ -65,17 +74,21 @@ npm install @zkella/sdk@0.1.0
 ```js
 const { ZKELLAKeys, ZKELLAWallet, TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC } = require('@zkella/sdk')
 
-const keys = ZKELLAKeys.generate()
+const keys = await ZKELLAKeys.fromSeed(mySeed) // or ZKELLAKeys.generate()
 const wallet = new ZKELLAWallet({
-  keys,
-  rpcUrl: TESTNET_SOROBAN_RPC,
-  tokenContract: TESTNET_CONTRACTS.token,
+  keys: keys.spendingKey,
+  network: 'testnet',
+  sorobanRpc: TESTNET_SOROBAN_RPC,
   indexerUrl: 'http://localhost:8080', // run one from indexer/, see indexer/README.md
-  shieldCircuit: { wasm: 'circuits/shield/build/shield_js/shield.wasm', zkey: 'circuits/shield/build/shield.zkey' },
+  tokenAddress: TESTNET_CONTRACTS.token,
+  stellarSecret: 'S...', // the Stellar account that signs and pays for transactions
+  shieldCircuit: { wasmPath: 'circuits/shield/build/shield_js/shield.wasm', zkeyPath: 'circuits/shield/build/shield.zkey' },
 })
 
 await wallet.sync()
-const { submit } = await wallet.shield({ asset: 'native', amount: 10_000_000n })
+// asset is a SEP-41 contract address, e.g. native XLM's own Stellar Asset Contract:
+//   stellar contract id asset --asset native --network testnet
+const { submit } = await wallet.shield({ asset: nativeAssetContract, amount: 10_000_000n })
 await submit()
 ```
 
@@ -255,16 +268,28 @@ CI (`.github/workflows/ci.yml`) runs all of this on every push to `main` and to 
 
 ---
 
-## Security and scope
+## Roadmap to mainnet
 
-This is a Testnet-proven infrastructure stack, not an audited, mainnet-ready release. Specifically, and honestly:
+**Shipped**
 
-- **No third-party audit.** Every security pass to date — including the multi-agent self-audit behind [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md), which found and fixed a critical swap fund-destruction path and an unreachable-pause gap across two contracts — was performed by the team building the protocol, not an independent third party.
-- **Dev-only trusted setup.** The Groth16 proving keys behind every circuit come from a single-contributor local ceremony (`/dev/urandom` entropy), suitable for Testnet and CI, explicitly not for production. A real multi-party ceremony per circuit is required before mainnet.
-- **No admin multisig.** Governance's own admin and the swap/compliance admin are single keys on Testnet today; multisig custody is out of scope for this release.
-- **Mainnet is out of scope.** Every address, transaction, and deployment referenced in this repository is Testnet.
+- [x] Shielded token, governance, compliance, viewing keys, and shielded swap — eight contracts, 237 Rust + 188 JS/TS tests, all passing
+- [x] Live, repeated Stellar Testnet deployments with real Groth16 proofs at every step, not simulated ones
+- [x] Internal six-agent security pass over all three phases — found and fixed a critical swap fund-destruction path and an unreachable contract-pause gap, both now live-verified fixed on Testnet (see [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md))
+- [x] `@zkella/sdk` published to npm, with a running indexer, CI, fuzzing, and an operational runbook exercised in two drills (one a real indexer outage)
 
-Report vulnerabilities privately, not as a public issue — see [`SECURITY.md`](SECURITY.md) for the disclosure process.
+**Ahead**
+
+- [ ] Independent third-party security audit — every review to date has been performed by the team building the protocol
+- [ ] A real multi-party trusted-setup ceremony per circuit — the Groth16 proving keys in this repository come from a single-contributor dev ceremony, correct for Testnet/CI, not for production
+- [ ] Admin multisig custody — governance, swap, and compliance currently run on single-key admins
+- [ ] On-chain DEX-routed swap execution, as an alternative to relayer-fronted liquidity (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §1.7.5)
+- [ ] A browser-based reference wallet application
+
+---
+
+## Security
+
+Report vulnerabilities privately, not as a public GitHub issue — see [`SECURITY.md`](SECURITY.md) for the disclosure process and scope. No third-party audit has been completed yet; see [Roadmap to mainnet](#roadmap-to-mainnet) above.
 
 ---
 

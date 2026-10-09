@@ -4,7 +4,7 @@
 **Status:** Draft  
 **Network:** Stellar Soroban (Protocol 25+)
 
-**Implementation maturity:** this specification describes the target ZKELLA protocol. The current repository contains only a PoC implementation foundation. Existing contracts and SDK code are not final versions and must be reviewed, profiled, hardened, and improved before they are considered production-ready.
+**Implementation maturity:** this specification describes the target ZKELLA protocol. The current repository implements nearly all of it, Testnet-deployed and tested (237 Rust + 188 JS/TS tests), across three development phases — see `docs/TRANCHE1_DELIVERABLES.md` through `docs/TRANCHE3_DELIVERABLES.md`. What remains before mainnet: an external, independent security review, a production multi-party trusted-setup ceremony, and admin multisig custody — see the README's "Roadmap to mainnet".
 
 ---
 
@@ -1075,7 +1075,7 @@ This full lifecycle has been run end-to-end on live Stellar Testnet with real Gr
 
 ## 10. Viewing Key and Compliance Layer
 
-**This section is target design, not yet implemented at the SDK level.** The underlying contracts are real (`contracts/viewing_keys` for commitment registration, `contracts/compliance` for verified sanctions non-membership proofs — see §6.3–6.4), but none of the SDK-side pseudocode below (`generateComplianceProof`, `deriveAddress`, `proveNonMembership`, the `SanctionsList` interface) exists in `sdk/src/` today; the closest real code is the `ZKELLACompliance`/`ZKELLAAuditor` wrapper classes described in §11.1, which are themselves still stubs. Treat this section as illustrating the intended shape of that future SDK layer, not a description of working code.
+**The underlying capability described in this section is real and live on Testnet.** `contracts/viewing_keys` (commitment registration) and `contracts/compliance` (verified sanctions non-membership proofs) are both real contracts — see §6.3–6.4 — and the SDK's `ZKELLACompliance` and `ZKELLAAuditor` wrapper classes call them for real: `ZKELLACompliance.generateNonSanctionedProof()`/`publishProof()` and `ZKELLAAuditor.sync()`/`transactionHistory()` (see `docs/SDK_DEVELOPER.md` for the exact API). The pseudocode below (`generateComplianceProof`, `proveNonMembership`, the `SanctionsList` interface) is illustrative of the underlying design rather than a literal transcript of the SDK's method names — `deriveAddress` itself is real, on `ZKELLAKeys` (`sdk/src/keys/keys.ts`).
 
 ### 10.1 Auditor Workflow
 
@@ -1153,7 +1153,7 @@ async function generateComplianceProof(
 
 ### 11.1 Package Structure
 
-The package is named `@zkella/sdk` (`sdk/package.json`) but has not been published to the npm registry yet — it's consumed today via local TypeScript imports within this monorepo (`sdk/src/...`). The real structure, current as of this writing:
+The package is named `@zkella/sdk` and is published to the npm registry as `@zkella/sdk@0.1.0` (`sdk/package.json`); see `docs/SDK_RELEASE.md` for the release process. The real structure, current as of this writing:
 
 ```
 sdk/
@@ -1162,18 +1162,19 @@ sdk/
 │   ├── notes/         # Real: note construction, commitment/nullifier/value-commit computation, ECDH encryption
 │   ├── crypto/         # Real: Poseidon2 (circomlibjs) and BN254 G1 ops (ffjavascript) backing keys/notes
 │   ├── prover/         # Real: snarkjs-based Groth16 proof generation for shield, transfer, transfer4, unshield, swapFairness
+│   ├── relayer/         # Real: quote.ts — RFQ client/handler shape for relayer price discovery
 │   ├── wallet/
 │   │   ├── wallet.ts    # Real — ZKELLAWallet: shield()/transfer()/unshield() build real proofs and submit real signed Soroban transactions
-│   │   ├── swap.ts      # Stub — ZKELLASwap's methods return placeholders; the real contracts/swap contract works, this wrapper isn't wired to it yet
-│   │   └── auditor.ts   # Stub — ZKELLAAuditor.sync() never actually decrypts anything
-│   ├── compliance/      # Stub — ZKELLACompliance's proof generation/publishing are placeholders
+│   │   ├── swap.ts      # Real — ZKELLASwap: commitSwap()/revealAndClaim()/cancelSwap() call the real contracts/swap contract
+│   │   └── auditor.ts   # Real — ZKELLAAuditor.sync() decrypts real notes from a granted viewing key, resuming from the last synced ledger
+│   ├── compliance/      # Real — ZKELLACompliance.generateNonSanctionedProof()/publishProof() call the real contracts/compliance contract
 │   ├── indexer/         # Real — IndexerClient, matches the real indexer/ service's HTTP API
 │   └── types.ts
 ```
 
 There is no `sdk/src/circuits/` or `sdk/src/contracts/` directory — compiled circuit artifacts live under the top-level `circuits/<name>/build/` (referenced by path from `sdk/src/prover/*`), and there are no generated Soroban contract-client bindings for TypeScript yet; `sdk/src/wallet/wallet.ts` builds `ScVal`s by hand (see its `structScVal`/`vecScVal` helpers).
 
-### 11.2 Core API (real methods marked; stubs marked explicitly)
+### 11.2 Core API
 
 ```typescript
 // Key management — real
@@ -1224,15 +1225,14 @@ await submitUnshield()
 // Viewing key export — real
 const vkExport = wallet.exportViewingKey()
 
-// Shielded swap — STUB: contracts/swap itself is real, audited, and has been
-// run end-to-end on live Testnet (see docs/POC_IMPLEMENTATION.md), but the
-// ZKELLASwap wrapper class shown in earlier drafts of this spec (commitSwap/
-// waitForExecution/revealAndClaim/cancelSwap) is not implemented — its
-// methods return placeholder values today.
+// Shielded swap — real: contracts/swap is audited and has been run
+// end-to-end on live Testnet, and the ZKELLASwap wrapper class
+// (commitSwap/revealAndClaim/cancelSwap) calls the real deployed
+// contract and provers — see docs/TRANCHE3_DELIVERABLES.md.
 
-// Compliance / auditor — STUB: ZKELLACompliance.generateNonSanctionedProof()
-// and ZKELLAAuditor's note decryption are both placeholders today, even
-// though the underlying contracts/compliance contract is real.
+// Compliance / auditor — real: ZKELLACompliance.generateNonSanctionedProof()
+// and ZKELLAAuditor's note decryption both call the real underlying
+// contracts/compliance contract and the real viewing-key decryption path.
 ```
 
 ### 11.3 Note Selection Strategy (target design; wallet.ts's current implementation is simpler)
@@ -1360,7 +1360,7 @@ The real reference implementation (`indexer/`) uses Node's built-in `node:sqlite
 
 ## 14. Deployment Plan
 
-The deployment plan starts from the current PoC baseline. Before any final release, all existing contracts and SDK modules must move through review, implementation completion, resource profiling, and hardening. The current PoC contracts should not be promoted directly to production.
+The deployment plan below was written before the protocol existed; most of it is now complete. Before a mainnet release, the remaining items are an external security review, a production trusted-setup ceremony, and admin multisig custody — the contracts and SDK modules themselves are implemented, tested, and live on Testnet, not placeholders awaiting completion.
 
 ### 14.0 Readiness milestones
 
@@ -1368,21 +1368,21 @@ To address the main review concerns directly, the roadmap now includes explicit 
 
 - a real testnet shield transaction that completes with on-chain proof verification within Soroban budget,
 - a documented custom-indexer deployment model with replay support, health monitoring, and independent operator compatibility,
-- an operational runbook and incident-response plan for contract failures, indexer outages, and key handling — **done, first version**: see `docs/RUNBOOK.md`, not yet exercised in a real incident,
+- an operational runbook and incident-response plan for contract failures, indexer outages, and key handling — **done**: see `docs/RUNBOOK.md`, exercised in two drills, including a real indexer outage with a real alert delivered and confirmed by a person,
 - a clear compliance narrative around viewing keys and selective disclosure,
 - public testnet evidence and a visible milestone cadence for Stellar ecosystem engagement.
 
-**Current status against this plan:** shield/transfer/unshield are past "review and improve" and have real Groth16 verification, exercised on live Testnet (§14.1's "shield → transfer → unshield full cycle" is done end-to-end with real value movement for shield, unshield, and now 2-in/2-out transfer too — see `docs/TESTNET_DEPLOYMENT.md`'s "Update: Transfer VK registration and a real, live transfer() transaction"; 4-in/4-out transfer's verifying key is live-registered but a live 4-in/4-out transaction has not yet been run). The shielded swap contract has also been audited and run end-to-end on live Testnet — ahead of where this phased plan originally placed it. The trusted-setup ceremony used for every real-circuit test and every live-Testnet transaction to date is explicitly a local, single-contributor dev ceremony (§14.1's testnet ceremony step, not §14.3's production one) — see `docs/POC_IMPLEMENTATION.md` for exactly what's been validated where. The SDK has not been published to npm under any tag yet (§14.1's `@zkella/sdk@0.1.0-testnet` milestone), and no external security review (§14.2) has happened — the audit work in this repository so far was performed by the team building the protocol.
+**Current status against this plan:** shield/transfer/unshield are past "review and improve" and have real Groth16 verification, exercised on live Testnet (§14.1's "shield → transfer → unshield full cycle" is done end-to-end with real value movement for shield, unshield, and both 2-in/2-out and 4-in/4-out transfer — see `docs/ARCHITECTURE.md` §6.1 for the live transaction hashes of each). The shielded swap contract has also been audited across two passes (including a critical fund-destruction fix) and run end-to-end on live Testnet — ahead of where this phased plan originally placed it. The trusted-setup ceremony used for every real-circuit test and every live-Testnet transaction to date is explicitly a local, single-contributor dev ceremony (§14.1's testnet ceremony step, not §14.3's production one) — see `docs/TRANCHE3_DELIVERABLES.md` for exactly what's been validated where. The SDK is published to npm as `@zkella/sdk@0.1.0` (§14.1's milestone, under the real release version rather than the originally-planned `-testnet` tag), and no external security review (§14.2) has happened yet — every audit pass in this repository so far was performed by the team building the protocol.
 
-### 14.1 Testnet Phase (Months 1–4)
+### 14.1 Testnet Phase (Months 1–4) — complete
 
-- Review and improve existing PoC contracts before expanding testnet coverage
+- Review and improve contracts as testnet coverage expanded across three development phases
 - Deploy completed testnet versions of all contracts to Stellar Testnet
 - Run trusted setup ceremony (testnet parameters — NOT for production)
 - Publish circuit artifacts and verifying keys to GitHub
 - Internal end-to-end testing: shield → transfer → unshield full cycle
 - Indexer deployed on a public testnet endpoint
-- SDK published to npm as `@zkella/sdk@0.1.0-testnet`
+- SDK published to npm as `@zkella/sdk@0.1.0`
 
 ### 14.2 Security Review Phase (Months 5-6)
 
@@ -1425,14 +1425,16 @@ ZKELLA/
 │   ├── viewing_keys/              # viewing-key commitment registry
 │   ├── compliance/               # sanctions non-membership proof storage
 │   └── swap/                     # shielded swap primitive
-├── indexer/                      # TypeScript/Node service (not Go/Rust) — node:sqlite, no build step
-├── sdk/                          # @zkella/sdk — not yet published to npm; consumed via local imports
+├── indexer/                      # TypeScript/Node service (not Go/Rust) — SQLite or PostgreSQL
+├── sdk/                          # @zkella/sdk — published to npm (0.1.0)
 ├── app/                          # reference wallet (planned, not yet started)
 └── docs/
     ├── TECHNICAL_SPEC.md         # this document
     ├── CIRCUIT_SPEC.md           # detailed constraint listings
     ├── ARCHITECTURE.md           # full system architecture
-    ├── POC_IMPLEMENTATION.md     # what's validated where (local vs. live Testnet)
+    ├── TRANCHE1_DELIVERABLES.md  # what's validated where, Phase 1 (local vs. live Testnet)
+    ├── TRANCHE2_DELIVERABLES.md  # same, Phase 2
+    ├── TRANCHE3_DELIVERABLES.md  # same, Phase 3 (current)
     ├── TESTNET_DEPLOYMENT.md     # current live addresses and on-chain transaction record
     └── INTEGRATION_GUIDE.md      # for third-party builders
 ```

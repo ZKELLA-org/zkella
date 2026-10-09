@@ -11,7 +11,7 @@
 
 This guide covers how to integrate ZKELLA's confidential token standard, viewing key system, and shielded swap primitive into your own Soroban application or TypeScript frontend.
 
-Until the implementation leaves the PoC stage, use these examples as technical design references and testnet scaffolding only.
+These examples run against the real, live Testnet deployment (see the "Implementation status" note above) — treat them as working integration references, not pseudocode, but remember the scope is Testnet only until the items in the README's "Roadmap to mainnet" close.
 
 ZKELLA exposes:
 - A **`ShieldedToken` contract** on Soroban — interact with it from any Soroban contract or client
