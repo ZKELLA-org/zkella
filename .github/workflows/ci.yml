@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, compliance-governance-security-testnet-release]
   pull_request:
     branches: [main]
 
