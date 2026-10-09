@@ -57,6 +57,7 @@ fuzz_target!(|data: &[u8]| {
         &b32(2),
         &refund,
         &b32(3),
+        &b32(6),
         &(data[0] as i128),
         &b32(4),
         &b32(5),
