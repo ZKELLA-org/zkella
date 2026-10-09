@@ -1,6 +1,6 @@
 # ZKELLA — PoC Testnet Validation Report
 
-This document is a single, chronological, standalone ledger of every real on-chain transaction ZKELLA has submitted against Stellar Testnet, from the first deployment attempt through the current live deployment. It exists so a reader can independently verify the PoC's on-chain claims — budget viability, real Groth16 verification, real value movement in the shielded swap primitive, and every fix along the way — from transaction hashes alone, without having to reconstruct the history from several narrative documents.
+This document is a single, chronological, standalone ledger of every real on-chain transaction ZKELLA has submitted against Stellar Testnet, from the first deployment attempt through the current live deployment. It exists so a reader can independently verify ZKELLA's on-chain claims — budget viability, real Groth16 verification, real value movement in the shielded swap primitive, every fix along the way, and every audit finding closed — from transaction hashes alone, without having to reconstruct the history from several narrative documents.
 
 It does not replace the two documents it draws from:
 
@@ -253,13 +253,56 @@ Notes C and D were shielded fresh (rather than reusing Epoch 1's notes) specific
 
 `Transfer4x4`'s VK was live-registered in this epoch. A live 4-in/4-out transaction was run afterwards on the Tranche 1 stack (tx `a7858b390a6351d7ef8798fce58af377c16f956f98896071fb972cb02c3503cf`, see `docs/TESTNET_DEPLOYMENT.md`, last section), together with a standalone `unshield` (tx `668fa5bfe469b28983c710f7a448b825c633e0f97e94992f0f3c4c21665fc334`) and a swap commit/execute/reveal lifecycle. That stack is the only one built from the current owner-key circuits. The measured real-WASM cost of `transfer4` is now 80.8M instructions (20% of the 400M limit; it was 397.9M before the optimisation, see `docs/PERFORMANCE_OPTIMISATION.md`).
 
+## Epoch 6 — six-contract audit-fix redeployment: pause reachability, swap output-note binding, full stack (October 8, 2026)
+
+A fresh six-contract stack, deployed after an internal audit pass across all three development phases found and fixed a Critical fund-destruction path in `swap.reveal_and_claim` (the output note's randomness was not bound at commit time) and a High finding that `verifier.pause()`/`token.pause()` were unreachable (their admin is governance's own contract address, satisfiable only by a call from governance's own code) — see `docs/TRANCHE3_DELIVERABLES.md` for the findings themselves. `viewing_keys` is reused unchanged from the prior stack; the other five are redeployed. Governance is the verifier's and token's admin; this binary uses the `testnet-fast-timelock` feature (60 ledgers, ~5 minutes), not the 7-day production timelock. Recorded as `testnet_final` in `deployments.json`.
+
+| Contract | Address |
+| --- | --- |
+| verifier | `CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3` |
+| governance | `CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q` |
+| token | `CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ` |
+| swap | `CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524` |
+| compliance | `CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ` |
+| viewing_keys | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` (reused, unchanged) |
+
+### Pause reachability fix, demonstrated live
+
+`governance.pause_verifier()` confirmed to actually block `register_verifying_key` (`Error(Contract, #10) == Paused`), and `governance.pause_token()` confirmed to actually block `shield` (`Error(Contract, #3) == Paused`) — both previously unreachable through any direct call. Both unpaused afterward, restoring normal operation.
+
+### Full swap lifecycle on the fixed contract, real value moved at every step
+
+| Step | Tx hash |
+| --- | --- |
+| `shield()` — leaf 1 | https://stellar.expert/explorer/testnet/tx/d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973 |
+| `commit_swap()` — swap id `61837449cafe2c837a6fd7deb082d6458750c601fe76a81f58a160882f9e5545` | https://stellar.expert/explorer/testnet/tx/d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6 |
+| `execute_swap()` | https://stellar.expert/explorer/testnet/tx/9aa8b8cd7cb0f335f109d6387334fcaac17aad9cc033518c415f57eebe023120 |
+| `reveal_and_claim()` — claimed into leaf 3, the exact output note committed to at `commit_swap` time, not a freshly built one | https://stellar.expert/explorer/testnet/tx/1320f2a101e0adaf9475d0d00b76082cbc59105b99885ad66e090b6f6cf1e1fc |
+
+### Compliance publish, re-run live on the new stack
+
+| Step | Tx hash |
+| --- | --- |
+| `publish_compliance_proof()` — computed root `84ebbeac2d94aa74689cc3adc4d288f2ea0a985ec3d86b2c2b14570979c39e06`, matching the empty-list root set at deploy time | https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442 |
+
+### Governance-settable `MinShieldAmount`, through the timelock, on the real token
+
+| Step | Tx hash |
+| --- | --- |
+| `queue_token_action(MinShieldAmount(500))` | https://stellar.expert/explorer/testnet/tx/3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3 |
+| `execute_token_action()` — `token.min_shield_amount()` confirmed 500 (was 1000) | https://stellar.expert/explorer/testnet/tx/f3ef72ee1e4ad65fafb5f5eb4c99d8094f61b696e7517081964cc172f84297b5 |
+
+### Full example suite re-run against this exact stack
+
+`shield` (leaves 4–5), indexer query, viewing-key audit (4 real receipts recovered, zero-value padding notes correctly excluded), `transfer` (new leaves 6–7), `unshield` (change note at leaf 8) — see `examples/` and `docs/TRANCHE3_DELIVERABLES.md` for the full per-example transaction record.
+
 ## What is not yet demonstrated live
 
 Being explicit about the gap between "regression-tested" and "shown on a real transaction," consistent with the rest of this documentation:
 
 - **Root-history window's actual stale-anchor-acceptance behavior.** Every live transaction above, in every epoch, submitted its proof anchored to the *current* root at submission time. The window mechanism (`is_known_root` accepting any of the last 32 roots, not only the newest) is verified by two Rust regression tests, not by a transaction deliberately built against a stale-but-in-window anchor.
 - **SDK-level and indexer-level fixes from the external review** (`ZKELLAWallet.shield()`'s `opts.to` recipient handling, the indexer's `pagingToken`-based sync and `/notes` limit clamp) — these aren't "redeployed" the way a contract is; they ship whenever a consumer updates to the current SDK/indexer code, and haven't been separately re-demonstrated against a live two-party shield or a real high-load indexer run since the fix. Their regression tests (`tests/unit/wallet-shield-recipient.test.ts`, `tests/unit/indexer-http-limit.test.ts`) remain the evidence for those two specifically.
-- **Multi-operator indexer deployment, horizontal scaling.** Never attempted; explicitly out of scope for this PoC.
+- **Multi-operator indexer deployment, horizontal scaling.** Never attempted; explicitly out of scope for this release — see the README's "Roadmap to mainnet".
 - **A real (non-dev) Groth16 trusted-setup ceremony.** Every proof in every epoch above used a local, single-contributor development Powers-of-Tau/Phase-2 ceremony (`circuits/*/build/`), not a production, multi-party ceremony.
 - **An external, independent security review.** The "external technical review" referenced throughout this document and `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, adopting an external-review standard of scrutiny — not by a genuinely independent third party. See `docs/POC_IMPLEMENTATION.md`'s "What remains in the delivery roadmap" for this same caveat stated directly.
 

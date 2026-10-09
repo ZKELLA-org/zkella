@@ -1,8 +1,8 @@
-# ZKELLA PoC Implementation Status
+# ZKELLA Implementation Status (historical log)
 
-This document is the dedicated PoC/current-implementation status note for ZKELLA. It explains the code that exists today, the protocol components already present in the repository, and the areas scheduled for completion during the delivery roadmap.
+This document is a chronological implementation-status log for ZKELLA, kept under its original filename for link stability. It explains the code that existed at each point along the way, the protocol components it added, and the gaps open at that time — read top to bottom, each "Update:" section supersedes the status described before it. **For the current, authoritative status against each phase's original funding success criteria, see `docs/TRANCHE1_DELIVERABLES.md` through `docs/TRANCHE3_DELIVERABLES.md`** — this document predates that format and is retained for the detailed engineering narrative (bugs found, root causes, fixes) that the deliverables docs summarize rather than repeat.
 
-The existing contracts, SDK modules, tests, and deployment evidence represent only a PoC implementation. They are intentionally incomplete and must be reviewed, benchmarked, hardened, and improved before they can become final ZKELLA protocol contracts or production deployment artifacts.
+What remains before a mainnet release, as of the most recent update below: an external, independent security review, a real multi-party trusted-setup ceremony per circuit, and admin multisig custody — see the README's "Roadmap to mainnet".
 
 ## Full specification
 
@@ -12,7 +12,7 @@ The full ZKELLA protocol specification is documented separately in:
 - `docs/CIRCUIT_SPEC.md` — circuit-level design and proof structure
 - `docs/INTEGRATION_GUIDE.md` — SDK and integration details
 
-This document does not replace the full spec. It only describes current PoC implementation status so readers and contributors can distinguish existing code from the remaining delivery scope.
+This document does not replace the full spec. It only describes implementation status as it stood at each update below, so readers and contributors can distinguish existing code from what was still open at that point.
 
 For a single, chronological ledger of every real on-chain transaction referenced throughout this document — across every deployment epoch, including superseded ones — see `docs/POC_TESTNET_VALIDATION.md`.
 
@@ -183,7 +183,7 @@ The next phase of the repository work is explicitly organized around the main op
 3. Operational readiness milestone — **first version done**, see `docs/RUNBOOK.md`
    - publish an operational runbook covering deployment, monitoring, incident handling, and rollback paths — done: covers every deployed contract and the indexer, with concrete monitoring checks, key-rotation procedures, and four incident-response playbooks,
    - define incident classes for proof-failure, indexer outage, key exposure, and misconfiguration — done, all four covered in `docs/RUNBOOK.md` §4.
-   - **Caveat:** this is a first draft, written against the current soft-PoC deployment, and has not been exercised in a real incident or a drill — see the runbook's own "Known limitations" section.
+   - **Update:** since exercised in two drills, including a real indexer outage with a real alert delivered and confirmed by a person — see the runbook's "Drill record" section. Still a small sample, not proven at production scale.
 
 4. Compliance and competitive positioning milestone — **substantially addressed in the existing docs** (README's "Status highlights", this document's "Shielded swap" and "Originality" evidence)
    - position ZKELLA as a compliance-aware confidential finance stack rather than a generic confidential-token implementation,
@@ -336,10 +336,9 @@ Not yet covered: horizontal scaling, multiple independent operators, and alertin
 
 These capabilities are not yet implemented in the current repository and remain part of the delivery roadmap:
 
-- systematic review and improvement of all existing PoC contracts and SDK code before finalization
 - BN254 `verifying_key` structural validation beyond wire-format length checks (`contracts/verifier` validates shape, not that the bytes encode a VK from a specific audited circuit)
 - indexer horizontal scaling, multi-operator support, and alerting/backfill tooling — the indexer itself is real and live-Testnet-validated (see above), this is about running it at production scale
-- a *proven* operational runbook and incident-response plan — a first version now exists (`docs/RUNBOOK.md`, deployment, monitoring, rollback, key handling, and escalation paths for contract failures, indexer outages, key exposure, and misconfiguration), but it hasn't been exercised in a real incident or a drill; hardening it based on real use remains open
+- hardening the operational runbook (`docs/RUNBOOK.md`) based on further real use — it has been exercised in two drills, including a real indexer outage (see the runbook's "Drill record"), but that is still a small sample, not a process proven at production scale
 - a real (non-dev) Groth16 trusted-setup ceremony for each circuit — the one used for every real-circuit test and every live-Testnet transaction in this repository is explicitly a local dev ceremony (single contributor, not a public multi-party computation), not suitable for any deployment handling real value
 - an external, independent security review — everything in this document, including the senior-audit pass described above, was performed by the same team building the protocol, not a third party
 - validation of `shield()` against real Stellar assets other than native XLM (different decimals, non-native issuers) — every live-Testnet shield transaction to date uses native XLM specifically
@@ -351,13 +350,13 @@ These capabilities are not yet implemented in the current repository and remain 
 
 ## Implementation boundaries
 
-This repository is best understood as:
+This repository is best understood, as of the most recent update above, as:
 
 - a full technical specification and architecture for the ZKELLA protocol
-- a PoC implementation with a working core: shield/transfer/unshield with real on-chain Groth16 verification and real Soroban RPC submission, a shielded swap primitive that genuinely moves value (reusing `ShieldedToken`'s own shield/unshield paths), a real BN254 ECDH/hash-to-curve key and encryption layer including diversified addresses, and a real (if reference-scale) persistent indexer — all validated both locally and with real transactions on live Stellar Testnet
-- a codebase that still schedules a real multi-party trusted-setup ceremony, an *external* security review, and indexer production-scale hardening for delivery-roadmap completion — the internal audit of the swap primitive's ownership↔intent binding is done (see "Update: senior audit..." above)
+- a working implementation covering nearly all of it: shield/transfer/transfer4/unshield with real on-chain Groth16 verification and real Soroban RPC submission, a shielded swap primitive that genuinely moves value, timelocked governance with a guardian role and a pause mechanism across all five contracts, viewing-key-based selective disclosure with epoch revocation, verified sanctions non-membership proofs, a real BN254 ECDH/hash-to-curve key and encryption layer, and a real persistent indexer with bearer-auth and PostgreSQL support — all validated both locally and with real transactions on live Stellar Testnet across three development phases (see `docs/TRANCHE1_DELIVERABLES.md`–`docs/TRANCHE3_DELIVERABLES.md`)
+- a codebase that still requires an external, independent security review, a real multi-party trusted-setup ceremony per circuit, and admin multisig custody before a mainnet release — every security pass to date, including three internal audit rounds, was performed by the team building the protocol, not a third party
 
-It is not yet a complete implementation of the full ZKELLA specification, and none of this has been through a security review or a real (non-dev) trusted-setup ceremony. Existing contracts and code should be treated as reviewable PoC material only, not as final or production-ready protocol logic — the cryptographic core working correctly in tests is necessary, not sufficient, for that.
+Existing contracts and code should be treated as real, tested, Testnet-proven material — not as final, externally-audited, mainnet-ready protocol logic. The cryptographic core and governance controls working correctly in tests and on live Testnet is necessary, not sufficient, for that.
 
 ## How to use this document
 

@@ -33,7 +33,7 @@ Fixes (commit `d38087e`):
 
 Accepted risk, low severity: the remaining 15 findings are the ethers v5 chain (`ethers`, `@ethersproject/*`, `elliptic`) pulled in by `circomlibjs@0.1.7`. The only fix npm offers is a downgrade to `circomlibjs@0.0.8`, which is breaking. ZKELLA uses `circomlibjs` only for Poseidon and babyjubjub. The ethers-importing modules (`mimc7`, `mimcsponge`, `evmasm`, and the `*_gencontract` generators) are not referenced anywhere in the repository. Revisit when `circomlibjs` is upgraded.
 
-Full JS test suite after the fix: 158/158 passing against PostgreSQL.
+Full JS test suite after the fix: 158/158 passing against PostgreSQL (current total, after further additions since: 188/188 — see the README's "Status at a glance").
 
 ### Rust lints (`cargo clippy --workspace --all-targets --release`)
 
