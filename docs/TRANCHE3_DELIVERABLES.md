@@ -1,12 +1,11 @@
 # Tranche 3 deliverables: original description, success criteria, evidence and proofs
 
-Criterion-by-criterion account of Tranche 3 (Compliance, Governance & Testnet Readiness), in
-the same spirit as `docs/TRANCHE1_DELIVERABLES.md` and `docs/TRANCHE2_DELIVERABLES.md`, and
-going one step further: each deliverable below starts with its **original description and
-success criteria, quoted verbatim** from the funding roadmap, followed by the evidence for
-each criterion with full, clickable links — a GitHub commit or file link for every piece of
-code evidence, and a full `stellar.expert` link for every on-chain transaction. Nothing here
-is a paraphrase of what was asked for; it is the literal ask, next to the literal proof.
+Criterion-by-criterion account of Tranche 3 (Compliance, Governance & Testnet Readiness): each
+deliverable below starts with its **original description and success criteria, quoted
+verbatim** from the funding roadmap, followed by the evidence for each criterion with full,
+clickable links — a GitHub commit or file link for every piece of code evidence, and a full
+`stellar.expert` link for every on-chain transaction. Nothing here is a paraphrase of what was
+asked for; it is the literal ask, next to the literal proof.
 
 Repository: https://github.com/ZKELLA-org/zkella. Code links below point at the branch this
 work lives on, `compliance-governance-security-testnet-release`
@@ -16,15 +15,39 @@ unless a specific commit is named.
 ## How to reproduce
 
 ```
-cd contracts && cargo build --workspace --target wasm32v1-none --release && cargo test --workspace --release
-npm test                                                    # JS unit tests (circuits, SDK, indexer)
-cd sdk && npm run typecheck && npm run build
-cd contracts/token/fuzz && for t in shield_arbitrary transfer_arbitrary verifier_arbitrary swap_arbitrary \
-  governance_arbitrary compliance_arbitrary viewing_keys_arbitrary token_admin_arbitrary verifier_admin_arbitrary; do
-    cargo fuzz run "$t" -- -max_total_time=60; done
-scripts/testnet_deploy_stack.sh                              # scripted, repeatable six-contract deploy
-scripts/testnet_health_check.sh                              # RPC, indexer, contract-state checks
-node examples/0{2,3,4,5,6,7}-*.cjs                           # shield, indexer query, audit, transfer, unshield, swap
+cd contracts
+cargo build --workspace --target wasm32v1-none --release
+cargo test --workspace --release
+cd ..
+
+npm test                                      # JS unit tests (circuits, SDK, indexer)
+
+cd sdk
+npm run typecheck
+npm run build
+cd ..
+
+cd contracts/token/fuzz
+cargo fuzz run shield_arbitrary -- -max_total_time=60
+cargo fuzz run transfer_arbitrary -- -max_total_time=60
+cargo fuzz run verifier_arbitrary -- -max_total_time=60
+cargo fuzz run swap_arbitrary -- -max_total_time=60
+cargo fuzz run governance_arbitrary -- -max_total_time=60
+cargo fuzz run compliance_arbitrary -- -max_total_time=60
+cargo fuzz run viewing_keys_arbitrary -- -max_total_time=60
+cargo fuzz run token_admin_arbitrary -- -max_total_time=60
+cargo fuzz run verifier_admin_arbitrary -- -max_total_time=60
+cd ../../..
+
+scripts/testnet_deploy_stack.sh               # scripted, repeatable six-contract deploy
+scripts/testnet_health_check.sh               # RPC, indexer, contract-state checks
+
+node examples/02-shield.cjs                   # shield
+node examples/03-indexer-query.cjs            # indexer query
+node examples/04-viewing-key-audit.cjs        # viewing-key audit
+node examples/05-transfer.cjs                 # transfer
+node examples/06-unshield.cjs                 # unshield
+node examples/07-swap.cjs                     # swap
 ```
 
 Current Testnet stack (`deployments.json`'s `testnet_final` block
