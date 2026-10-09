@@ -5,7 +5,7 @@ For developers building on `@zkella/sdk` against the Stellar Testnet deployment.
 ## Installation
 
 ```bash
-npm install @zkella/sdk@0.1.0
+npm install @zkella/sdk@0.1.1
 ```
 
 Pin the exact version (see `docs/RUNBOOK.md`, "SDK artifacts"). The SDK needs Node.js 20 or later.

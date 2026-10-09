@@ -1153,7 +1153,7 @@ async function generateComplianceProof(
 
 ### 11.1 Package Structure
 
-The package is named `@zkella/sdk` and is published to the npm registry as `@zkella/sdk@0.1.0` (`sdk/package.json`); see `docs/SDK_RELEASE.md` for the release process. The real structure, current as of this writing:
+The package is named `@zkella/sdk` and is published to the npm registry as `@zkella/sdk@0.1.1` (`sdk/package.json`); see `docs/SDK_RELEASE.md` for the release process. The real structure, current as of this writing:
 
 ```
 sdk/
@@ -1372,7 +1372,7 @@ To address the main review concerns directly, the roadmap now includes explicit 
 - a clear compliance narrative around viewing keys and selective disclosure,
 - public testnet evidence and a visible milestone cadence for Stellar ecosystem engagement.
 
-**Current status against this plan:** shield/transfer/unshield are past "review and improve" and have real Groth16 verification, exercised on live Testnet (§14.1's "shield → transfer → unshield full cycle" is done end-to-end with real value movement for shield, unshield, and both 2-in/2-out and 4-in/4-out transfer — see `docs/ARCHITECTURE.md` §6.1 for the live transaction hashes of each). The shielded swap contract has also been audited across two passes (including a critical fund-destruction fix) and run end-to-end on live Testnet — ahead of where this phased plan originally placed it. The trusted-setup ceremony used for every real-circuit test and every live-Testnet transaction to date is explicitly a local, single-contributor dev ceremony (§14.1's testnet ceremony step, not §14.3's production one) — see `docs/TRANCHE3_DELIVERABLES.md` for exactly what's been validated where. The SDK is published to npm as `@zkella/sdk@0.1.0` (§14.1's milestone, under the real release version rather than the originally-planned `-testnet` tag), and no external security review (§14.2) has happened yet — every audit pass in this repository so far was performed by the team building the protocol.
+**Current status against this plan:** shield/transfer/unshield are past "review and improve" and have real Groth16 verification, exercised on live Testnet (§14.1's "shield → transfer → unshield full cycle" is done end-to-end with real value movement for shield, unshield, and both 2-in/2-out and 4-in/4-out transfer — see `docs/ARCHITECTURE.md` §6.1 for the live transaction hashes of each). The shielded swap contract has also been audited across two passes (including a critical fund-destruction fix) and run end-to-end on live Testnet — ahead of where this phased plan originally placed it. The trusted-setup ceremony used for every real-circuit test and every live-Testnet transaction to date is explicitly a local, single-contributor dev ceremony (§14.1's testnet ceremony step, not §14.3's production one) — see `docs/TRANCHE3_DELIVERABLES.md` for exactly what's been validated where. The SDK is published to npm as `@zkella/sdk@0.1.1` (§14.1's milestone, under the real release version rather than the originally-planned `-testnet` tag), and no external security review (§14.2) has happened yet — every audit pass in this repository so far was performed by the team building the protocol.
 
 ### 14.1 Testnet Phase (Months 1–4) — complete
 
@@ -1382,7 +1382,7 @@ To address the main review concerns directly, the roadmap now includes explicit 
 - Publish circuit artifacts and verifying keys to GitHub
 - Internal end-to-end testing: shield → transfer → unshield full cycle
 - Indexer deployed on a public testnet endpoint
-- SDK published to npm as `@zkella/sdk@0.1.0`
+- SDK published to npm as `@zkella/sdk@0.1.1`
 
 ### 14.2 Security Review Phase (Months 5-6)
 

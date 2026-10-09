@@ -57,7 +57,7 @@ Eight Soroban contracts, five Circom circuits, a TypeScript SDK, and a reference
 | **JS/TS tests** | 188 passing, 0 skipped, 33 suites — `npm test` (Postgres-backed indexer tests included, not mocked) |
 | **Fuzz targets** | 9 `cargo-fuzz` targets, minimized corpora committed, run in CI on every push |
 | **CI** | 3 jobs (contracts, SDK + circuits, fuzz smoke) on every push to `main` and this branch |
-| **SDK** | [`@zkella/sdk@0.1.0`](https://www.npmjs.com/package/@zkella/sdk) published to npm |
+| **SDK** | [`@zkella/sdk@0.1.1`](https://www.npmjs.com/package/@zkella/sdk) published to npm |
 | **Live network** | Stellar Testnet — 6 contracts deployed, addresses below |
 | **Coverage** | Token crate: 99.59% regions / 99.55% lines / 92.94% functions, independently reviewed for *what* it covers, not just *how much* — see [`docs/COVERAGE.md`](docs/COVERAGE.md) |
 
@@ -68,7 +68,7 @@ The full, line-item record of every deliverable against its original funding suc
 ## Quick start
 
 ```bash
-npm install @zkella/sdk@0.1.0
+npm install @zkella/sdk@0.1.1
 ```
 
 ```js
