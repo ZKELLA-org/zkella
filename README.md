@@ -1,200 +1,277 @@
 # ZKELLA Protocol
 
-[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
+[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg?branch=compliance-governance-security-testnet-release)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40zkella%2Fsdk.svg)](https://www.npmjs.com/package/@zkella/sdk)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 **ZK-native confidential finance infrastructure for the Stellar Soroban ecosystem.**
 
-ZKELLA delivers production-oriented confidential finance infrastructure for Soroban: a shielded confidential token, auditor viewing keys, Travel Rule-aligned disclosure workflows, persistent note indexing, and a shielded swap primitive.
+Shielded balances, confidential transfers, auditor viewing keys, sanctions-list non-membership proofs, a commit-reveal private swap, timelocked governance, and the indexer and SDK needed to use all of it — live on Stellar Testnet with real Groth16 proofs at every step, not simulated ones.
+
+---
+
+## Table of contents
+
+- [Overview](#overview)
+- [Status at a glance](#status-at-a-glance)
+- [Quick start](#quick-start)
+- [Live Testnet deployment](#live-testnet-deployment)
+- [Architecture](#architecture)
+- [Components](#components)
+- [Technology stack](#technology-stack)
+- [Repository structure](#repository-structure)
+- [Development](#development)
+- [Documentation](#documentation)
+- [Security and scope](#security-and-scope)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
 ## Overview
 
-Stellar is transparent by default. Protocol 25 (X-Ray, January 2026) changed the underlying capability: BN254 elliptic curve host functions, Poseidon hash, and Groth16 zk-SNARK verification are now live on Soroban. The cryptographic primitives exist. What does not exist is production-grade infrastructure built on top of them.
+Stellar is transparent by default. Protocol 25 (X-Ray) put BN254 pairing, Poseidon hashing, and Groth16 verification into the Soroban host — the cryptographic primitives needed for confidential finance now exist on-chain. What didn't exist was the infrastructure built on top of them: a shielded token, a compliance layer regulators can actually use, a way to recover wallet state past Stellar RPC's retention window, a private swap, and the governance to operate all of it safely over time.
 
-ZKELLA fills that gap. It is a suite of open-source contracts, circuits, and developer tooling that any Soroban developer can use to add confidentiality to tokens, payments, and swaps — without rebuilding the ZK layer from scratch.
+ZKELLA is that infrastructure: eight Soroban contracts, five Circom circuits, a TypeScript SDK, and a reference indexer, developed and proven out across three funded tranches. Every claim below is backed by a real transaction on Stellar Testnet or a real, currently-passing test — linked, not just asserted.
 
----
-
-## Repository Scope
-
-This repository contains the ZKELLA protocol specification, architecture, Soroban contracts, circuits, SDK modules, and tests that together define the confidential finance stack.
-
-**Current implementation status:** the contracts and SDK code in this repository are an initial implementation for a PoC. They are not final protocol contracts, not mainnet-ready release artifacts, and must be reviewed, profiled, hardened, and improved before they are used in production or relied on for real user funds.
-
-Current implementation foundation:
-
-- `contracts/token` (the `ShieldedToken` contract) shield / transfer / transfer4 (4-in-4-out) / unshield flow: commitment computation, duplicate-checking, Merkle insertion, nullifier tracking, event emission, and on-chain Groth16 proof verification — validated with real transactions across several live Stellar Testnet deployments (multiple real `shield()` calls, real proofs, real native-XLM transfers; see `docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`, and `docs/POC_TESTNET_VALIDATION.md` for the full transaction history)
-- `contracts/verifier`: a shared Groth16/BN254 verifying-key registry, verified against Soroban's native pairing host functions and genuine proofs from the compiled `shield.circom`, `transfer.circom` (2-in-2-out), and `unshield.circom` circuits
-- `contracts/governance`: timelocked verifying-key rotation, cross-calling the verifier registry — every registration, including a circuit's first key, now goes through the same timelock (see "Status highlights" below)
-- `contracts/compliance`: sanctions-list non-membership proofs, verified before storage
-- `contracts/swap`: real value movement, not just proof verification — `commit_swap` escrows real funds via a real `ShieldedToken::unshield` cross-call (doubling as the note-ownership proof), `execute_swap` requires real relayer-fronted liquidity, `reveal_and_claim` pays the relayer and re-shields the output as a real new note via `ShieldedToken::shield`, and `cancel_swap`/`reclaim_expired_swap` really refund both sides if a swap is never executed or never claimed — audited across two passes (a fund-orphaning collision bug, a CEI reentrancy risk, and a nested cross-contract auth gap only a real Testnet transaction surfaced; then, in a follow-up technical review, three further Critical proof-binding/reinitialization gaps), all fixed, redeployed, and run end-to-end on live Stellar Testnet with genuine `circom`/`snarkjs` proofs at every stage (see `docs/POC_IMPLEMENTATION.md`, `docs/TESTNET_DEPLOYMENT.md`)
-- `contracts/token/src/poseidon.rs` and `contracts/token/src/merkle.rs`: native host-backed Poseidon2 and incremental Merkle tree logic
-- TypeScript SDK note construction and note encryption helpers in `sdk/src/notes`, with real BN254 ECDH (including diversified-address hash-to-curve) in `sdk/src/crypto/bn254.ts`
-- `sdk/src/prover/{shield,transfer,transfer4,unshield}.ts`: real Groth16 proof generation for every token entry point via `snarkjs`, sharing one wire-format encoder (`sdk/src/prover/encoding.ts`) cross-validated byte-for-byte against real proof/VK bytes — shield's against the exact proof submitted in a real live-Testnet transaction, the rest against real compiled-circuit proofs (see `tests/unit/prover*.test.ts`) — no Python side-channel needed.
-- `sdk/src/wallet/wallet.ts`: real Soroban RPC transaction construction, signing, submission, and confirmation-polling for `shield()`/`transfer()`/`unshield()` — no more JSON-stub XDR building
-- `indexer/`: a real, running indexer service (real event polling, SQLite or PostgreSQL persistence, a bearer-auth and rate-limited HTTP API, containerized), validated against live Stellar Testnet — see `indexer/README.md`
-- see `docs/POC_IMPLEMENTATION.md` for what's validated where (locally vs. live Testnet) and what's still open
-
-Planned implementation scope:
-
-- A real (non-dev) multi-party trusted-setup ceremony per circuit — everything to date, including the live-Testnet transactions, uses a local single-contributor dev ceremony
-- Indexer production hardening: horizontal scaling, multi-operator support
-- review and improvement of all existing PoC contracts, SDK modules, and circuit integrations before any production deployment
-- an external, independent security review — the audit pass documented in `docs/POC_IMPLEMENTATION.md` was performed by the team building the protocol, not a third party
-
-See `docs/TECHNICAL_SPEC.md` and `docs/ARCHITECTURE.md` for the full protocol design, and `docs/PERFORMANCE_OPTIMISATION.md` for the instruction-cost optimisation and its measurements. See `docs/POC_IMPLEMENTATION.md` for the dedicated PoC/current implementation status, including transaction hashes and contract addresses. See `docs/TESTNET_DEPLOYMENT.md` for the current live deployment record, and `docs/POC_TESTNET_VALIDATION.md` for the complete chronological ledger of every real on-chain transaction across the project's history.
+**Scope.** This is a Testnet deployment, not a mainnet launch. The circuits' trusted setup is a single-contributor dev ceremony, there is no admin multisig, and the security review so far is an internal six-agent self-audit — not a third-party one. See [Security and scope](#security-and-scope) for the precise boundary.
 
 ---
 
-## Status highlights
+## Status at a glance
 
-- **Budget viability**: real `shield()` transactions with on-chain Groth16 verification have run on live Stellar Testnet, multiple times, within Soroban's instruction budget — see `docs/POC_IMPLEMENTATION.md` for transaction hashes and contract addresses.
-- **Originality**: commit-reveal swaps and shielded DeFi interactions exist elsewhere (Railgun's Relay Adapt on Ethereum unshields, calls a public DEX, and re-shields atomically; Penumbra runs a fully protocol-native batched private DEX; Aztec Connect used a similar private-note/public-DeFi bridge pattern before its 2024 shutdown) — none of that is native to Stellar/Soroban today. ZKELLA's shielded swap primitive is, to our knowledge, the first such mechanism on Stellar, and its specific mechanism differs from each of those precedents: it reuses `ShieldedToken`'s own shield/unshield circuits directly rather than a separate bridge/adapter contract, and it does not call any DEX at all — the relayer fronts liquidity directly (see `docs/TECHNICAL_SPEC.md` §9). The full commit-reveal lifecycle has run end-to-end on live Stellar Testnet with genuine circuit proofs and real value moving at every step; two audit passes over the contract found and fixed seven real issues along the way (three Critical), one of which only a real Testnet transaction — not the unit test suite — could surface, and every fix has since been demonstrated on a live redeployment. See `docs/POC_IMPLEMENTATION.md` for the findings and fixes, and `docs/TESTNET_DEPLOYMENT.md`/`docs/POC_TESTNET_VALIDATION.md` for the transaction hashes.
-- **Custom indexer**: purpose-built for note recovery, Merkle-path serving, and wallet state reconstruction beyond the short Stellar RPC retention window — `indexer/` is a real, running implementation of it, validated against live Stellar Testnet (see `docs/POC_IMPLEMENTATION.md`).
-- **Operational readiness**: a first version of the operational runbook and incident-response framework (contract failures, indexer outages, key exposure, deployment misconfiguration) now exists — see `docs/RUNBOOK.md`. It has not yet been exercised in a real incident or a drill; treat it as a baseline, not a proven process.
-- **Compliance positioning**: the docs frame ZKELLA as compliance-aware selective disclosure infrastructure (viewing keys, verified sanctions non-membership proofs) rather than a generic confidential-token clone.
-- **Ecosystem engagement**: open development, public testnet milestones, and sustained participation in the Stellar ecosystem.
+| | |
+| --- | --- |
+| **Contracts** | 8 Soroban crates — token, verifier, governance, compliance, viewing_keys, swap (+ two `#[contractclient]`-only interface crates) |
+| **Circuits** | 5 Groth16/BN254 circuits (shield, transfer 2-in-2-out, transfer 4-in-4-out, unshield, swap fairness) + 1 compliance non-membership circuit |
+| **Rust tests** | 237 passing, 0 failing — `cargo test --workspace --release` |
+| **JS/TS tests** | 188 passing, 0 skipped, 33 suites — `npm test` (Postgres-backed indexer tests included, not mocked) |
+| **Fuzz targets** | 9 `cargo-fuzz` targets, minimized corpora committed, run in CI on every push |
+| **CI** | 3 jobs (contracts, SDK + circuits, fuzz smoke) on every push to `main` and this branch |
+| **SDK** | [`@zkella/sdk@0.1.0`](https://www.npmjs.com/package/@zkella/sdk) published to npm |
+| **Live network** | Stellar Testnet — 6 contracts deployed, addresses below |
+| **Coverage** | Token crate: 99.59% regions / 99.55% lines / 92.94% functions, independently reviewed for *what* it covers, not just *how much* — see [`docs/COVERAGE.md`](docs/COVERAGE.md) |
+
+The full, line-item record of every deliverable against its original funding success criteria, with a GitHub link and an on-chain transaction link for every claim, lives in [`docs/TRANCHE1_DELIVERABLES.md`](docs/TRANCHE1_DELIVERABLES.md), [`docs/TRANCHE2_DELIVERABLES.md`](docs/TRANCHE2_DELIVERABLES.md), and [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md).
 
 ---
 
-## Solution
+## Quick start
 
-ZKELLA is structured as five layered components, each independently useful and collectively forming a complete privacy infrastructure stack.
+```bash
+npm install @zkella/sdk@0.1.0
+```
 
-### Component 1: Shielded Confidential Token
+```js
+const { ZKELLAKeys, ZKELLAWallet, TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC } = require('@zkella/sdk')
 
-A Soroban SEP-41-wrapping token contract (`ShieldedToken`, `contracts/token`) where balances are stored as Pedersen commitments. Transfers require a Groth16 range proof — proving the amount is valid and the sender has sufficient balance without revealing either value.
+const keys = ZKELLAKeys.generate()
+const wallet = new ZKELLAWallet({
+  keys,
+  rpcUrl: TESTNET_SOROBAN_RPC,
+  tokenContract: TESTNET_CONTRACTS.token,
+  indexerUrl: 'http://localhost:8080', // run one from indexer/, see indexer/README.md
+  shieldCircuit: { wasm: 'circuits/shield/build/shield_js/shield.wasm', zkey: 'circuits/shield/build/shield.zkey' },
+})
 
-- Circom circuits: 2-input/2-output and 4-input/4-output configurations
-- Multi-asset support: one contract handles multiple token types simultaneously
-- Wrap any existing Stellar asset (USDC, XLM, any SEP-41 token) into a shielded version
-- Functions: `shield()`, `transfer()`, `unshield()`
+await wallet.sync()
+const { submit } = await wallet.shield({ asset: 'native', amount: 10_000_000n })
+await submit()
+```
 
-### Component 2: Auditor Viewing Key System
+Every on-chain SDK call follows this shape: the method builds the transaction and generates the proof, `submit()` sends it and waits for confirmation. See [`docs/SDK_DEVELOPER.md`](docs/SDK_DEVELOPER.md) for the full API (`ZKELLAWallet`, `ZKELLASwap`, `ZKELLACompliance`, `ZKELLAAuditor`, `IndexerClient`) and [`examples/`](examples/) for one runnable script per flow — keys, shield, indexer query, viewing-key audit, transfer, unshield, swap.
 
-A compliance layer designed for institutional and regulated use cases.
+---
 
-- Each account generates a **spending key** (private) and a **viewing key** (shareable with auditors)
-- Viewing key holders decrypt transaction history without spending capability
-- Auditor API: regulated institutions verify counterparty transaction history on request
-- Proof-of-compliance endpoint: ZK proof that an address is not on a sanctions list, using a Merkle inclusion/exclusion proof over a published sanctions list — without revealing the address
-- Travel Rule-aligned: issuers can support required disclosures without exposing all counterparty data publicly
+## Live Testnet deployment
 
-### Component 3: Persistent State Manager
+Current stack (`testnet_final` in [`deployments.json`](deployments.json), deployed 2026-10-08):
 
-Solves the 7-day Stellar RPC event retention problem, which otherwise blocks new users from reconstructing their shielded note history from the public RPC endpoint alone.
+| Contract | Address | Explorer |
+| --- | --- | --- |
+| Token (`ShieldedToken`) | `CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ` | [view](https://stellar.expert/explorer/testnet/contract/CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ) |
+| Verifier | `CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3` | [view](https://stellar.expert/explorer/testnet/contract/CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3) |
+| Governance | `CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q` | [view](https://stellar.expert/explorer/testnet/contract/CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q) |
+| Compliance | `CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ` | [view](https://stellar.expert/explorer/testnet/contract/CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ) |
+| Viewing keys | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` | [view](https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE) |
+| Swap | `CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524` | [view](https://stellar.expert/explorer/testnet/contract/CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524) |
 
-- Lightweight indexer node operators can run to store encrypted note commitments beyond the RPC window
-- Client-side SDK code that reconstructs wallet state from the indexer
-- Encrypted note bundle export as user-controlled backup fallback
-- This component becomes shared infrastructure for every privacy project on Stellar
+Governance is the admin of the token and verifier contracts (so pausing or rotating a verifying key goes through the timelock); this stack runs with the `testnet-fast-timelock` feature (60 ledgers, ~5 minutes), not the 7-day production timelock. The full operational detail — admin/guardian addresses, verifying-key hashes, the sanctions root, how to reach each one — is in [`docs/TESTNET_DEPLOYMENT.md`](docs/TESTNET_DEPLOYMENT.md) and [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
-### Component 4: Shielded Swap Primitive
-
-A Stellar-native private swap interface.
-
-- Users swap Token A for Token B without revealing amounts on-chain
-- Commit-reveal scheme: user commits to an encrypted swap intent; a relayer fronts the output asset as real SEP-41 liquidity; a ZK proof confirms afterward that the execution was fair (correct price, no front-running) against the terms committed to up front
-- No new AMM required to use it today: the relayer supplies the output asset directly from their own balance, and is free to source it however they choose off-chain, including routing through the existing Stellar DEX themselves — the contract doesn't call the DEX and has no visibility into how the relayer sourced the liquidity (see `docs/TECHNICAL_SPEC.md` §9)
-- Wiring an actual on-chain Stellar DEX execution into the flow itself is a planned, not yet built, next step (see `docs/ARCHITECTURE.md` §1.7.5 for the target design and its open questions)
-- Scope is the primitive; a full private AMM is a later phase
-
-### Component 5: Developer SDK and Reference Application
-
-- TypeScript SDK (`zkella-sdk`): circuit proving (WASM), key management, Soroban calls, and note indexer in a unified API
-- Reference wallet application (web, open-source): shield, transfer, unshield, and viewing key export flows
-- Full documentation: circuit specifications, API reference, security assumptions, integration guides
+A live, running health check (`scripts/testnet_health_check.sh`, cron every 15 minutes) watches this stack and alerts on RPC, indexer-lag, or governance misconfiguration — exercised twice: once with injected faults, once as a real indexer outage with a real alert delivered and confirmed by a person. See "Drill record" in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    zkella-sdk (TypeScript)               │
-│         Key mgmt · Proof generation · Note sync         │
-└────────────────────────┬────────────────────────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-  │  Shielded   │ │  Viewing    │ │  Shielded   │
-  │  Token      │ │  Key System │ │  Swap       │
-  │  Contract   │ │  + Audit    │ │  Primitive  │
-  └─────────────┘ └─────────────┘ └─────────────┘
-         │               │               │
-         └───────────────┼───────────────┘
-                         ▼
-              ┌─────────────────────┐
-              │  Persistent State   │
-              │  Manager / Indexer  │
-              └─────────────────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  Soroban / BN254    │
-              │  Groth16 Verifier   │
-              │  (Protocol 25)      │
-              └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                     @zkella/sdk (TypeScript)                     │
+│   Keys · Groth16 proving (snarkjs/WASM) · Wallet · Swap · Audit  │
+└───────┬───────────────┬───────────────┬───────────────┬──────────┘
+        │               │               │               │
+        ▼               ▼               ▼               ▼
+ ┌────────────┐  ┌─────────────┐  ┌────────────┐  ┌─────────────┐
+ │  Shielded  │  │  Viewing    │  │ Compliance │  │  Shielded   │
+ │  Token     │  │  Keys       │  │ (non-      │  │  Swap       │
+ │  Contract  │  │  Registry   │  │ membership)│  │  Primitive  │
+ └─────┬──────┘  └─────────────┘  └────────────┘  └──────┬──────┘
+       │                                                  │
+       │          ┌──────────────────────┐                │
+       └─────────▶│  Verifier Registry   │◀───────────────┘
+                  │  (Groth16/BN254 VKs) │
+                  └──────────┬───────────┘
+                             │ timelocked rotation
+                             ▼
+                  ┌──────────────────────┐
+                  │     Governance       │
+                  │  (timelock, pause,   │
+                  │   guardian cancel)   │
+                  └──────────────────────┘
+
+                  ┌──────────────────────┐
+                  │   Indexer (Node.js)  │◀── polls token events
+                  │  SQLite / PostgreSQL │
+                  │  bearer-auth HTTP API│──▶ wallet/auditor sync
+                  └──────────────────────┘
+
+              Soroban host: BN254 pairing · Poseidon2 · Groth16 (Protocol 25)
 ```
+
+The verifier is a single shared registry for all six circuits; governance is its only admin and the token's, so a verifying-key rotation or a pause of either contract always goes through the timelock (and, for the token specifically, through governance's own forwarding call — see `docs/GOVERNANCE.md`, "Reachability"). The indexer is read-only infrastructure: it never signs transactions, only serves notes and Merkle paths the wallet and auditor need because Stellar RPC only retains events for a short window.
 
 ---
 
-## Technology Stack
+## Components
+
+### 1. Shielded confidential token (`contracts/token`)
+
+`ShieldedToken` wraps any SEP-41 asset (XLM, USDC, any issued token) with Pedersen-committed balances. Every spend is a Groth16 proof that the amount is valid and the sender has sufficient balance, without revealing either. `shield()` / `transfer()` (2-in-2-out) / `transfer4()` (4-in-4-out, with a relayer fee) / `unshield()` (with an optional change note), verified against Soroban's native BN254 pairing host functions.
+
+### 2. Auditor viewing keys (`contracts/viewing_keys`)
+
+Each wallet derives a spending key (never shared) and a viewing key, scoped to an epoch and exportable to a named auditor. Rotating the epoch revokes the old viewing key's ability to decrypt new activity without touching spending capability. `ZKELLAAuditor` in the SDK does the decrypt-on-request side: sync from a granted viewing key, recover real transaction history, resume from the last synced ledger instead of re-reporting what it already decrypted.
+
+### 3. Compliance (`contracts/compliance`)
+
+Sanctions-list non-membership as a ZK proof: a Poseidon2 sorted Merkle tree over a published sanctions list, with a circuit that proves an address is not a member without revealing the address. `publish_compliance_proof` verifies and stores the result on-chain before it can be relied on. Travel-Rule-style disclosure without a public counterparty list.
+
+### 4. Shielded swap (`contracts/swap`)
+
+A commit-reveal private swap, not just a proof-verification demo: `commit_swap` escrows the input as a real `unshield` cross-call (which also proves note ownership) and commits to the output note's randomness up front; `execute_swap` requires a relayer to front real SEP-41 liquidity; `reveal_and_claim` checks a ZK fairness proof against the committed terms, re-shields the output as a genuinely new note, and only accepts the exact output note committed at commit time — closing a real fund-destruction path a security pass found (see [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md)). `cancel_swap` and `reclaim_expired_swap` refund both sides if a swap is never executed or claimed. No DEX call is built into the contract today — a relayer sources the output liquidity however it chooses, including off-chain or through the existing Stellar DEX; see `docs/TECHNICAL_SPEC.md` §9 for why, and the open question for wiring in on-chain execution directly.
+
+### 5. Governance (`contracts/governance`)
+
+Timelocked verifying-key rotation and admin actions (`MinShieldAmount`, asset approval, relayer allowlisting), each queued, delayed, and only then executable — with a guardian address that can cancel a queued action but not execute one early. Also the only path that can pause or unpause the verifier and token contracts, since both name governance's own contract as their admin.
+
+### 6. Indexer and SDK (`indexer/`, `sdk/`)
+
+The indexer solves Stellar RPC's short event-retention window: it polls the token contract, persists encrypted note commitments and Merkle state to SQLite or PostgreSQL, and serves them over a bearer-authenticated, rate-limited HTTP API — containerized, with a load test and a real outage drill behind it. `@zkella/sdk` is the TypeScript client: key derivation, real `snarkjs`/WASM Groth16 proving for every circuit, transaction construction and submission, and the wallet/swap/auditor/compliance classes listed in [Quick start](#quick-start). A browser reference wallet is not built yet — out of scope for this release, tracked as future work.
+
+---
+
+## Technology stack
 
 | Layer | Technology |
-|---|---|
-| ZK proof system | Groth16 (via BN254 Soroban host functions) |
-| Circuit language | Circom 2.2 |
+| --- | --- |
+| ZK proof system | Groth16 over BN254 (native Soroban host functions, Protocol 25) |
+| Circuit language | Circom 2.2, compiled and proved with `snarkjs` |
 | Hash function | Poseidon2 (native Soroban host function) |
 | Commitment scheme | Pedersen commitments over BN254 |
-| Smart contracts | Rust / Soroban SDK |
-| Client proving | WASM (snarkjs) |
-| SDK | TypeScript |
-| Reference app | React + Stellar Wallets Kit |
+| Smart contracts | Rust, Soroban SDK 27, `wasm32v1-none` |
+| Client-side proving | WASM (`snarkjs`), usable in Node.js or the browser |
+| Indexer | Node.js, SQLite or PostgreSQL, bearer auth + rate limiting |
+| SDK | TypeScript, published as `@zkella/sdk` |
+| Fuzzing | `cargo-fuzz` / `libFuzzer`, 9 targets, minimized corpora in CI |
+| Coverage | `cargo-llvm-cov` |
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```
-ZKELLA/
-├── circuits/
-│   ├── common/                # shared Circom templates (Poseidon2, Merkle, range, commitments)
-│   ├── shield/                 # public -> shielded
-│   ├── unshield/                # shielded -> public
-│   ├── transfer_2in2out/       # Circom circuit: 2-input/2-output
-│   ├── transfer_4in4out/       # Circom circuit: 4-input/4-output
-│   ├── swap/                    # shielded swap commit-reveal fairness circuit
-│   └── compliance/               # sanctions non-membership circuit
-├── contracts/
-│   ├── token/                   # shielded confidential token (ShieldedToken)
-│   ├── token-interface/          # #[contractclient]-only crate for cross-contract calls into token
-│   ├── verifier/                # shared Groth16 verifying-key registry
-│   ├── verifier-interface/       # #[contractclient]-only crate for cross-contract calls into verifier
-│   ├── governance/              # timelocked verifying-key rotation
-│   ├── viewing_keys/             # auditor viewing key registry
-│   ├── compliance/               # sanctions non-membership proof storage
-│   └── swap/                     # shielded swap primitive
-├── indexer/                   # persistent note state manager (reference implementation)
-├── sdk/                        # TypeScript zkella-sdk
-├── tests/                      # unit and end-to-end tests
-├── app/                        # reference wallet application (planned)
-└── docs/                       # specifications and guides
+zkella/
+├── circuits/            # Circom circuits: shield, unshield, transfer (2x2, 4x4), swap, compliance
+├── contracts/            # Soroban/Rust workspace (8 crates)
+│   ├── token/            #   ShieldedToken: shield/transfer/transfer4/unshield, Merkle + Poseidon2
+│   ├── token-interface/  #   #[contractclient]-only crate for cross-contract calls into token
+│   ├── verifier/         #   shared Groth16 verifying-key registry
+│   ├── verifier-interface/ # #[contractclient]-only crate for cross-contract calls into verifier
+│   ├── governance/       #   timelocked VK rotation, admin actions, pause forwarding, guardian cancel
+│   ├── viewing_keys/     #   auditor viewing-key registry
+│   ├── compliance/       #   sanctions non-membership proof storage
+│   ├── swap/             #   shielded commit-reveal swap primitive
+│   └── */fuzz/           #   cargo-fuzz targets + minimized corpora (on the token crate)
+├── indexer/              # Node.js indexer: event sync, SQLite/PostgreSQL, HTTP API
+├── sdk/                  # @zkella/sdk (TypeScript): keys, proving, wallet, swap, auditor, compliance
+├── examples/             # One runnable script per flow (keys, shield, transfer, unshield, swap, audit)
+├── scripts/              # Testnet deploy/validate/health-check scripts, release verification
+├── tests/                # Unit and end-to-end tests (Jest)
+├── deployments.json      # Live and historical Testnet deployment records
+└── docs/                 # Specifications, runbook, deliverables, and audit records
 ```
+
+---
+
+## Development
+
+```bash
+# Contracts
+cd contracts && cargo build --workspace --target wasm32v1-none --release
+cargo test --workspace --release        # 237 tests
+
+# SDK and indexer
+npm install
+npm test                                 # 188 tests (set DATABASE_URL for the PostgreSQL-backed indexer tests)
+npm run typecheck
+
+# Fuzzing (needs nightly)
+cd contracts/token/fuzz && cargo +nightly fuzz run shield_arbitrary -- -max_total_time=60
+
+# Coverage
+cd contracts && cargo llvm-cov -p zkella-token --release --summary-only
+```
+
+CI (`.github/workflows/ci.yml`) runs all of this on every push to `main` and to this branch: contract tests in release mode, SDK/circuit tests and a real-browser Web Worker check against a PostgreSQL service container, and a 60-second-per-target fuzz smoke pass across all 9 targets.
+
+---
+
+## Documentation
+
+**Protocol design**
+[`docs/TECHNICAL_SPEC.md`](docs/TECHNICAL_SPEC.md) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/CIRCUIT_SPEC.md`](docs/CIRCUIT_SPEC.md) · [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md) · [`docs/VIEWING_KEYS.md`](docs/VIEWING_KEYS.md) · [`docs/PERFORMANCE_OPTIMISATION.md`](docs/PERFORMANCE_OPTIMISATION.md)
+
+**Operating it**
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) · [`docs/TESTNET_DEPLOYMENT.md`](docs/TESTNET_DEPLOYMENT.md) · [`docs/SDK_DEVELOPER.md`](docs/SDK_DEVELOPER.md) · [`docs/SDK_RELEASE.md`](docs/SDK_RELEASE.md) · [`docs/INTEGRATION_GUIDE.md`](docs/INTEGRATION_GUIDE.md)
+
+**Security and quality**
+[`docs/COVERAGE.md`](docs/COVERAGE.md) · [`docs/SECURITY_TOOLING_REPORT.md`](docs/SECURITY_TOOLING_REPORT.md) · [`docs/SECURITY_AUDIT_TRANCHE1.md`](docs/SECURITY_AUDIT_TRANCHE1.md) · [`SECURITY.md`](SECURITY.md)
+
+**Delivery record** (each deliverable's original description and success criteria, quoted verbatim, followed by evidence with full GitHub and on-chain links)
+[`docs/TRANCHE1_DELIVERABLES.md`](docs/TRANCHE1_DELIVERABLES.md) · [`docs/TRANCHE2_DELIVERABLES.md`](docs/TRANCHE2_DELIVERABLES.md) · [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md) · [`docs/POC_IMPLEMENTATION.md`](docs/POC_IMPLEMENTATION.md) · [`docs/POC_TESTNET_VALIDATION.md`](docs/POC_TESTNET_VALIDATION.md)
+
+**Design history**
+[`docs/DESIGN_EXPLORATION.md`](docs/DESIGN_EXPLORATION.md)
+
+---
+
+## Security and scope
+
+This is a Testnet-proven infrastructure stack, not an audited, mainnet-ready release. Specifically, and honestly:
+
+- **No third-party audit.** Every security pass to date — including the multi-agent self-audit behind [`docs/TRANCHE3_DELIVERABLES.md`](docs/TRANCHE3_DELIVERABLES.md), which found and fixed a critical swap fund-destruction path and an unreachable-pause gap across two contracts — was performed by the team building the protocol, not an independent third party.
+- **Dev-only trusted setup.** The Groth16 proving keys behind every circuit come from a single-contributor local ceremony (`/dev/urandom` entropy), suitable for Testnet and CI, explicitly not for production. A real multi-party ceremony per circuit is required before mainnet.
+- **No admin multisig.** Governance's own admin and the swap/compliance admin are single keys on Testnet today; multisig custody is out of scope for this release.
+- **Mainnet is out of scope.** Every address, transaction, and deployment referenced in this repository is Testnet.
+
+Report vulnerabilities privately, not as a public issue — see [`SECURITY.md`](SECURITY.md) for the disclosure process.
 
 ---
 
 ## Contributing
 
-See `CONTRIBUTING.md` for the development setup, repository layout, and PR expectations.
-
-## Security
-
-This is a PoC — no external security audit has been performed and every trusted-setup ceremony behind the circuits so far is dev-only. See `SECURITY.md` for the vulnerability disclosure policy before reporting an issue publicly.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development setup, repository layout, and PR expectations.
 
 ## License
 
-Apache 2.0 — open for the entire Stellar ecosystem to build on. See `LICENSE`.
+Apache 2.0 — open for the entire Stellar ecosystem to build on. See [`LICENSE`](LICENSE).
