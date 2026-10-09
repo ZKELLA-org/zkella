@@ -9,6 +9,27 @@ This package is the client: key derivation, Groth16 proof generation (via `snark
 
 **Scope:** Stellar Testnet only. No third-party security audit has been performed yet, and the circuits' trusted setup is a development ceremony — not suitable for custody of real funds. See [`docs/RUNBOOK.md`](https://github.com/ZKELLA-org/zkella/blob/e93154bd9efd40cf6e4d3d035c8797b378658f29/docs/RUNBOOK.md) and ["Roadmap to mainnet"](https://github.com/ZKELLA-org/zkella/blob/e93154bd9efd40cf6e4d3d035c8797b378658f29/README.md#roadmap-to-mainnet) for the precise boundary.
 
+- [What's in this package](#whats-in-this-package)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Public API](#public-api)
+- [Live Testnet deployment](#live-testnet-deployment)
+- [Links](#links)
+- [License](#license)
+
+## What's in this package
+
+- **Keys** — spending/nullifier/viewing/transmission key derivation, diversified shielded addresses, viewing-key export for an auditor.
+- **Wallet** — `shield()`/`transfer()`/`unshield()` with real Groth16 proving and real Soroban transaction submission, not stubs.
+- **Swap** — `commitSwap()`/`revealAndClaim()`/`cancelSwap()` against the real commit-reveal shielded swap contract.
+- **Compliance** — sanctions non-membership proof generation and publishing against the real compliance contract.
+- **Auditor** — decrypts real note history from a granted viewing key, with resumable sync.
+- **Relayer RFQ** — a quote client/handler pair for off-chain price discovery that enforces the exact same slippage floor the swap's on-chain fairness circuit checks.
+- **Indexer client** — typed access to notes, Merkle paths, and nullifier checks from a `zkella` indexer instance.
+- Full TypeScript types for every public method and payload (`dist/index.d.ts`), CommonJS output, no native/Node-only dependencies — runnable in Node.js or bundled for the browser (exercised in CI against a real headless Chromium via a Web Worker check).
+
+**What this package does not include:** the Groth16 circuit artifacts themselves (`.wasm`/`.zkey` — build them from [`circuits/`](https://github.com/ZKELLA-org/zkella/tree/e93154bd9efd40cf6e4d3d035c8797b378658f29/circuits) in the main repository, or point at your own), a relayer server (only the client/handler contract for one), and a reference wallet UI.
+
 ## Install
 
 ```bash
@@ -54,6 +75,7 @@ Every on-chain call follows this shape: the method builds the transaction and ge
 | `ZKELLACompliance` | `generateNonSanctionedProof()`, `publishProof(proof)` — real calls against `contracts/compliance`. |
 | `ZKELLAAuditor` | `sync()`, `transactionHistory(asset)` — decrypts real note history from a granted viewing key. |
 | `IndexerClient` | `getNotes(fromLedger, limit)`, `getMerklePath(leafIndex)`, nullifier checks. |
+| `SwapQuoteClient` | `requestQuote(req)` — off-chain price discovery from a relayer, validated against the same slippage floor the chain enforces (`quoteRespectsSlippage()`, `QuoteValidationError`). |
 | `TESTNET_CONTRACTS`, `TESTNET_SOROBAN_RPC` | The current live Testnet addresses and RPC endpoint. |
 
 Full API reference, troubleshooting, and what to persist between sessions: [`docs/SDK_DEVELOPER.md`](https://github.com/ZKELLA-org/zkella/blob/e93154bd9efd40cf6e4d3d035c8797b378658f29/docs/SDK_DEVELOPER.md). Runnable examples for every flow (keys, shield, indexer query, viewing-key audit, transfer, unshield, swap): [`examples/`](https://github.com/ZKELLA-org/zkella/tree/e93154bd9efd40cf6e4d3d035c8797b378658f29/examples).
@@ -80,4 +102,4 @@ Full API reference, troubleshooting, and what to persist between sessions: [`doc
 
 ## License
 
-Apache 2.0 — see [`LICENSE`](https://github.com/ZKELLA-org/zkella/blob/main/LICENSE).
+Apache 2.0 — included as `LICENSE` in this package, and at [`LICENSE`](https://github.com/ZKELLA-org/zkella/blob/main/LICENSE) in the main repository.
