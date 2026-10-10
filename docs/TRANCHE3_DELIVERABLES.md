@@ -434,6 +434,13 @@ Proof:
   - Swap commit: https://stellar.expert/explorer/testnet/tx/8502c742c674ac87677d90a367ca870f9ac11b372c0bb4d2209f3e521858bb0e
   - Swap cancel: https://stellar.expert/explorer/testnet/tx/d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887
 - Second run, current post-audit stack:
+  - Shield: confirmed by leaf index (leaves 4–5) — this run's specific transaction hash
+    wasn't individually recorded, unlike the first run above
+  - Indexer query and viewing-key audit: read-only calls, so neither produces its own
+    transaction; the audit recovered 4 real receipts, same run cited under Deliverable 1
+    criterion 6 above
+  - Transfer: confirmed by leaf index (new leaves 6–7); hash not individually recorded
+  - Unshield: confirmed by leaf index (change note at leaf 8); hash not individually recorded
   - Compliance publish: https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442
   - Full swap lifecycle — shield: https://stellar.expert/explorer/testnet/tx/d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973,
     commit: https://stellar.expert/explorer/testnet/tx/d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6,
