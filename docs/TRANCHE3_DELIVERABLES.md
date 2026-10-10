@@ -222,16 +222,14 @@ was proven against the real token contract in an automated test, then demonstrat
 Testnet twice: once on the original stack, and again on the current stack after the audit
 fixes. In both cases, the minimum shield amount was read back afterward as `500`, down from the
 original `1000`, with no redeploy involved either time.
-Proof: the automated test, `min_shield_amount_changes_on_the_real_token_only_after_the_timelock`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L587);
-original-stack run — queue
-(https://stellar.expert/explorer/testnet/tx/e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840),
-execute
-(https://stellar.expert/explorer/testnet/tx/ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07);
-current-stack run — queue
-(https://stellar.expert/explorer/testnet/tx/3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3),
-execute
-(https://stellar.expert/explorer/testnet/tx/f3ef72ee1e4ad65fafb5f5eb4c99d8094f61b696e7517081964cc172f84297b5).
+Proof:
+
+- The automated test: `min_shield_amount_changes_on_the_real_token_only_after_the_timelock`
+  — https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L587
+- Original-stack run — queue: https://stellar.expert/explorer/testnet/tx/e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840
+  — execute: https://stellar.expert/explorer/testnet/tx/ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07
+- Current-stack run — queue: https://stellar.expert/explorer/testnet/tx/3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3
+  — execute: https://stellar.expert/explorer/testnet/tx/f3ef72ee1e4ad65fafb5f5eb4c99d8094f61b696e7517081964cc172f84297b5
 
 ---
 
