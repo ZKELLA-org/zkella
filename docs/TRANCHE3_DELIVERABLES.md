@@ -148,7 +148,7 @@ Proof: `docs/VIEWING_KEYS.md`'s "Revocation criterion (decision)" section, expla
 reasoning
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md#revocation-criterion-decision);
 the automated test proving the behavior
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/viewing-key-rotation.test.ts).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/viewing-key-rotation.test.ts#L35-L45).
 
 **6. Decrypt-on-request workflow — Met, live.** An auditor holding a real, exported viewing key
 was able to decrypt and read actual transaction receipts straight from the live contract — this
@@ -163,7 +163,7 @@ Proof: the live run against the current stack, recovering receipts at ledgers 50
 the SDK method used
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/wallet/auditor.ts);
 the automated test covering both the successful case and the wrong-key case
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/auditor.test.ts).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/auditor.test.ts#L38-L55).
 
 **7. Sanctions-list maintenance — Met, documented.** The rules for who publishes the sanctions
 list and how often are written down: on Testnet, the compliance admin key is the maintainer (a
@@ -222,9 +222,9 @@ was proven against the real token contract in an automated test, then demonstrat
 Testnet twice: once on the original stack, and again on the current stack after the audit
 fixes. In both cases, the minimum shield amount was read back afterward as `500`, down from the
 original `1000`, with no redeploy involved either time.
-Proof: the automated test
-(`min_shield_amount_changes_on_the_real_token_only_after_the_timelock` in the governance source
-linked under criterion 1); original-stack run — queue
+Proof: the automated test, `min_shield_amount_changes_on_the_real_token_only_after_the_timelock`
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L587);
+original-stack run — queue
 (https://stellar.expert/explorer/testnet/tx/e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840),
 execute
 (https://stellar.expert/explorer/testnet/tx/ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07);
@@ -284,8 +284,8 @@ Proof: `docs/SECURITY_TOOLING_REPORT.md`
 (38 of them, across all six contracts) was measured for how much of Stellar's per-transaction
 instruction budget it actually uses, against the real compiled contract code rather than an
 estimate. The most expensive one uses well under 1% of the limit.
-Proof: the budget-measurement test
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/budget/tests/instruction_budget.rs,
+Proof: the budget-measurement test, `instruction_budget_for_every_non_proof_entrypoint`
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/budget/tests/instruction_budget.rs#L43,
 added at https://github.com/ZKELLA-org/zkella/commit/dc84c450d49de8bef007d7e35c4537724cd019b3);
 full results in `docs/SECURITY_TOOLING_REPORT.md`'s budget table (link above).
 
@@ -417,7 +417,7 @@ if this ever drifts out of sync with the actual deployment record.
 Proof: the configuration file
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/config/testnet.ts);
 the test that enforces it
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/testnet-config.test.ts).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/testnet-config.test.ts#L5-L13).
 
 **4. Example code, all six flows, live — Met, and re-verified after the audit fixes.** Every
 example (shield, transfer, unshield, viewing-key audit, indexer query, and swap) was run for
@@ -470,7 +470,7 @@ instead of blindly retrying, which is the one way a naive retry could cause a do
 rejected transaction is not retried, and if the reference point a proof was built against
 becomes too old, the wallet rebuilds the call against a fresh one automatically.
 Proof: the automated test covering all four cases
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/wallet-resilience.test.ts,
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/wallet-resilience.test.ts#L39-L69,
 added at https://github.com/ZKELLA-org/zkella/commit/241556203710dabd2b21d7c4da29adfeb29c7700).
 
 **8. Wrapper classes call real contracts, not stubs — Met.** The swap, auditor, and compliance
