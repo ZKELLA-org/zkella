@@ -107,9 +107,8 @@ produced by the actual proving tools rather than a fake placeholder, which confi
 verification logic genuinely works. Other tests confirm a viewing key can be registered and
 read back, that registering again replaces the old key (rotation), that revoking an existing
 key removes it, and that both registering and revoking require the owner's own authorization.
-(Revoking a key that was never registered is a safe no-op by construction — removing a
-nonexistent entry from Soroban storage doesn't error — but that specific case isn't covered by
-a dedicated test today.)
+(See "What is left open, honestly" below for the one related edge case not covered by its own
+test.)
 Proof: the compliance test that checks the real proof
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/compliance/src/lib.rs#L498);
 the viewing-key contract's test module
