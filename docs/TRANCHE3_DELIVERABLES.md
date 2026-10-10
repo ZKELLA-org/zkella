@@ -61,7 +61,7 @@ redeployed 2026-10-08 to carry the audit fixes in this document's last section):
 - compliance: https://stellar.expert/explorer/testnet/contract/CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ
 - viewing_keys: https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE (reused unchanged)
 
-Deployed by `scripts/testnet_deploy_stack.sh`
+**Deployment note:** all six were deployed by `scripts/testnet_deploy_stack.sh`
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_deploy_stack.sh),
 not hand-typed CLI invocations. Governance is built with the `testnet-fast-timelock` feature
 (`timelock_ledgers() == 60`, not the 7-day production value) so the full timelock path could be
