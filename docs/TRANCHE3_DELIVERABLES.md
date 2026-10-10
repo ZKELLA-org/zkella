@@ -104,13 +104,16 @@ the viewing-key contract source
 **2. Functional tests — Met.** 13 tests cover compliance and 5 cover viewing keys, and all of
 them pass. One test, `accepts_and_stores_a_real_sdk_proof`, checks a real cryptographic proof
 produced by the actual proving tools rather than a fake placeholder, which confirms the
-verification logic genuinely works. Other tests confirm a viewing key can be registered,
-replaced later by rotating it, and that trying to revoke a key that was never registered is
-safely rejected instead of causing an error.
-Proof: the compliance contract's test module
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/compliance/src/lib.rs);
+verification logic genuinely works. Other tests confirm a viewing key can be registered and
+read back, that registering again replaces the old key (rotation), that revoking an existing
+key removes it, and that both registering and revoking require the owner's own authorization.
+(Revoking a key that was never registered is a safe no-op by construction — removing a
+nonexistent entry from Soroban storage doesn't error — but that specific case isn't covered by
+a dedicated test today.)
+Proof: the compliance test that checks the real proof
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/compliance/src/lib.rs#L498);
 the viewing-key contract's test module
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/viewing_keys/src/lib.rs).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/viewing_keys/src/lib.rs#L72-L139).
 
 **3. Technical documentation — Met.** Two documents explain how this works: one is dedicated to
 disclosure and compliance specifically, the other covers these contracts as part of the overall
@@ -202,8 +205,8 @@ mechanism now added to all four contracts that didn't have one before. That paus
 itself had a real bug, described in the audit section below, which is now fixed and covered by
 its own dedicated tests (`pause_verifier_actually_pauses_and_unpause_verifier_restores_it`,
 `pause_token_actually_pauses_and_unpause_token_restores_it`).
-Proof: the governance contract's test module
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs).
+Proof: the governance contract's test module, starting with the two pause tests named above
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L658-L745).
 
 **3. Technical documentation — Met.** The documentation explicitly lists which governance
 features are intentionally left for a later upgrade: an admin multisig, authorization to
@@ -568,6 +571,9 @@ passes with no errors.
   so explicitly, and that remains the honest status.
 - **The SDK is `0.1.1`**, not `1.0.0` — a deliberate pre-1.0 release, not the literal version the
   original roadmap wording named; see `docs/SDK_RELEASE.md`.
+- **Revoking a never-registered viewing key** has no dedicated test; it's a safe no-op by
+  construction (removing a nonexistent entry from Soroban storage doesn't error), confirmed by
+  reading the implementation, not by a test exercising that exact case.
 - **`swap`'s `reclaim_expired_swap` recovery path** (the post-*execution* unwind, for a relayer
   that fronted liquidity but the claimant never claims) is still unit-tested only. Its claim
   window is `CLAIM_WINDOW_LEDGERS = 17_280` ledgers (~24 hours at 5s/ledger) after the swap's
