@@ -120,9 +120,10 @@ system design.
 Proof: `docs/VIEWING_KEYS.md`, covering disclosure, epochs, key revocation, and sanctions-list
 maintenance
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md);
-`docs/ARCHITECTURE.md`'s "Viewing keys and compliance" section, covering the contracts' design
-and current limits
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/ARCHITECTURE.md).
+`docs/ARCHITECTURE.md`'s "Viewing key registry contract" and "Compliance contract" sections,
+covering the contracts' design and current limits
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/ARCHITECTURE.md#24-viewing-key-registry-contract,
+https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/ARCHITECTURE.md#25-compliance-contract).
 
 **4. `publish_compliance_proof` live on Testnet — Met, twice.** This function was actually
 called through the SDK, not a raw command-line invocation, and it was run successfully on two
@@ -145,7 +146,7 @@ key can no longer decrypt anything received after that point — while they can 
 they could already decrypt before it, which is the expected and correct behavior, not a gap.
 Proof: `docs/VIEWING_KEYS.md`'s "Revocation criterion (decision)" section, explaining the
 reasoning
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md);
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md#revocation-criterion-decision);
 the automated test proving the behavior
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/viewing-key-rotation.test.ts).
 
@@ -172,7 +173,7 @@ anyone can check it. Right now the list actually in use is empty — just placeh
 because Testnet has no real sanctions list yet, and the documentation says so plainly rather
 than implying otherwise.
 Proof: `docs/VIEWING_KEYS.md`, "Sanctions list maintenance" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md#sanctions-list-maintenance).
 
 ---
 
@@ -212,7 +213,7 @@ features are intentionally left for a later upgrade: an admin multisig, authoriz
 upgrade the circuits themselves beyond simple key rotation, and finer-grained parameter
 controls.
 Proof: `docs/GOVERNANCE.md`, "Deferred to a later governance upgrade" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/GOVERNANCE.md).
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/GOVERNANCE.md#deferred-to-a-later-governance-upgrade).
 
 **4. `MIN_SHIELD_AMOUNT` is governance-settable — Met, demonstrated live twice.** Changing the
 minimum shield amount, which asset is approved, or which relayer is allowed, all go through the
@@ -354,7 +355,7 @@ rather than starting over, while `token.merkle_root()` stayed readable from the 
 whole time the indexer was down. This second drill also found and fixed a real gap: the
 indexer's own startup message was misleading about where it was actually resuming from.
 Proof: `docs/RUNBOOK.md`'s "Drill record" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md);
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md#drill-record);
 the diagnostic-message fix from the second drill
 (https://github.com/ZKELLA-org/zkella/commit/7ab5939efab3f4b96c4d548610c8d4f2aab5121e).
 
@@ -459,7 +460,7 @@ Proof: `docs/SDK_DEVELOPER.md`
 specifically about the SDK: which version to pin, how to upgrade, and how to troubleshoot
 common integration problems.
 Proof: `docs/RUNBOOK.md`, "SDK artifacts" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md),
+(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md#sdk-artifacts),
 added at https://github.com/ZKELLA-org/zkella/commit/13756e0b8a8af2cb444f21d9077be0d05620eca4.
 
 **7. Retry and resubmit logic, tested — Met.** The wallet now handles two realistic failure
