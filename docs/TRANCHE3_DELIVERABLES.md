@@ -425,29 +425,23 @@ didn't break anything a real user would run. Running these for real, not just th
 caught two genuine bugs unit tests alone had missed: the transfer example wasn't passing the
 recipient's key correctly, and the swap example was quoting a slightly wrong amount that the
 system correctly rejected. Both are fixed now.
-Proof: first run — shield
-(https://stellar.expert/explorer/testnet/tx/1126edc56b34bc38836eb9d14a12450fa80c763332604238f8bdc7fc8e62cbc6),
-indexer query / viewing-key audit / transfer
-(https://stellar.expert/explorer/testnet/tx/0b53568b5ade7885f915a23a65bdf053e5acc45b4bb9d3599ddc7e1a6fdaf444),
-unshield
-(https://stellar.expert/explorer/testnet/tx/f81c0016e472d8d8a9d6a15caa2778983ae4ee941fa7f0ae9c1095910fdee795),
-swap commit
-(https://stellar.expert/explorer/testnet/tx/8502c742c674ac87677d90a367ca870f9ac11b372c0bb4d2209f3e521858bb0e),
-swap cancel
-(https://stellar.expert/explorer/testnet/tx/d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887);
-second run — compliance publish
-(https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442),
-full swap lifecycle: shield
-(https://stellar.expert/explorer/testnet/tx/d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973),
-commit
-(https://stellar.expert/explorer/testnet/tx/d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6),
-execute
-(https://stellar.expert/explorer/testnet/tx/9aa8b8cd7cb0f335f109d6387334fcaac17aad9cc033518c415f57eebe023120),
-reveal
-(https://stellar.expert/explorer/testnet/tx/1320f2a101e0adaf9475d0d00b76082cbc59105b99885ad66e090b6f6cf1e1fc);
-the two bug fixes
-(https://github.com/ZKELLA-org/zkella/commit/d471c5c7381c76a44abd57cc623c635e0b50a1fe,
-https://github.com/ZKELLA-org/zkella/commit/7df8b8b417c92406c14174253085d1127d2f1f44).
+Proof:
+
+- First run, original stack:
+  - Shield: https://stellar.expert/explorer/testnet/tx/1126edc56b34bc38836eb9d14a12450fa80c763332604238f8bdc7fc8e62cbc6
+  - Indexer query / viewing-key audit / transfer: https://stellar.expert/explorer/testnet/tx/0b53568b5ade7885f915a23a65bdf053e5acc45b4bb9d3599ddc7e1a6fdaf444
+  - Unshield: https://stellar.expert/explorer/testnet/tx/f81c0016e472d8d8a9d6a15caa2778983ae4ee941fa7f0ae9c1095910fdee795
+  - Swap commit: https://stellar.expert/explorer/testnet/tx/8502c742c674ac87677d90a367ca870f9ac11b372c0bb4d2209f3e521858bb0e
+  - Swap cancel: https://stellar.expert/explorer/testnet/tx/d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887
+- Second run, current post-audit stack:
+  - Compliance publish: https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442
+  - Full swap lifecycle — shield: https://stellar.expert/explorer/testnet/tx/d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973,
+    commit: https://stellar.expert/explorer/testnet/tx/d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6,
+    execute: https://stellar.expert/explorer/testnet/tx/9aa8b8cd7cb0f335f109d6387334fcaac17aad9cc033518c415f57eebe023120,
+    reveal: https://stellar.expert/explorer/testnet/tx/1320f2a101e0adaf9475d0d00b76082cbc59105b99885ad66e090b6f6cf1e1fc
+- The two bug fixes:
+  - Transfer example's recipient key: https://github.com/ZKELLA-org/zkella/commit/d471c5c7381c76a44abd57cc623c635e0b50a1fe
+  - Swap example's quoted amount: https://github.com/ZKELLA-org/zkella/commit/7df8b8b417c92406c14174253085d1127d2f1f44
 
 **5. Developer documentation — Met.** A dedicated guide covers installing the SDK, configuring
 it for Testnet, the API reference, example usage, and troubleshooting.
