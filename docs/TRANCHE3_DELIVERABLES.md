@@ -434,13 +434,16 @@ Proof:
   - Swap commit: https://stellar.expert/explorer/testnet/tx/8502c742c674ac87677d90a367ca870f9ac11b372c0bb4d2209f3e521858bb0e
   - Swap cancel: https://stellar.expert/explorer/testnet/tx/d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887
 - Second run, current post-audit stack:
-  - Shield: confirmed by leaf index (leaves 4–5) — this run's specific transaction hash
-    wasn't individually recorded, unlike the first run above
+  - Shield — leaf 4: https://stellar.expert/explorer/testnet/tx/6e0c2150531cb84caf21b9f6cd80292fe58faba60d757eb13ad42dce53a14ec9,
+    leaf 5: https://stellar.expert/explorer/testnet/tx/c3e66464dfacf6459c04b0fb81dcbfac7b089cb87c624f86eb71dc1fec3b5f98
+    (neither hash was recorded in `deployments.json` at the time; found afterward by
+    matching the indexer's recorded ledger for each leaf against the token contract's
+    own `getEvents` log for that ledger, then independently confirmed on Horizon)
   - Indexer query and viewing-key audit: read-only calls, so neither produces its own
     transaction; the audit recovered 4 real receipts, same run cited under Deliverable 1
     criterion 6 above
-  - Transfer: confirmed by leaf index (new leaves 6–7); hash not individually recorded
-  - Unshield: confirmed by leaf index (change note at leaf 8); hash not individually recorded
+  - Transfer — new leaves 6 and 7, one transaction: https://stellar.expert/explorer/testnet/tx/98ad0c54694a5fa6f109399d4077d953654686882392624f00994d94d859a5b2
+  - Unshield — change note at leaf 8: https://stellar.expert/explorer/testnet/tx/069fc3c69a5d46e58c2b9c7350f43c56758ec3ec4f1a5b4646821ffc01377be0
   - Compliance publish: https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442
   - Full swap lifecycle — shield: https://stellar.expert/explorer/testnet/tx/d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973,
     commit: https://stellar.expert/explorer/testnet/tx/d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6,
