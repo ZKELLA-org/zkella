@@ -8,8 +8,8 @@ clickable links — a GitHub commit or file link for every piece of code evidenc
 asked for; it is the literal ask, next to the literal proof.
 
 Repository: https://github.com/ZKELLA-org/zkella. Code links below point at the branch this
-work lives on, `compliance-governance-security-testnet-release`
-(https://github.com/ZKELLA-org/zkella/tree/compliance-governance-security-testnet-release),
+work lives on, `main`
+(https://github.com/ZKELLA-org/zkella/tree/main),
 unless a specific commit is named.
 
 ## How to reproduce
@@ -64,7 +64,7 @@ cross-asset `min_amount_out` fix and the token relayer-fee-during-shortfall fix 
 - viewing_keys: https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE (reused unchanged across both redeploys)
 
 **Deployment note:** all six were deployed by `scripts/testnet_deploy_stack.sh`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_deploy_stack.sh),
+(https://github.com/ZKELLA-org/zkella/blob/main/scripts/testnet_deploy_stack.sh),
 not hand-typed CLI invocations. Governance is built with the `testnet-fast-timelock` feature
 (`timelock_ledgers() == 60`, not the 7-day production value) so the full timelock path could be
 demonstrated live within the funding window.
@@ -99,9 +99,9 @@ transaction, which proves it actually runs on-chain, not only in local tests.
 Proof: the live `initialize` transaction
 (https://stellar.expert/explorer/testnet/tx/62521977b17c60b46be3d02640d5470b9fb93cf9e1235d787b678761ae898ac8);
 the compliance contract source
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/compliance/src/lib.rs);
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/compliance/src/lib.rs);
 the viewing-key contract source
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/viewing_keys/src/lib.rs).
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/viewing_keys/src/lib.rs).
 
 **2. Functional tests — Met.** 13 tests cover compliance and 5 cover viewing keys, and all of
 them pass. One test, `accepts_and_stores_a_real_sdk_proof`, checks a real cryptographic proof
@@ -112,20 +112,20 @@ key removes it, and that both registering and revoking require the owner's own a
 (See "What is left open, honestly" below for the one related edge case not covered by its own
 test.)
 Proof: the compliance test that checks the real proof
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/compliance/src/lib.rs#L498);
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/compliance/src/lib.rs#L498);
 the viewing-key contract's test module
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/viewing_keys/src/lib.rs#L72-L139).
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/viewing_keys/src/lib.rs#L72-L139).
 
 **3. Technical documentation — Met.** Two documents explain how this works: one is dedicated to
 disclosure and compliance specifically, the other covers these contracts as part of the overall
 system design.
 Proof: `docs/VIEWING_KEYS.md`, covering disclosure, epochs, key revocation, and sanctions-list
 maintenance
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md);
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/VIEWING_KEYS.md);
 `docs/ARCHITECTURE.md`'s "Viewing key registry contract" and "Compliance contract" sections,
 covering the contracts' design and current limits
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/ARCHITECTURE.md#24-viewing-key-registry-contract,
-https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/ARCHITECTURE.md#25-compliance-contract).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/ARCHITECTURE.md#24-viewing-key-registry-contract,
+https://github.com/ZKELLA-org/zkella/blob/main/docs/ARCHITECTURE.md#25-compliance-contract).
 
 **4. `publish_compliance_proof` live on Testnet — Met, twice.** This function was actually
 called through the SDK, not a raw command-line invocation, and it was run successfully on two
@@ -136,7 +136,7 @@ Proof: on the original stack
 on the current, post-audit stack
 (https://stellar.expert/explorer/testnet/tx/533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442);
 the SDK method that submitted both
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/compliance/compliance.ts).
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/compliance/compliance.ts).
 
 **5. Revocation — Met, under a reworded criterion.** The criterion as originally written asks
 for something that isn't possible for any system built this way: once a note's encrypted data
@@ -148,9 +148,9 @@ key can no longer decrypt anything received after that point — while they can 
 they could already decrypt before it, which is the expected and correct behavior, not a gap.
 Proof: `docs/VIEWING_KEYS.md`'s "Revocation criterion (decision)" section, explaining the
 reasoning
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md#revocation-criterion-decision);
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/VIEWING_KEYS.md#revocation-criterion-decision);
 the automated test proving the behavior
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/viewing-key-rotation.test.ts#L35-L45).
+(https://github.com/ZKELLA-org/zkella/blob/main/tests/unit/viewing-key-rotation.test.ts#L35-L45).
 
 **6. Decrypt-on-request workflow — Met, live.** An auditor holding a real, exported viewing key
 was able to decrypt and read actual transaction receipts straight from the live contract — this
@@ -161,11 +161,11 @@ wallet recovers nothing at all, which confirms the decryption is genuinely tied 
 key and not something that works for anyone.
 Proof: the live run against the current stack, recovering receipts at ledgers 5090104, 5090106,
 5090109, and 5090112
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/examples/04-viewing-key-audit.cjs);
+(https://github.com/ZKELLA-org/zkella/blob/main/examples/04-viewing-key-audit.cjs);
 the SDK method used
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/wallet/auditor.ts);
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/wallet/auditor.ts);
 the automated test covering both the successful case and the wrong-key case
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/auditor.test.ts#L38-L55).
+(https://github.com/ZKELLA-org/zkella/blob/main/tests/unit/auditor.test.ts#L38-L55).
 
 **7. Sanctions-list maintenance — Met, documented.** The rules for who publishes the sanctions
 list and how often are written down: on Testnet, the compliance admin key is the maintainer (a
@@ -175,7 +175,7 @@ anyone can check it. Right now the list actually in use is empty — just placeh
 because Testnet has no real sanctions list yet, and the documentation says so plainly rather
 than implying otherwise.
 Proof: `docs/VIEWING_KEYS.md`, "Sanctions list maintenance" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/VIEWING_KEYS.md#sanctions-list-maintenance).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/VIEWING_KEYS.md#sanctions-list-maintenance).
 
 ---
 
@@ -198,7 +198,7 @@ admin/multisig controls are deferred to a later governance upgrade."*
 initialized with a 60-ledger timelock (a shortened, demo-only stand-in for the real 7-day
 production delay) and a separate guardian key.
 Proof: the governance contract source
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs).
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/governance/src/lib.rs).
 
 **2. Functional tests — Met, 25 tests.** The tests cover: registering a verifying key for the
 first time and later rotating it, both going through the same timelock; the guardian's ability
@@ -208,14 +208,14 @@ itself had a real bug, described in the audit section below, which is now fixed 
 its own dedicated tests (`pause_verifier_actually_pauses_and_unpause_verifier_restores_it`,
 `pause_token_actually_pauses_and_unpause_token_restores_it`).
 Proof: the governance contract's test module, starting with the two pause tests named above
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L658-L745).
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/governance/src/lib.rs#L658-L745).
 
 **3. Technical documentation — Met.** The documentation explicitly lists which governance
 features are intentionally left for a later upgrade: an admin multisig, authorization to
 upgrade the circuits themselves beyond simple key rotation, and finer-grained parameter
 controls.
 Proof: `docs/GOVERNANCE.md`, "Deferred to a later governance upgrade" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/GOVERNANCE.md#deferred-to-a-later-governance-upgrade).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/GOVERNANCE.md#deferred-to-a-later-governance-upgrade).
 
 **4. `MIN_SHIELD_AMOUNT` is governance-settable — Met, demonstrated live twice.** Changing the
 minimum shield amount, which asset is approved, or which relayer is allowed, all go through the
@@ -227,7 +227,7 @@ original `1000`, with no redeploy involved either time.
 Proof:
 
 - The automated test: `min_shield_amount_changes_on_the_real_token_only_after_the_timelock`
-  — https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/governance/src/lib.rs#L587
+  — https://github.com/ZKELLA-org/zkella/blob/main/contracts/governance/src/lib.rs#L587
 - Original-stack run — queue: https://stellar.expert/explorer/testnet/tx/e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840
   — execute: https://stellar.expert/explorer/testnet/tx/ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07
 - Current-stack run — queue: https://stellar.expert/explorer/testnet/tx/3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3
@@ -263,7 +263,7 @@ full set of state-changing actions, each with a saved starting set of test input
 runs build on real coverage instead of starting from nothing. One of these fuzz tests already
 found a real crash, which is now fixed and kept as a permanent regression case.
 Proof: the full tooling report
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/SECURITY_TOOLING_REPORT.md);
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/SECURITY_TOOLING_REPORT.md);
 the dependency-vulnerability fixes
 (https://github.com/ZKELLA-org/zkella/commit/813346819d8c7737d054c15072d5d7ede8f08fac,
 https://github.com/ZKELLA-org/zkella/commit/d38087ee73432c35eb6058f640862449036905c4); the new
@@ -278,14 +278,14 @@ crash found and fixed
 what was done about it — fixed, or explicitly accepted with a stated reason — never left
 unaddressed with no explanation.
 Proof: `docs/SECURITY_TOOLING_REPORT.md`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/SECURITY_TOOLING_REPORT.md).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/SECURITY_TOOLING_REPORT.md).
 
 **3. Real-WASM budget for every entrypoint — Met.** Every function that changes contract state
 (38 of them, across all six contracts) was measured for how much of Stellar's per-transaction
 instruction budget it actually uses, against the real compiled contract code rather than an
 estimate. The most expensive one uses well under 1% of the limit.
 Proof: the budget-measurement test, `instruction_budget_for_every_non_proof_entrypoint`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/contracts/budget/tests/instruction_budget.rs#L43,
+(https://github.com/ZKELLA-org/zkella/blob/main/contracts/budget/tests/instruction_budget.rs#L43,
 added at https://github.com/ZKELLA-org/zkella/commit/dc84c450d49de8bef007d7e35c4537724cd019b3);
 full results in `docs/SECURITY_TOOLING_REPORT.md`'s budget table (link above).
 
@@ -315,23 +315,23 @@ escalation paths and rollback steps for suspected misconfiguration or degradatio
 connected to each other on the current stack: governance is set as the admin for both the
 verifier and the token, and every contract address is published.
 Proof: `deployments.json`'s `testnet_final` block
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/deployments.json);
+(https://github.com/ZKELLA-org/zkella/blob/main/deployments.json);
 the deployment script that performed it, run in order verifier → governance → token → swap →
 compliance → viewing_keys
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_deploy_stack.sh).
+(https://github.com/ZKELLA-org/zkella/blob/main/scripts/testnet_deploy_stack.sh).
 
 **2. Indexer confirmed against the live stack — Met.** The indexer — the service that lets a
 wallet recover its note history — was pointed at the current contracts and caught up to the
 latest ledger with no lag. A real shield, transfer, unshield, and compliance publish were each
 correctly picked up and made queryable afterward.
 Proof: the health-check script used to confirm this
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_health_check.sh).
+(https://github.com/ZKELLA-org/zkella/blob/main/scripts/testnet_health_check.sh).
 
 **3. Operational runbook — Met.** A written runbook covers what to do for each of the four
 kinds of incidents this project anticipates, plus a basic day-to-day operating checklist, and
 it's written against the actual deployed addresses rather than a hypothetical setup.
 Proof: `docs/RUNBOOK.md`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/RUNBOOK.md).
 
 **4. Scheduled, automated check with a real notification — Met.** A script checks the RPC
 connection, the indexer, and contract state every 15 minutes through a real cron job running on
@@ -339,7 +339,7 @@ the actual operating machine — this is live right now, not only something docu
 possible. When a check fails, it sends a real notification; an earlier version of this
 notification was formatted incorrectly for the notification service and has since been fixed.
 Proof: the health-check script
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_health_check.sh);
+(https://github.com/ZKELLA-org/zkella/blob/main/scripts/testnet_health_check.sh);
 the notification-format fix
 (https://github.com/ZKELLA-org/zkella/commit/55b51e9c829b56633575dcdcca63c3157bdeeea7).
 
@@ -355,7 +355,7 @@ rather than starting over, while `token.merkle_root()` stayed readable from the 
 whole time the indexer was down. This second drill also found and fixed a real gap: the
 indexer's own startup message was misleading about where it was actually resuming from.
 Proof: `docs/RUNBOOK.md`'s "Drill record" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md#drill-record);
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/RUNBOOK.md#drill-record);
 the diagnostic-message fix from the second drill
 (https://github.com/ZKELLA-org/zkella/commit/7ab5939efab3f4b96c4d548610c8d4f2aab5121e).
 
@@ -366,7 +366,7 @@ partway through instead of starting over, which was genuinely needed once — a 
 interrupted the first deployment attempt, and the script picked back up from where it had
 stopped. The same script, unmodified, was used again later for the audit-fix redeployment.
 Proof: the deployment script
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_deploy_stack.sh).
+(https://github.com/ZKELLA-org/zkella/blob/main/scripts/testnet_deploy_stack.sh).
 
 ---
 
@@ -397,7 +397,7 @@ Testnet only; mainnet network configuration is out of scope for this release."*
 management, note handling, proof generation, transaction building, compliance, and the indexer
 client.
 Proof: the SDK source tree
-(https://github.com/ZKELLA-org/zkella/tree/compliance-governance-security-testnet-release/sdk/src).
+(https://github.com/ZKELLA-org/zkella/tree/main/sdk/src).
 
 **2. Published on npm — Met, as `0.1.1`, deliberately not `1.0.0`.** The package is live on the
 npm registry. It was first published as `0.1.0`, then updated to `0.1.1` to add a proper
@@ -409,15 +409,15 @@ criterion actually asks for — TypeScript types, a documented API, Testnet targ
 genuinely there.
 Proof: the published package (https://www.npmjs.com/package/@zkella/sdk); the release-decision
 writeup
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/SDK_RELEASE.md).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/SDK_RELEASE.md).
 
 **3. Testnet network configuration — Met.** The SDK ships the current addresses for all six
 contracts and the correct indexer endpoint, and an automated test fails the build automatically
 if this ever drifts out of sync with the actual deployment record.
 Proof: the configuration file
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/config/testnet.ts);
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/config/testnet.ts);
 the test that enforces it
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/testnet-config.test.ts#L5-L13).
+(https://github.com/ZKELLA-org/zkella/blob/main/tests/unit/testnet-config.test.ts#L5-L13).
 
 **4. Example code, all six flows, live — Met, and re-verified after the audit fixes.** Every
 example (shield, transfer, unshield, viewing-key audit, indexer query, and swap) was run for
@@ -458,13 +458,13 @@ Proof:
 **5. Developer documentation — Met.** A dedicated guide covers installing the SDK, configuring
 it for Testnet, the API reference, example usage, and troubleshooting.
 Proof: `docs/SDK_DEVELOPER.md`
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/SDK_DEVELOPER.md).
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/SDK_DEVELOPER.md).
 
 **6. Runbook SDK-artifacts section — Met.** The operational runbook now has a section
 specifically about the SDK: which version to pin, how to upgrade, and how to troubleshoot
 common integration problems.
 Proof: `docs/RUNBOOK.md`, "SDK artifacts" section
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/docs/RUNBOOK.md#sdk-artifacts),
+(https://github.com/ZKELLA-org/zkella/blob/main/docs/RUNBOOK.md#sdk-artifacts),
 added at https://github.com/ZKELLA-org/zkella/commit/13756e0b8a8af2cb444f21d9077be0d05620eca4.
 
 **7. Retry and resubmit logic, tested — Met.** The wallet now handles two realistic failure
@@ -474,7 +474,7 @@ instead of blindly retrying, which is the one way a naive retry could cause a do
 rejected transaction is not retried, and if the reference point a proof was built against
 becomes too old, the wallet rebuilds the call against a fresh one automatically.
 Proof: the automated test covering all four cases
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/tests/unit/wallet-resilience.test.ts#L39-L69,
+(https://github.com/ZKELLA-org/zkella/blob/main/tests/unit/wallet-resilience.test.ts#L39-L69,
 added at https://github.com/ZKELLA-org/zkella/commit/241556203710dabd2b21d7c4da29adfeb29c7700).
 
 **8. Wrapper classes call real contracts, not stubs — Met.** The swap, auditor, and compliance
@@ -482,13 +482,13 @@ helper classes used to return placeholder values. They now make real calls to th
 contracts, and each one is backed by a real, verified transaction — the same ones cited under
 criterion 4 above.
 Proof: the swap wrapper
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/wallet/swap.ts),
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/wallet/swap.ts),
 replaced from a placeholder at
 https://github.com/ZKELLA-org/zkella/commit/f49797bb3a47a6a50da4ca8dde05f27ce08b7bb3; the
 auditor wrapper
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/wallet/auditor.ts);
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/wallet/auditor.ts);
 the compliance wrapper
-(https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/sdk/src/compliance/compliance.ts),
+(https://github.com/ZKELLA-org/zkella/blob/main/sdk/src/compliance/compliance.ts),
 replaced from a placeholder at
 https://github.com/ZKELLA-org/zkella/commit/114cb12ddc26048b9a3247468c865412a72c2d83.
 

@@ -75,7 +75,7 @@ Every on-chain call follows this shape: the method builds the transaction and ge
 | `ZKELLACompliance` | `generateNonSanctionedProof()`, `publishProof(proof)` — real calls against `contracts/compliance`. |
 | `ZKELLAAuditor` | `sync()`, `transactionHistory(asset)` — decrypts real note history from a granted viewing key. |
 | `IndexerClient` | `getNotes(fromLedger, limit)`, `getMerklePath(leafIndex)`, nullifier checks. |
-| `SwapQuoteClient` | `requestQuote(req)` — off-chain price discovery from a relayer, validated against the same slippage floor the chain enforces (`quoteRespectsSlippage()`, `QuoteValidationError`). |
+| `SwapQuoteClient` | `requestQuote(req)` — off-chain price discovery from a relayer, validated against the same minimum the chain enforces (`quoteRespectsMinimum()`, `QuoteValidationError`). |
 | `TESTNET_CONTRACTS`, `TESTNET_SOROBAN_RPC` | The current live Testnet addresses and RPC endpoint. |
 
 Full API reference, troubleshooting, and what to persist between sessions: [`docs/SDK_DEVELOPER.md`](https://github.com/ZKELLA-org/zkella/blob/e93154bd9efd40cf6e4d3d035c8797b378658f29/docs/SDK_DEVELOPER.md). Runnable examples for every flow (keys, shield, indexer query, viewing-key audit, transfer, unshield, swap): [`examples/`](https://github.com/ZKELLA-org/zkella/tree/e93154bd9efd40cf6e4d3d035c8797b378658f29/examples).

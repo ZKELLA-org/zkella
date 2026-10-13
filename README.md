@@ -6,7 +6,7 @@
 
 Shielded balances · Confidential transfers · Auditor viewing keys · Sanctions non-membership proofs · Private swap · Timelocked governance
 
-[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg?branch=compliance-governance-security-testnet-release)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
+[![CI](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ZKELLA-org/zkella/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/%40zkella%2Fsdk.svg)](https://www.npmjs.com/package/@zkella/sdk)
 [![Tests](https://img.shields.io/badge/tests-425%20passing-brightgreen)](#status-at-a-glance)
 [![Network](https://img.shields.io/badge/network-Stellar%20Testnet-7D00FF)](#live-testnet-deployment)
