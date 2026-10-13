@@ -6,7 +6,7 @@ export { ZKELLACompliance } from './compliance/compliance'
 export { IndexerClient }    from './indexer/client'
 export {
   SwapQuoteClient,
-  quoteRespectsSlippage,
+  quoteRespectsMinimum,
   QuoteValidationError,
 } from './relayer/quote'
 export type {

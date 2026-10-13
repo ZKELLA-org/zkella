@@ -37,9 +37,9 @@ const struct = obj => xdr.ScVal.scvMap(
     shieldCircuit: { wasmPath: b('shield/build/shield_js/shield.wasm'), zkeyPath: b('shield/build/shield.zkey') },
   })
   const me = wallet.sourceKeypair.publicKey()
-  const AMOUNT_IN = 5_000_000n, SLIPPAGE = 100n
+  const AMOUNT_IN = 5_000_000n
   const AMOUNT_OUT = 4_990_000n
-  const MIN_OUT = (AMOUNT_IN * (10000n - SLIPPAGE)) / 10000n
+  const MIN_OUT = 4_950_000n // direct, asset_out-denominated minimum (1% tolerance on this same-asset run)
 
   console.log('shield input note')
   const { note, submit } = await wallet.shield({ asset: ASSET_ID, amount: AMOUNT_IN })
@@ -48,7 +48,7 @@ const struct = obj => xdr.ScVal.scvMap(
   console.log('fairness proof (intent commitment)')
   const nonce = BigInt('0x' + Buffer.from(require('crypto').randomBytes(16)).toString('hex'))
   const fair = await generateSwapFairnessProof(
-    { intentNonce: nonce, amountIn: AMOUNT_IN, maxSlippageBps: SLIPPAGE, assetIn: ASSET_ID, assetOut: ASSET_ID,
+    { intentNonce: nonce, amountIn: AMOUNT_IN, assetIn: ASSET_ID, assetOut: ASSET_ID,
       amountOut: AMOUNT_OUT, minAmountOut: MIN_OUT },
     b('swap/build/swap_fairness_js/swap_fairness.wasm'), b('swap/build/swap_fairness.zkey'))
 

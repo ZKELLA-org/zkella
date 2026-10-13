@@ -247,12 +247,15 @@ impl ShieldedSwap {
     ///
     /// `min_amount_out` is declared here, in plaintext, by the swap
     /// creator's own wallet — not a new secret the contract trusts blindly.
-    /// `circuits/swap/swap_fairness.circom` derives it deterministically as
-    /// `floor(amount_in * (10000 - max_slippage_bps) / 10000)` from
-    /// `amount_in`/`max_slippage_bps`, both already bound into
-    /// `intent_commitment` at this same call — so the value is already
-    /// cryptographically fixed the moment `intent_commitment` was built,
-    /// only not yet revealed on-chain. Surfacing it now, rather than only at
+    /// It's a direct, asset_out-denominated value the creator chooses from a
+    /// real quoted rate between `asset_in`/`asset_out` (not derived from
+    /// `amount_in` by a flat slippage percentage — that would mix
+    /// asset_in-denominated and asset_out-denominated units with no
+    /// exchange rate between them, sound only for a 1:1 pair; see
+    /// `circuits/swap/swap_fairness.circom`'s doc comment), and it's already
+    /// bound into `intent_commitment` at this same call — so the value is
+    /// already cryptographically fixed the moment `intent_commitment` was
+    /// built, only not yet revealed on-chain. Surfacing it now, rather than only at
     /// `reveal_and_claim`, closes a real griefing path: previously a relayer
     /// could front a technically-valid but economically poor `amount_out` at
     /// `execute_swap`, and the claimant only found out once the fairness
@@ -496,9 +499,9 @@ impl ShieldedSwap {
         // `state.intent_commitment` (the one actually committed to at
         // `commit_swap` time). Since `asset_in`/`asset_out`/`amount_out` are
         // all public once a swap is `Executed`, anyone could construct their
-        // own unrelated, self-chosen `intent_commitment` (e.g. via
-        // `max_slippage_bps = 10000` to force `min_amount_out = 0`), produce
-        // a real, internally-valid fairness proof for it, and steal the
+        // own unrelated, self-chosen `intent_commitment` (e.g. one built with
+        // `min_amount_out = 0`), produce a real, internally-valid fairness
+        // proof for it, and steal the
         // escrowed `asset_out` by supplying their own `out_commitment` — a
         // real fund-theft path, not just a soundness nicety.
         assert!(out_owner_pk == state.out_owner_pk, "output owner key does not match the one committed");
@@ -1517,9 +1520,9 @@ mod tests {
     /// `state`, but never `fairness_pub.intent_commitment` against
     /// `state.intent_commitment`. Since those three fields are all public
     /// once a swap reaches `Executed`, anyone could build their own
-    /// unrelated, self-chosen `intent_commitment` (here, with
-    /// `max_slippage_bps` effectively maxed so `min_amount_out = 0`),
-    /// produce a real, internally-valid fairness proof for it, and steal
+    /// unrelated, self-chosen `intent_commitment` (here, one built with
+    /// `min_amount_out = 0` directly), produce a real, internally-valid
+    /// fairness proof for it, and steal
     /// the escrowed `asset_out` by supplying their own `out_commitment` —
     /// this is a real fund-theft path, not just a soundness nicety, and
     /// exploitable by any observer, not only the executing relayer.
@@ -1935,6 +1938,85 @@ mod tests {
             token::Client::new(&s.env, &s.asset_out).balance(&s.swap),
             min_amount_out,
             "an offer exactly at the floor must still execute"
+        );
+    }
+
+    /// Tranche 2 Deliverable 3 follow-up: `min_amount_out` must be sound for a
+    /// genuinely non-1:1 pair, not just happen to work because asset_in and
+    /// asset_out trade near parity. `min_amount_out` here is set *larger*
+    /// than `amount_in` itself (modeling a rate where one unit of asset_in is
+    /// worth several units of asset_out) — a value the old, now-removed
+    /// in-circuit derivation (`floor(amount_in * (10000-bps)/10000)`) could
+    /// never have produced, since that formula is always a fraction of
+    /// `amount_in` and therefore always `<= amount_in`. The contract layer
+    /// itself was always asset-agnostic (it only ever compares two plain
+    /// `i128`s, `amount_out` and `state.min_amount_out`, with no unit
+    /// coercion); this test proves that directly, end to end, independently
+    /// of the circuit-layer fix in `swap_fairness.circom`.
+    #[test]
+    fn full_swap_lifecycle_enforces_a_non_1_to_1_min_amount_out_across_different_assets() {
+        let s = setup();
+        let shielder = Address::generate(&s.env);
+
+        let amount_in = 1_000_000i128;
+        shield_note(&s, &shielder, &s.asset_in, amount_in, 80, 81);
+
+        let nullifier_in = BytesN::from_array(&s.env, &canon(210));
+        let anchor = ShieldedTokenClient::new(&s.env, &s.token_contract).merkle_root();
+        let intent_commitment = BytesN::from_array(&s.env, &canon(211));
+        let refund_to = Address::generate(&s.env);
+        let expiry = s.env.ledger().sequence() + 1000;
+        let ownership_proof = prove_and_register_ownership(&s, &nullifier_in, amount_in, &anchor, &intent_commitment, &refund_to, expiry);
+
+        let swap_client = ShieldedSwapClient::new(&s.env, &s.swap);
+        // A rate of roughly 1 asset_in : 5 asset_out — numerically larger
+        // than amount_in, impossible under the old amount_in-fraction
+        // derivation, fine under the direct, creator-chosen value.
+        let min_amount_out = 4_800_000i128;
+        let zc = zero_change(&s.env);
+        let out_rho = BytesN::from_array(&s.env, &canon(22));
+        let out_rcm = BytesN::from_array(&s.env, &canon(23));
+        let out_note_binding = out_note_binding_hash(&s.env, &out_rho, &out_rcm);
+        let swap_id = swap_client.commit_swap(
+            &nullifier_in, &intent_commitment, &s.asset_in, &s.asset_out,
+            &amount_in, &anchor, &refund_to, &test_pk(&s.env), &out_note_binding, &min_amount_out, &zc.0, &zc.1, &zc.2, &ownership_proof, &expiry,
+        );
+
+        // An offer below the (much-larger-than-amount_in) floor is still
+        // rejected, exactly as for a near-1:1 pair.
+        let stingy_amount_out = 4_000_000i128;
+        soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out).mint(&s.relayer, &stingy_amount_out);
+        let rejected = swap_client.try_execute_swap(&swap_id, &stingy_amount_out, &s.relayer);
+        assert!(rejected.is_err(), "an amount_out below a non-1:1 min_amount_out must still be rejected");
+
+        // A genuinely fair offer at this rate executes and claims normally.
+        let amount_out = 4_950_000i128;
+        let stellar_asset_out = soroban_sdk::token::StellarAssetClient::new(&s.env, &s.asset_out);
+        stellar_asset_out.mint(&s.relayer, &amount_out);
+        swap_client.execute_swap(&swap_id, &amount_out, &s.relayer);
+
+        let fairness_proof = prove_and_register_fairness(&s, &intent_commitment, amount_out, min_amount_out);
+        let mut hasher = poseidon::Poseidon2Hasher::new(&s.env);
+        let out_commitment = note_commitment(&s.env, &mut hasher, amount_out, &s.asset_out, &out_rho, &out_rcm, &test_pk(&s.env));
+        let out_value_commit = BytesN::from_array(&s.env, &[0u8; 32]);
+        let shield_proof = prove_and_register_output_shield(&s, &out_commitment, &out_value_commit, amount_out);
+        let fairness_pub = SwapFairnessPublicInputs {
+            intent_commitment,
+            asset_in: s.asset_in.clone(),
+            asset_out: s.asset_out.clone(),
+            amount_out,
+            min_amount_out,
+        };
+        let encrypted_note = Bytes::from_array(&s.env, &[0u8; 176]);
+        swap_client.reveal_and_claim(
+            &swap_id, &out_rho, &out_rcm, &test_pk(&s.env), &out_commitment, &out_value_commit,
+            &encrypted_note, &fairness_proof, &fairness_pub, &shield_proof,
+        );
+
+        assert_eq!(
+            ShieldedTokenClient::new(&s.env, &s.token_contract).shielded_supply(&s.asset_out),
+            amount_out,
+            "the non-1:1 output amount was really shielded for the claimant"
         );
     }
 

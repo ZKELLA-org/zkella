@@ -80,7 +80,7 @@ describe('ZKELLASwap output-note binding', () => {
     const { swap, getCapturedCommitArgs } = await makeSwapWrapper()
     const note = { value: 1000n, assetId: ASSET, rho: new Uint8Array(32).fill(8), rcm: new Uint8Array(32).fill(9), leafIndex: 0, commitment: new Uint8Array(32), ownerPk: new Uint8Array(32) }
 
-    const intent = await swap.commitSwap({ note, assetOut: ASSET, amountOut: 990n, maxSlippageBps: 100n, expiry: 999999 })
+    const intent = await swap.commitSwap({ note, assetOut: ASSET, amountOut: 990n, minAmountOut: 990n, expiry: 999999 })
 
     expect(intent.outNote).toBeDefined()
     const expectedBinding = sha256Concat(intent.outNote.rho, intent.outNote.rcm)
@@ -97,7 +97,7 @@ describe('ZKELLASwap output-note binding', () => {
     const { swap, wallet } = await makeSwapWrapper()
     const note = { value: 1000n, assetId: ASSET, rho: new Uint8Array(32).fill(8), rcm: new Uint8Array(32).fill(9), leafIndex: 0, commitment: new Uint8Array(32), ownerPk: new Uint8Array(32) }
 
-    const intent = await swap.commitSwap({ note, assetOut: ASSET, amountOut: 990n, maxSlippageBps: 100n, expiry: 999999 })
+    const intent = await swap.commitSwap({ note, assetOut: ASSET, amountOut: 990n, minAmountOut: 990n, expiry: 999999 })
 
     const submitSpy = jest.spyOn(wallet, 'submitContractCall')
     await swap.revealAndClaim(intent)

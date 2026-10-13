@@ -60,21 +60,30 @@ export class ZKELLASwap {
    * until reveal.
    */
   async commitSwap(opts: {
-    note:           Note
-    assetOut:       string
-    amountOut:      bigint
-    maxSlippageBps: bigint
-    expiry:         number
+    note:         Note
+    assetOut:     string
+    amountOut:    bigint
+    /**
+     * The minimum amount of `assetOut` the creator will accept, chosen by
+     * the caller from a real quoted rate between `note.assetId`/`assetOut`
+     * — not derived here from `amountIn` by a flat slippage percentage.
+     * `assetIn`/`assetOut` can be different assets with no fixed exchange
+     * rate, so the SDK can't safely invent this value; see
+     * `circuits/swap/swap_fairness.circom`'s doc comment for why the old
+     * amount_in-derived bound was asset-blind and unsound for non-1:1 pairs.
+     */
+    minAmountOut: bigint
+    expiry:       number
   }): Promise<SwapIntent> {
     const { wallet, circuits, swapContractAddress } = this.config
     const keys = wallet.spendingKey()
     const me = wallet.accountAddress()
     const amountIn = opts.note.value
-    const minAmountOut = (amountIn * (10000n - opts.maxSlippageBps)) / 10000n
+    const minAmountOut = opts.minAmountOut
     const intentNonce = BigInt('0x' + Buffer.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).toString('hex'))
 
     const fair = await generateSwapFairnessProof(
-      { intentNonce, amountIn, maxSlippageBps: opts.maxSlippageBps, assetIn: opts.note.assetId,
+      { intentNonce, amountIn, assetIn: opts.note.assetId,
         assetOut: opts.assetOut, amountOut: opts.amountOut, minAmountOut },
       circuits.swapFairness.wasmPath, circuits.swapFairness.zkeyPath)
 

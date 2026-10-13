@@ -5,7 +5,14 @@ const { loadKeys } = require('./_keys.cjs')
 const build = path.join(__dirname, '..', 'circuits')
 
 ;(async () => {
-  const { STELLAR_SECRET, INDEXER_URL, SWAP_AMOUNT } = process.env
+  const {
+    STELLAR_SECRET, INDEXER_URL, SWAP_AMOUNT,
+    // Optional: swap into a *different* asset instead of the default
+    // same-asset (native-to-native) demo below. When set, SWAP_MIN_AMOUNT_OUT
+    // must be set too — see the comment further down for why the SDK can't
+    // compute it for you across two different assets.
+    SWAP_ASSET_OUT, SWAP_AMOUNT_OUT, SWAP_MIN_AMOUNT_OUT,
+  } = process.env
   if (!STELLAR_SECRET || !INDEXER_URL || !SWAP_AMOUNT) throw new Error('set STELLAR_SECRET, INDEXER_URL, SWAP_AMOUNT')
   const native = execSync('stellar contract id asset --asset native --network testnet').toString().trim()
   const keys = await loadKeys()
@@ -25,10 +32,32 @@ const build = path.join(__dirname, '..', 'circuits')
   const note = wallet.spendableNotes(native).find(n => n.value >= amount)
   if (!note) throw new Error('no spendable note of at least SWAP_AMOUNT; shield one first with 02-shield.cjs')
   const latest = (await new (require('@stellar/stellar-sdk').rpc.Server)(TESTNET_SOROBAN_RPC).getLatestLedger()).sequence
-  // The SDK sets min_amount_out to the whole note's value minus maxSlippageBps, so the
-  // quote must be at least that. Quoting the note's value at parity meets the bound.
-  const intent = await swap.commitSwap({ note, assetOut: native, amountOut: note.value, maxSlippageBps: 100n, expiry: latest + 400 })
-  console.log('committed swap', intent.swapId, 'expiry', intent.expiry)
+
+  const assetOut = SWAP_ASSET_OUT || native
+  const crossAsset = assetOut !== native
+  const amountOut = SWAP_AMOUNT_OUT ? BigInt(SWAP_AMOUNT_OUT) : note.value
+
+  // minAmountOut is the lowest amount of assetOut the creator will accept —
+  // a direct, asset_out-denominated value bound into the swap's on-chain
+  // commitment, not something the SDK derives from amountIn by a flat
+  // slippage percentage (that derivation mixed asset_in-denominated and
+  // asset_out-denominated units with no exchange rate between them, which
+  // only happened to look sound for a same-asset pair; see
+  // circuits/swap/swap_fairness.circom's doc comment). For a cross-asset
+  // swap there's no rate the SDK could safely invent, so the caller must
+  // supply a real quoted minimum explicitly via SWAP_MIN_AMOUNT_OUT.
+  let minAmountOut
+  if (SWAP_MIN_AMOUNT_OUT) {
+    minAmountOut = BigInt(SWAP_MIN_AMOUNT_OUT)
+  } else if (crossAsset) {
+    throw new Error('cross-asset swap (SWAP_ASSET_OUT set): also set SWAP_MIN_AMOUNT_OUT to a real quoted minimum for that asset')
+  } else {
+    minAmountOut = (amountOut * 9900n) / 10000n // same-asset demo default: 1% slippage tolerance
+  }
+
+  const intent = await swap.commitSwap({ note, assetOut, amountOut, minAmountOut, expiry: latest + 400 })
+  console.log(crossAsset ? 'committed cross-asset swap' : 'committed swap', intent.swapId, 'expiry', intent.expiry)
+  console.log(`asset_in ${note.assetId} -> asset_out ${assetOut}, amount_out ${amountOut}, min_amount_out ${minAmountOut}`)
   console.log('a relayer must now execute this swap with execute_swap; then call revealAndClaim(intent).')
   console.log('if no relayer executes it before expiry, cancelSwap(intent.swapId) refunds the escrow.')
 })().then(() => process.exit(0), e => { console.error(e.message); process.exit(1) })

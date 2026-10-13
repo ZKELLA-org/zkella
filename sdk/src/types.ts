@@ -56,7 +56,8 @@ export interface SwapOptions {
   assetIn:        string
   assetOut:       string
   amountIn:       bigint
-  maxSlippageBps: number
+  /** See `ZKELLASwap.commitSwap`'s `minAmountOut` doc comment: a direct, asset_out-denominated minimum, not a slippage percentage on `amountIn`. */
+  minAmountOut:   bigint
   expiryLedgers?: number
 }
 
