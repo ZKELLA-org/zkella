@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { TESTNET_CONTRACTS } from '../../sdk/src/config/testnet'
+import { TESTNET_CONTRACTS, TESTNET_INDEXER_URL } from '../../sdk/src/config/testnet'
 
 test('SDK Testnet addresses match the deployment record', () => {
   const record = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../deployments.json'), 'utf8')).testnet_final
@@ -10,4 +10,5 @@ test('SDK Testnet addresses match the deployment record', () => {
   expect(TESTNET_CONTRACTS.swap).toBe(record.swap)
   expect(TESTNET_CONTRACTS.compliance).toBe(record.compliance)
   expect(TESTNET_CONTRACTS.viewingKeys).toBe(record.viewing_keys)
+  expect(TESTNET_INDEXER_URL).toBe(record.indexer_url)
 })

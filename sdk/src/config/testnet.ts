@@ -12,3 +12,18 @@ export const TESTNET_CONTRACTS = {
 } as const
 
 export const TESTNET_SOROBAN_RPC = 'https://soroban-testnet.stellar.org'
+
+/**
+ * The indexer's own documented default (indexer/README.md,
+ * docker-compose.yml's `INDEXER_HTTP_PORT`) for a locally-run instance
+ * pointed at `TESTNET_CONTRACTS.token`. The indexer is self-hosted
+ * infrastructure (see docs/RUNBOOK.md §1), not a permanently-running
+ * public service this SDK reaches by default — callers running their own
+ * instance on this port get drift coverage against `deployments.json` for
+ * free; anyone pointed elsewhere should override `indexerUrl` explicitly
+ * wherever this package's wallet/indexer clients take it. See
+ * docs/TRANCHE2_DELIVERABLES.md §4.1 for a live run against this port,
+ * backed by a real PostgreSQL server, recorded with sync log and
+ * `/health` output.
+ */
+export const TESTNET_INDEXER_URL = 'http://localhost:8787'
