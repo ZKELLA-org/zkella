@@ -533,3 +533,15 @@ creator, never a relayer or third party, so a wrong value only ever harms its ow
 - **PostgreSQL's raw single-writer throughput is worse than SQLite's `:memory:` baseline** for
   one-at-a-time writes over a real network connection (Deliverable 4.3's own measurement); its
   real advantage for this deliverable is concurrency and operational tooling, not throughput.
+- **The non-blocking relayer-fee-during-shortfall fix (`contracts/token`'s
+  `FeeRefusedDuringShortfall`) is implemented and tested (real Soroban test environment,
+  `transfer_refuses_a_positive_fee_during_a_custody_shortfall_but_allows_a_zero_fee_call`),
+  but not yet on the live `testnet_final` WASM.** Deploying it requires a full six-contract
+  redeploy (`token`'s admin is `governance`, which must be redeployed pointed at the new
+  `token`, which in turn requires a fresh `verifier` since `verifier` has no admin-transfer
+  mechanism to hand off to a new `governance` — the same scope as the 2026-10-08 redeploy).
+  That's disproportionate to trigger for a single non-blocking fix with no live shortfall
+  condition to protect against today (no clawback has occurred on this stack); it will ship
+  with the next redeploy that needs one for another reason. The blocking D3 cross-asset fix
+  did not have this problem — it only needed a `SwapFairness` verifying-key rotation on the
+  existing verifier, already live (see Deliverable 3 above).
