@@ -12,11 +12,11 @@ Every admin-gated action below refers to the real contract entrypoints in this r
 
 | Component | Address | Admin model | Has `pause()` |
 |---|---|---|---|
-| `token` | `CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ` | admin = `governance` contract address | **yes**, via `governance.pause_token()` |
-| `verifier` | `CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3` | admin = `governance` contract address (cross-call auth) | **yes**, via `governance.pause_verifier()` |
-| `governance` | `CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q` | single admin key (`zkella-testnet-deployer`), two-step transfer, plus a separate guardian key (`zkella-testnet-guardian`) that can only cancel a queued update; VK updates and token-admin actions are additionally timelocked — production value is 7 days (`VK_TIMELOCK_LEDGERS = 120_960`), **but this instance was built with the `testnet-fast-timelock` feature, so `timelock_ledgers()` returns 60 (about 5 minutes) — never assume a 5-minute timelock for a production deployment** | **yes** |
-| `compliance` | `CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ` | single admin key (`zkella-testnet-deployer`) | **yes** |
-| `swap` | `CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524` | single admin key (`zkella-testnet-deployer`); per-relayer allowlist via `set_relayer` | **yes** |
+| `token` | `CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP` | admin = `governance` contract address | **yes**, via `governance.pause_token()` |
+| `verifier` | `CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V` | admin = `governance` contract address (cross-call auth) | **yes**, via `governance.pause_verifier()` |
+| `governance` | `CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP` | single admin key (`zkella-testnet-deployer`), two-step transfer, plus a separate guardian key (`zkella-testnet-guardian`) that can only cancel a queued update; VK updates and token-admin actions are additionally timelocked — production value is 7 days (`VK_TIMELOCK_LEDGERS = 120_960`), **but this instance was built with the `testnet-fast-timelock` feature, so `timelock_ledgers()` returns 60 (about 5 minutes) — never assume a 5-minute timelock for a production deployment** | **yes** |
+| `compliance` | `CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD` | single admin key (`zkella-testnet-deployer`) | **yes** |
+| `swap` | `CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK` | single admin key (`zkella-testnet-deployer`); per-relayer allowlist via `set_relayer` | **yes** |
 | `viewing_keys` | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` | no admin — `register`/`revoke` each require the calling owner's own authorization | no (nothing to halt: a holder can only touch their own entry) |
 | `indexer/` | self-hosted, `http://localhost:8787` by default | single process, single SQLite file | n/a (`/health` endpoint) |
 

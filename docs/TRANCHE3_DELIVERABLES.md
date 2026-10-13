@@ -51,15 +51,17 @@ node examples/07-swap.cjs                     # swap
 ```
 
 Current Testnet stack (`deployments.json`'s `testnet_final` block
-— https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/deployments.json,
-redeployed 2026-10-08 to carry the audit fixes in this document's last section):
+— https://github.com/ZKELLA-org/zkella/blob/main/deployments.json,
+redeployed 2026-10-13 to additionally carry the reviewer-remarked fixes: the swap
+cross-asset `min_amount_out` fix and the token relayer-fee-during-shortfall fix — see
+`docs/TRANCHE2_DELIVERABLES.md` section 3 and "What is not done, and what is thin"):
 
-- verifier: https://stellar.expert/explorer/testnet/contract/CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3
-- governance: https://stellar.expert/explorer/testnet/contract/CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q
-- token: https://stellar.expert/explorer/testnet/contract/CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ
-- swap: https://stellar.expert/explorer/testnet/contract/CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524
-- compliance: https://stellar.expert/explorer/testnet/contract/CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ
-- viewing_keys: https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE (reused unchanged)
+- verifier: https://stellar.expert/explorer/testnet/contract/CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V
+- governance: https://stellar.expert/explorer/testnet/contract/CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP
+- token: https://stellar.expert/explorer/testnet/contract/CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP
+- swap: https://stellar.expert/explorer/testnet/contract/CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK
+- compliance: https://stellar.expert/explorer/testnet/contract/CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD
+- viewing_keys: https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE (reused unchanged across both redeploys)
 
 **Deployment note:** all six were deployed by `scripts/testnet_deploy_stack.sh`
 (https://github.com/ZKELLA-org/zkella/blob/compliance-governance-security-testnet-release/scripts/testnet_deploy_stack.sh),

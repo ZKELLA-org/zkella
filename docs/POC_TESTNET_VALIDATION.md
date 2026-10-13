@@ -296,6 +296,77 @@ A fresh six-contract stack, deployed after an internal audit pass across all thr
 
 `shield` (leaves 4–5), indexer query, viewing-key audit (4 real receipts recovered, zero-value padding notes correctly excluded), `transfer` (new leaves 6–7), `unshield` (change note at leaf 8) — see `examples/` and `docs/TRANCHE3_DELIVERABLES.md` for the full per-example transaction record.
 
+## Epoch 7 — reviewer-remarked fixes, full stack (October 13, 2026)
+
+A fresh six-contract stack, deployed to carry two reviewer-remarked fixes on top of Epoch 6's:
+`circuits/swap/swap_fairness.circom`'s `min_amount_out` is now a direct, asset_out-denominated
+value the swap creator supplies (not derived from `amount_in` by a flat slippage percentage,
+which was asset-blind and unsound for a non-1:1 pair), and `contracts/token` now refuses any
+positive relayer fee for an asset with a nonzero `custody_shortfall`. `viewing_keys` is reused
+unchanged from Epoch 6 (no coupling, no live state to lose); the other five are redeployed —
+`verifier` had to be included because it has no admin-transfer mechanism, so a fresh
+`governance` (needed to point at a fresh `token`) could not otherwise inherit admin rights over
+the old one. All six circuits' verifying keys (including the fixed `SwapFairness`) are live via
+the timelock from genesis this time, not rotated in after the fact. Recorded as `testnet_final`
+in `deployments.json`; Epoch 6's addresses above are preserved as
+`testnet_final_superseded_2026_10_13`.
+
+| Contract | Address |
+| --- | --- |
+| verifier | `CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V` |
+| governance | `CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP` |
+| token | `CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP` |
+| swap | `CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK` |
+| compliance | `CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD` |
+| viewing_keys | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` (reused, unchanged) |
+
+### Pause reachability, re-confirmed live on the fresh stack
+
+`governance.pause_token()` confirmed to actually block `shield` (`Error(Contract, #3) ==
+Paused`) — tx https://stellar.expert/explorer/testnet/tx/a957b856e852ea0759f082613b8c7c6231d9b0a5841a00ce4d71fec75566c466
+queued the pause, the blocked shield attempt failed exactly as expected, and
+`governance.unpause_token()` (tx https://stellar.expert/explorer/testnet/tx/547ab779a83639403921f2cbfe4f54a618558f0fad6405f10b7c13254faccebc)
+restored it, confirmed by a real shield succeeding immediately afterward (leaf 0).
+
+### Genuinely cross-asset swap lifecycle, the fix this epoch exists to prove
+
+A second Testnet asset (`ZKUSD`, issuer `GBHGM2Q43VSKV5SF7GQTKCTMGSYNO42B653OFN7LOQEVYC3LEBJE57SO`,
+SAC `CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C`) was approved on this stack's
+token via governance's timelocked `queue_token_action`/`execute_token_action`
+(queue https://stellar.expert/explorer/testnet/tx/f065c211eaac70f676cd4aacf9d91d4699007b4dedc6073be1ff40c9e2d8664f,
+execute https://stellar.expert/explorer/testnet/tx/dac2db108ca85913ac73af44e0dbe7e647a61a99c3a4a4c0a4bb29c419960480).
+5,000,000 native stroops were swapped for 4,000,000,000 ZKUSD base units at a
+`min_amount_out` of 3,900,000,000 — larger than `amount_in` itself, a value the old,
+now-removed derivation could never have produced:
+
+| Step | Tx hash |
+| --- | --- |
+| `shield` (input note) | https://stellar.expert/explorer/testnet/tx/b09d260dd6972acf6c2dcc34f2fe5bc80c5cc7670026cc41d2ecf54027ff229d |
+| `commit_swap` (asset_in = native, asset_out = ZKUSD) | https://stellar.expert/explorer/testnet/tx/bcc752e2ed9f1e503c6130e630fd9a95528852d7d938407ca177a1b5dc0c074a |
+| `execute_swap` (relayer fronts 4,000,000,000 ZKUSD) | https://stellar.expert/explorer/testnet/tx/2ccb0de1ccf01aadd23f1e5645a6775d6a86b23e05ce38119dafc1e226e30821 |
+| `reveal_and_claim` (claimed into leaf 5) | https://stellar.expert/explorer/testnet/tx/e7b4037c813b325424cecd0d142875b659b15990cd85fd1005bf8a8b531f59a4 |
+
+All four independently confirmed `successful: true` against Horizon. `token.shielded_supply(ZKUSD)`
+read back `4,000,000,000` immediately afterward.
+
+One benign side effect of this redeploy: the first attempt at this lifecycle (swap id
+`941eaba6d03e866cf04fb94b0b16d7e3aadef1d145b9df4301cc586bd2778b03`) called `execute_swap`
+before the deployer had been re-approved as a relayer on the *new* swap contract (a fresh
+`ApprovedRelayer` allowlist, same as every other piece of fresh contract state) and failed
+there; `set_relayer` was then called and the lifecycle re-run cleanly end to end as the one
+recorded above. The first swap's escrow sits safely in `Executed` state, recoverable via
+`reclaim_expired_swap` once its claim window passes — no funds lost, same unwind path already
+documented for this exact scenario in `docs/RUNBOOK.md`.
+
+### Relayer-fee-during-shortfall fix
+
+Verified in a real Soroban test environment against this exact compiled `token` WASM
+(`transfer_refuses_a_positive_fee_during_a_custody_shortfall_but_allows_a_zero_fee_call`,
+`contracts/token/src/lib.rs`) — not separately re-demonstrated live here, since doing so would
+require deliberately clawing back a real asset on this stack for no purpose beyond the
+demonstration itself. The fix is now part of the live `token` WASM above, not merely tested in
+isolation.
+
 ## What is not yet demonstrated live
 
 Being explicit about the gap between "regression-tested" and "shown on a real transaction," consistent with the rest of this documentation:

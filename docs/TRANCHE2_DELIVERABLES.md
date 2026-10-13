@@ -184,33 +184,34 @@ pair where the old, now-removed `min_amount_out = floor(amount_in * (10000-bps)/
 derivation happened to look sound (see §3.5 below for why it wasn't, for any other pair). To
 prove the fix, a second Testnet asset was issued (`ZKUSD`, issuer
 `GBHGM2Q43VSKV5SF7GQTKCTMGSYNO42B653OFN7LOQEVYC3LEBJE57SO`, wrapped as the Stellar Asset
-Contract `CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C`), approved on the live
-`testnet_final` token (`CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ`) through
+Contract `CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C`) and approved on the live
+`testnet_final` token (`CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP`) through
 governance's existing timelocked `queue_token_action`/`execute_token_action` path (queue
-https://stellar.expert/explorer/testnet/tx/22502d0a157595da56c1e91800ba0715debad931c2ff33aedd4458695241522f,
+https://stellar.expert/explorer/testnet/tx/f065c211eaac70f676cd4aacf9d91d4699007b4dedc6073be1ff40c9e2d8664f,
 execute
-https://stellar.expert/explorer/testnet/tx/3e6a39a5c7189cac4316724521086f9078b549f59bc4c89efff6421c02a09d10),
-and the `SwapFairness` verifying key was rotated on the live, same, unchanged verifier
-(`CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3`) to match the fixed circuit, also
-through governance's timelocked `queue_vk_update`/`execute_vk_update` path (queue
-https://stellar.expert/explorer/testnet/tx/b53878d93b3859bbb83ca416e6e56c8151483fdc4586010493b1143b88e3ab87,
-execute
-https://stellar.expert/explorer/testnet/tx/70c9595bbded1a500cec7b0c083bcdd92c6ab2cb84588220c60bfe19d6e25917)
-— the exact mechanism already documented in `docs/RUNBOOK.md` §3, exercised here for a real
-VK replacement, not just a first-time registration.
+https://stellar.expert/explorer/testnet/tx/dac2db108ca85913ac73af44e0dbe7e647a61a99c3a4a4c0a4bb29c419960480).
+This stack's `SwapFairness` verifying key was registered for the fixed circuit from genesis
+(the stack was freshly redeployed on 2026-10-13 to also carry the token relayer-fee-during-
+shortfall fix below — see "What is not done, and what is thin" — rather than only rotating the
+key on the prior stack in place; an earlier run of this same proof, against a VK rotated onto
+the then-live verifier without a full redeploy, is preserved for the record under
+`testnet_final_superseded_2026_10_13` in `deployments.json`).
 
 With both in place, a real `amount_in` (5,000,000 native stroops) was swapped for `ZKUSD` at a
 `min_amount_out` (3,900,000,000 ZKUSD base units) *larger than `amount_in` itself* — a value
 the old derivation could never have produced, since that formula is always a fraction of
 `amount_in`. All four transactions independently confirmed `successful: true` against Horizon
 (not just trusted from the submission response):
-- `shield` (input note): https://stellar.expert/explorer/testnet/tx/5355c58f958cd1fe62731b4e7e2b4ceeb31c42100c30e90ce0035f7b5ba39cde
-- `commit_swap` (asset_in = native, asset_out = ZKUSD, min_amount_out = 3,900,000,000): https://stellar.expert/explorer/testnet/tx/8ab8bb73f2cc69cfe828c230a4a55f50394db258120c200ea931a0d14508f6ce
-- `execute_swap` (relayer fronts 4,000,000,000 ZKUSD, above the non-1:1 floor): https://stellar.expert/explorer/testnet/tx/2b4749e65a4f6596c36c778960362eb2eba6f48ef906a8927d89180e56f5d89b
-- `reveal_and_claim` (claimed into leaf 20): https://stellar.expert/explorer/testnet/tx/685b273e225fc52a9281d84cf5191ff8af20530e072ff5dd9e21283e092a0cb6
+- `shield` (input note): https://stellar.expert/explorer/testnet/tx/b09d260dd6972acf6c2dcc34f2fe5bc80c5cc7670026cc41d2ecf54027ff229d
+- `commit_swap` (asset_in = native, asset_out = ZKUSD, min_amount_out = 3,900,000,000): https://stellar.expert/explorer/testnet/tx/bcc752e2ed9f1e503c6130e630fd9a95528852d7d938407ca177a1b5dc0c074a
+- `execute_swap` (relayer fronts 4,000,000,000 ZKUSD, above the non-1:1 floor): https://stellar.expert/explorer/testnet/tx/2ccb0de1ccf01aadd23f1e5645a6775d6a86b23e05ce38119dafc1e226e30821
+- `reveal_and_claim` (claimed into leaf 5): https://stellar.expert/explorer/testnet/tx/e7b4037c813b325424cecd0d142875b659b15990cd85fd1005bf8a8b531f59a4
 
 `token.shielded_supply(ZKUSD)` read back `4,000,000,000` immediately afterward — the real,
-non-1:1 output amount, genuinely shielded for the claimant, not a bookkeeping artifact.
+non-1:1 output amount, genuinely shielded for the claimant, not a bookkeeping artifact. See
+`docs/POC_TESTNET_VALIDATION.md`'s Epoch 7 for the full redeploy record, including a benign
+first attempt stranded in `Executed` state by a fresh, empty relayer allowlist on the new swap
+contract (no funds lost, recoverable via `reclaim_expired_swap`).
 Produced by `scripts/testnet_swap_validation.cjs` (now parameterized for `ASSET_OUT_ID`/
 `AMOUNT_OUT`/`MIN_OUT` — see that script's own top comment).
 
@@ -534,14 +535,13 @@ creator, never a relayer or third party, so a wrong value only ever harms its ow
   one-at-a-time writes over a real network connection (Deliverable 4.3's own measurement); its
   real advantage for this deliverable is concurrency and operational tooling, not throughput.
 - **The non-blocking relayer-fee-during-shortfall fix (`contracts/token`'s
-  `FeeRefusedDuringShortfall`) is implemented and tested (real Soroban test environment,
+  `FeeRefusedDuringShortfall`) is implemented, tested (real Soroban test environment,
   `transfer_refuses_a_positive_fee_during_a_custody_shortfall_but_allows_a_zero_fee_call`),
-  but not yet on the live `testnet_final` WASM.** Deploying it requires a full six-contract
-  redeploy (`token`'s admin is `governance`, which must be redeployed pointed at the new
-  `token`, which in turn requires a fresh `verifier` since `verifier` has no admin-transfer
-  mechanism to hand off to a new `governance` — the same scope as the 2026-10-08 redeploy).
-  That's disproportionate to trigger for a single non-blocking fix with no live shortfall
-  condition to protect against today (no clawback has occurred on this stack); it will ship
-  with the next redeploy that needs one for another reason. The blocking D3 cross-asset fix
-  did not have this problem — it only needed a `SwapFairness` verifying-key rotation on the
-  existing verifier, already live (see Deliverable 3 above).
+  and now on the live `testnet_final` WASM** — the 2026-10-13 redeploy (see Deliverable 3's
+  cross-asset evidence above and `docs/POC_TESTNET_VALIDATION.md`'s Epoch 7) carried both this
+  and the blocking D3 fix together, since fixing `token` at all meant redeploying `governance`
+  pointed at the new `token`, which in turn meant redeploying `verifier` too (no admin-transfer
+  mechanism to hand verifier administration to a new governance contract). Not separately
+  re-demonstrated live with a real clawback here, since staging one would serve no purpose
+  beyond the demonstration itself — the fix is part of the deployed WASM, verified by its own
+  test against that exact compiled code.

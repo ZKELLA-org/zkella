@@ -59,7 +59,11 @@ if [ -z "${RESUME:-}" ]; then
   TOKEN=$(deploy "$WASM_DIR/zkella_token.wasm" "${TAG}_token")
   SWAP=$(deploy "$WASM_DIR/zkella_swap.wasm" "${TAG}_swap")
   COMPLIANCE=$(deploy "$WASM_DIR/zkella_compliance.wasm" "${TAG}_compliance")
-  VIEWING_KEYS=$(deploy "$WASM_DIR/zkella_viewing_keys.wasm" "${TAG}_viewing_keys")
+  # viewing_keys has no initialize()/admin at all (register/revoke are
+  # self-authorized by the calling owner) and no coupling to the other five
+  # contracts, so it's always safe to reuse an existing, already-live one
+  # across a redeploy — set VIEWING_KEYS to do so.
+  VIEWING_KEYS=${VIEWING_KEYS:-$(deploy "$WASM_DIR/zkella_viewing_keys.wasm" "${TAG}_viewing_keys")}
 
   echo "verifier=$VERIFIER governance=$GOV token=$TOKEN swap=$SWAP compliance=$COMPLIANCE viewing_keys=$VIEWING_KEYS"
 

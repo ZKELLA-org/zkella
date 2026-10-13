@@ -98,16 +98,16 @@ Every on-chain SDK call follows this shape: the method builds the transaction an
 
 ## Live Testnet deployment
 
-Current stack (`testnet_final` in [`deployments.json`](deployments.json), deployed 2026-10-08):
+Current stack (`testnet_final` in [`deployments.json`](deployments.json), deployed 2026-10-13):
 
 | Contract | Address | Explorer |
 | --- | --- | --- |
-| Token (`ShieldedToken`) | `CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ` | [view](https://stellar.expert/explorer/testnet/contract/CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ) |
-| Verifier | `CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3` | [view](https://stellar.expert/explorer/testnet/contract/CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3) |
-| Governance | `CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q` | [view](https://stellar.expert/explorer/testnet/contract/CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q) |
-| Compliance | `CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ` | [view](https://stellar.expert/explorer/testnet/contract/CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ) |
+| Token (`ShieldedToken`) | `CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP` | [view](https://stellar.expert/explorer/testnet/contract/CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP) |
+| Verifier | `CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V` | [view](https://stellar.expert/explorer/testnet/contract/CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V) |
+| Governance | `CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP` | [view](https://stellar.expert/explorer/testnet/contract/CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP) |
+| Compliance | `CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD` | [view](https://stellar.expert/explorer/testnet/contract/CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD) |
 | Viewing keys | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` | [view](https://stellar.expert/explorer/testnet/contract/CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE) |
-| Swap | `CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524` | [view](https://stellar.expert/explorer/testnet/contract/CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524) |
+| Swap | `CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK` | [view](https://stellar.expert/explorer/testnet/contract/CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK) |
 
 Governance is the admin of the token and verifier contracts (so pausing or rotating a verifying key goes through the timelock); this stack runs with the `testnet-fast-timelock` feature (60 ledgers, ~5 minutes), not the 7-day production timelock. The full operational detail — admin/guardian addresses, verifying-key hashes, the sanctions root, how to reach each one — is in [`docs/TESTNET_DEPLOYMENT.md`](docs/TESTNET_DEPLOYMENT.md) and [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
