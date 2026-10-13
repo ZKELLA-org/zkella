@@ -477,24 +477,31 @@ Constraints: 10,605 (measured, up from 9,277 pre-Tranche-2). Proving time: ~650m
 
 **File:** `circuits/swap/swap_fairness.circom`
 
-Proves that a swap execution honoured the user's committed slippage tolerance, without having revealed `amount_in`/`max_slippage_bps`/`min_amount_out` at commit time. Matches `circuits/swap/swap_fairness.circom` exactly (see `docs/CIRCUIT_SPEC.md` §6).
+Proves that a swap execution honoured a minimum the user committed to, without having revealed `amount_in`/`min_amount_out` at commit time. Matches `circuits/swap/swap_fairness.circom` exactly (see `docs/CIRCUIT_SPEC.md` §6).
 
-Private inputs: `intent_nonce, amount_in, max_slippage_bps`
+`min_amount_out` is a direct, asset_out-denominated value the swap creator supplies from a
+real quoted rate between `asset_in`/`asset_out` — not derived in-circuit from `amount_in` by a
+flat slippage percentage. An earlier version did derive it that way
+(`floor(amount_in * (10000 - max_slippage_bps) / 10000)`), but that mixes
+asset_in-denominated `amount_in` with asset_out-denominated `amount_out`/`min_amount_out` with
+no exchange rate between them, which is only sound for an asset swapped for itself; see
+`docs/CIRCUIT_SPEC.md` §6 for the full history.
+
+Private inputs: `intent_nonce, amount_in`
 Public inputs: `intent_commitment, asset_in, asset_out, amount_out, min_amount_out`
 
 ```
 intent_commitment === Poseidon2(
   Poseidon2(asset_in, asset_out),
-  Poseidon2(amount_in * 2^32 + max_slippage_bps, intent_nonce)
+  Poseidon2(amount_in * 2^64 + min_amount_out, intent_nonce)
 )
 
-min_amount_out === floor(amount_in * (10000 - max_slippage_bps) / 10000)
 amount_out >= min_amount_out
 ```
 
-`asset_in`/`asset_out` are public in this circuit (unlike `intent_nonce`/`amount_in`/`max_slippage_bps`, which stay private) because `contracts/swap::reveal_and_claim` needs to bind the proof to the specific assets already recorded in on-chain swap state before it will accept it. An earlier draft of this spec used a different `execution_price_bps` public signal that was never implemented; `min_amount_out`, derived in-circuit from the private `amount_in`/`max_slippage_bps`, is what the real circuit and contract use.
+`asset_in`/`asset_out` are public in this circuit (unlike `intent_nonce`/`amount_in`, which stay private) because `contracts/swap::reveal_and_claim` needs to bind the proof to the specific assets already recorded in on-chain swap state before it will accept it. An earlier draft of this spec used a different `execution_price_bps` public signal that was never implemented; `min_amount_out`, a direct creator-chosen value, is what the real circuit and contract use.
 
-Constraints: 941 (measured; no Merkle proof in this circuit). Proving time: ~400ms (unmeasured estimate).
+Constraints: 912 (measured; no Merkle proof in this circuit). Proving time: ~400ms (unmeasured estimate).
 
 ### 5.6 Sanctions Non-Membership Circuit
 
@@ -1029,11 +1036,12 @@ How a relayer actually sources `amount_out` — including whether they route thr
 
 ```
 Step 1 — User: build the fairness-circuit witness off-chain
-  intent = { asset_in, asset_out, amount_in, max_slippage_bps, intent_nonce }
-  min_amount_out = floor(amount_in * (10000 - max_slippage_bps) / 10000)
+  intent = { asset_in, asset_out, amount_in, min_amount_out, intent_nonce }
+  (min_amount_out is the user's own direct, asset_out-denominated value from a real
+  quoted rate — not derived from amount_in; see docs/CIRCUIT_SPEC.md §6)
   intent_commitment = Poseidon2(Poseidon2(asset_in, asset_out),
-                                 Poseidon2(amount_in * 2^32 + max_slippage_bps, intent_nonce))
-  (amount_out and min_amount_out stay private until reveal_and_claim)
+                                 Poseidon2(amount_in * 2^64 + min_amount_out, intent_nonce))
+  (amount_out stays private until reveal_and_claim)
 
 Step 2 — User: commit_swap(nullifier_in, intent_commitment, asset_in, asset_out,
                             amount_in, anchor, refund_to, out_owner_pk, out_note_binding,

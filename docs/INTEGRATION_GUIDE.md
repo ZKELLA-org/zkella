@@ -199,9 +199,11 @@ const swap = new ZKELLASwap({ wallet, swapContractAddress: TESTNET_CONTRACTS.swa
 } })
 
 const note = wallet.spendableNotes(assetIn).find(n => n.value >= amount)
-// min_amount_out is derived from the note's own value, not the requested amount — quote at
-// or above note.value * (10000 - maxSlippageBps) / 10000, or the contract's fairness check rejects it.
-const intent = await swap.commitSwap({ note, assetOut, amountOut: note.value, maxSlippageBps: 100n, expiry: latestLedger + 400 })
+// minAmountOut is a direct, assetOut-denominated minimum you choose from a real quoted
+// rate between assetIn/assetOut — the SDK can't derive it for you (assetIn and assetOut
+// may be different assets with no fixed exchange rate). Below it, the contract's fairness
+// check rejects the execution.
+const intent = await swap.commitSwap({ note, assetOut, amountOut: note.value, minAmountOut: (note.value * 9900n) / 10000n, expiry: latestLedger + 400 })
 // A relayer calls execute_swap; once it has, claim the output:
 // await swap.revealAndClaim(intent)
 // If no relayer executes before expiry, refund the escrow instead:
