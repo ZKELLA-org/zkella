@@ -14,8 +14,12 @@
 // PostgresIndexerDb, and the results are printed side by side.
 //
 // Usage (run with the same flag the indexer itself needs for its .ts sources):
-//   node --experimental-strip-types scripts/indexer_load_test.mjs [--events N] [--database-url postgres://...]
+//   node --experimental-strip-types scripts/indexer_load_test.mjs [--events N] [--database-url postgres://...] [--sqlite-path PATH]
 // N defaults to 20000. DATABASE_URL env var also works in place of --database-url.
+// SQLite defaults to ':memory:' (the original in-process baseline); --sqlite-path (or
+// SQLITE_PATH) points it at a real file instead, for a baseline closer to what a real
+// deployment's single-writer SQLite instance would actually pay (fsync, real disk I/O)
+// rather than the zero-I/O in-memory number.
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,11 +30,13 @@ function parseArgs() {
   const args = process.argv.slice(2)
   let events = 20000
   let databaseUrl = process.env.DATABASE_URL
+  let sqlitePath = process.env.SQLITE_PATH || ':memory:'
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--events') events = Number(args[++i])
     if (args[i] === '--database-url') databaseUrl = args[++i]
+    if (args[i] === '--sqlite-path') sqlitePath = args[++i]
   }
-  return { events, databaseUrl }
+  return { events, databaseUrl, sqlitePath }
 }
 
 function randomHex(bytes) {
@@ -39,10 +45,10 @@ function randomHex(bytes) {
   return buf.toString('hex')
 }
 
-async function loadDb(kind, databaseUrl) {
+async function loadDb(kind, databaseUrl, sqlitePath) {
   if (kind === 'sqlite') {
     const { SqliteIndexerDb } = await import(path.join(__dirname, '../indexer/src/db-sqlite.ts'))
-    return new SqliteIndexerDb(':memory:')
+    return new SqliteIndexerDb(sqlitePath)
   }
   const { PostgresIndexerDb } = await import(path.join(__dirname, '../indexer/src/db-postgres.ts'))
   const db = await PostgresIndexerDb.connect(databaseUrl)
@@ -86,14 +92,21 @@ async function runQueryPass(db, n, pageSize) {
   return { elapsedMs: Number(process.hrtime.bigint() - start) / 1e6, pages }
 }
 
-async function bench(kind, databaseUrl, n) {
-  const sustainedDb = await loadDb(kind, databaseUrl)
+async function bench(kind, databaseUrl, n, sqlitePath) {
+  // A file-backed SQLite path must not be reused between the two sub-runs
+  // below (unlike ':memory:', which starts fresh on every `new
+  // SqliteIndexerDb(...)` call) — each gets its own file so the second
+  // run isn't silently building on the first's rows.
+  const sustainedPath = sqlitePath === ':memory:' ? sqlitePath : `${sqlitePath}.sustained`
+  const backfillPath  = sqlitePath === ':memory:' ? sqlitePath : `${sqlitePath}.backfill`
+
+  const sustainedDb = await loadDb(kind, databaseUrl, sustainedPath)
   const sustainedMs = await runSustained(sustainedDb, n)
   const { notes } = await sustainedDb.countRows()
   const queryResult = await runQueryPass(sustainedDb, n, 500)
   await sustainedDb.close()
 
-  const backfillDb = await loadDb(kind, databaseUrl)
+  const backfillDb = await loadDb(kind, databaseUrl, backfillPath)
   const backfillMs = await runBackfillBatch(backfillDb, n)
   await backfillDb.close()
 
@@ -105,11 +118,11 @@ async function bench(kind, databaseUrl, n) {
   }
 }
 
-const { events, databaseUrl } = parseArgs()
+const { events, databaseUrl, sqlitePath } = parseArgs()
 console.log(`Indexer load test: ${events} events per run\n`)
 
-const sqliteResult = await bench('sqlite', undefined, events)
-console.log('SQLite (reference baseline):')
+const sqliteResult = await bench('sqlite', undefined, events, sqlitePath)
+console.log(sqlitePath === ':memory:' ? 'SQLite (in-memory reference baseline):' : `SQLite (file-backed at ${sqlitePath}, real disk I/O):`)
 console.log(`  sustained ingestion : ${sqliteResult.sustainedMs.toFixed(0)}ms (${sqliteResult.sustainedPerSec} events/s)`)
 console.log(`  backfill (parallel) : ${sqliteResult.backfillMs.toFixed(0)}ms (${sqliteResult.backfillPerSec} events/s)`)
 console.log(`  query pass (${sqliteResult.queryPages} pages) : ${sqliteResult.queryMs.toFixed(0)}ms`)
