@@ -333,11 +333,24 @@ this suite against a real `postgres:16-alpine` service container
 (`.github/workflows/ci.yml`).
 
 **Reviewer follow-up: the indexer process itself, running against live Testnet with Postgres
-as its backend, not just the interchangeability tests above.** The real `indexer/src/main.ts`
-process was run with `DATABASE_URL` set, against this stack's own `testnet_tranche2` token
-contract (`CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`), reading real events from
-the public Soroban RPC endpoint and writing to a real local PostgreSQL 14 server (not a
-container, not mocked — `psql`-verified: `PostgreSQL 14.24 (Ubuntu 14.24-0ubuntu0.22.04.1)`).
+as its backend, not just the interchangeability tests above — covering both the token and
+swap contracts.** The real `indexer/src/main.ts` process was run with `DATABASE_URL` set,
+against this stack's own `testnet_tranche2` token contract
+(`CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`), reading real events from the
+public Soroban RPC endpoint and writing to a real local PostgreSQL 14 server (not a container,
+not mocked — `psql`-verified: `PostgreSQL 14.24 (Ubuntu 14.24-0ubuntu0.22.04.1)`).
+
+The indexer only ever filters on `TOKEN_CONTRACT_ID` (`indexer/src/sync.ts`'s `("zkella",
+"note")`/`("zkella", "nf")` event filters) — there is no separate swap-contract address to
+configure, and that's not a gap: `contracts/swap`'s `commit_swap`/`reveal_and_claim` move value
+by cross-calling `token::unshield()`/`token::shield()` (`contracts/swap/src/lib.rs` lines
+361 and 607), and `env.events().publish(...)` in Soroban is always attributed to whichever
+contract's own code is executing the call — which, for both of those cross-calls, is `token`,
+not `swap` (the `(zkella, note)`/`(zkella, nf)` publish sites live inside
+`contracts/token/src/lib.rs` itself, at lines 410, 555, 810, 835, 1060 and 1072). So every
+note/nullifier event a swap produces already carries `token`'s contract ID, and an indexer
+watching `token` alone genuinely captures 100% of swap-driven activity too — confirmed by
+reading both contracts' source directly, not assumed.
 
 Honest framing of what this does and doesn't show: `testnet_tranche2` is a dormant stack —
 its own live validation ran once, in late September, and nothing has shielded, transferred, or
