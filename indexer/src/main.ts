@@ -40,6 +40,9 @@ async function main() {
   const port        = Number(process.env.INDEXER_HTTP_PORT ?? '8787')
   const pollMs      = Number(process.env.INDEXER_POLL_MS ?? '5000')
   const apiKeys     = (process.env.INDEXER_API_KEYS ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  if (network === 'mainnet' && apiKeys.length === 0) {
+    throw new Error('refusing to start on mainnet with INDEXER_API_KEYS unset: query endpoints would be unauthenticated')
+  }
   const rateLimitPerMinute = Number(process.env.INDEXER_RATE_LIMIT_PER_MINUTE ?? '600')
 
   const db = await openIndexerDb({ databaseUrl, sqlitePath })
@@ -58,7 +61,14 @@ async function main() {
   process.on('SIGTERM', shutdown)
 
   console.log(`[indexer] backend: ${databaseUrl ? 'postgres' : 'sqlite (' + sqlitePath + ')'}`)
-  console.log(`[indexer] syncing ${tokenAddress} on ${network} from ledger ${startLedger}`)
+  // db.getLastSyncedLedger falls back to startLedger only when no cursor was ever
+  // persisted; logging startLedger unconditionally here used to make a restart
+  // against an existing database look like it was about to re-sync from scratch,
+  // which it isn't — see RUNBOOK.md Category 2.
+  const resumeLedger = await db.getLastSyncedLedger(startLedger)
+  console.log(resumeLedger === startLedger
+    ? `[indexer] syncing ${tokenAddress} on ${network} from ledger ${startLedger}`
+    : `[indexer] syncing ${tokenAddress} on ${network}, resuming from persisted ledger ${resumeLedger} (configured start was ${startLedger})`)
   if (apiKeys.length === 0) {
     console.log('[indexer] WARNING: INDEXER_API_KEYS is unset - query endpoints are unauthenticated')
   }

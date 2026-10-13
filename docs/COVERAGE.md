@@ -13,7 +13,7 @@ cargo llvm-cov report --release --show-missing-lines     # itemised uncovered li
 
 The run compiles the crate and its dependencies with coverage instrumentation and takes several minutes on a cold build.
 
-## Result (token crate, `zkella-token`, 124 tests)
+## Result (token crate, `zkella-token`, 127 tests)
 
 | File | Regions | Lines | Functions |
 | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ The run compiles the crate and its dependencies with coverage instrumentation an
 | `src/types.rs` | 0% | 0% | 0% |
 | Total | 99.59% | 99.55% | 92.94% |
 
-Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (30, 17, 5, 4 and 2), but no coverage figure exists for them.
+Not separately measured: the `verifier`, `swap`, `governance`, `compliance` and `viewing_keys` crates. Their behaviour is exercised by their own tests (37, 30, 25, 13 and 5), but no coverage figure exists for them.
 
 ## Independent review of adequacy
 
@@ -40,7 +40,7 @@ The first version of this report was reviewed by someone other than its author. 
 
 These were all closed with 49 new tests (`contracts/token/src/tests/shield_flow.rs`, 33 tests, and `tests/spend_paths.rs`, 16 tests). They assert the exact error and that leaf count, root, supply, nullifiers and balances are unchanged on failure. Together with the pause, admin-transfer and `merkle_path` tests added earlier, and the clawback, at-scale and cost-parity tests, this took the crate from 55 to 116 tests, with `lib.rs` at 100% of lines at that point.
 
-Since then, Tranche 2's relayer-fee and unshield change-note features added real code without, in three places, a dedicated negative test for a defensive branch — see "What remains uncovered" below. The crate is now at 124 tests.
+Since then, Tranche 2's relayer-fee and unshield change-note features added real code without, in three places, a dedicated negative test for a defensive branch — see "What remains uncovered" below. A later audit pass added `transfer`/`transfer4`/`unshield` `encrypted_note`-length validation (closing a real fund-stranding gap, not a coverage gap) together with its own three new tests, which fully cover the new branches they add — `lib.rs` stays at 100% of functions. The crate is now at 127 tests, with the same three Tranche-2-era lines (now at different line numbers) still the only gaps.
 
 ## What remains uncovered
 

@@ -20,14 +20,14 @@ use soroban_sdk::{
 use zkella_verifier_interface::{CircuitType, VerifierClient};
 
 use types::{
-    NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldBatchItem, ShieldEvent,
+    NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldEvent,
     StorageKey, UnshieldEvent,
 };
 // Re-exported for downstream crates that deploy a real `ShieldedToken` in
 // their own tests (e.g. `contracts/swap`'s test suite, which shields a real
 // note via a direct `ShieldedTokenClient` call before exercising
 // `swap::commit_swap`'s cross-call into `token::unshield`).
-pub use types::{Error, ShieldPublicInputs, TransferPublicInputs, UnshieldPublicInputs};
+pub use types::{Error, ShieldBatchItem, ShieldPublicInputs, TransferPublicInputs, UnshieldPublicInputs};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -658,6 +658,18 @@ impl ShieldedToken {
         // bad relayer fails the whole call cleanly rather than after
         // nullifiers/commitments are already written.
         let relayer = if pub_inputs.fee > 0 {
+            // `unshield`'s principal payout is already paid pro rata during a
+            // custody shortfall (see `custody_shortfall`'s doc comment), but
+            // a relayer fee here was previously paid in full regardless —
+            // letting a relayer collect its whole fee out of a pool that
+            // can no longer back its shielded supply, at the other holders'
+            // expense. Refusing the whole call while a shortfall exists on
+            // this asset is simpler and safer than trying to prorate the fee
+            // too: the sender can always resubmit with `fee = 0` (no relayer
+            // needed) once a shortfall exists.
+            if Self::custody_shortfall(env.clone(), pub_inputs.asset_id.clone()) > 0 {
+                return Err(Error::FeeRefusedDuringShortfall);
+            }
             let relayer = relayer.ok_or(Error::RelayerRequired)?;
             relayer.require_auth();
             if !env.storage().instance().get(&StorageKey::ApprovedRelayer(relayer.clone())).unwrap_or(false) {
@@ -678,6 +690,22 @@ impl ShieldedToken {
             || pub_inputs.out_value_commits.len() != n
         {
             return Err(Error::InvalidInputCount);
+        }
+
+        // ── 1.5. Each encrypted note must be exactly ENCRYPTED_NOTE_LEN bytes ──
+        // shield()/shield_batch() enforce this same format on their own note
+        // ciphertexts; transfer()/transfer4() must too. The commitment binds
+        // an output note cryptographically but carries none of its (value,
+        // rho, rcm, owner) fields — `encrypted_note` is the only copy of
+        // them, so a malformed ciphertext here isn't caught by proof
+        // verification (which never looks at it) and would silently insert a
+        // real, value-bearing commitment whose owner can never decrypt it
+        // and therefore can never spend it — a permanent, unrecoverable loss
+        // of that output's value.
+        for i in 0..n {
+            if encrypted_notes.get(i).unwrap().len() != ENCRYPTED_NOTE_LEN {
+                return Err(Error::InvalidNote);
+            }
         }
 
         // ── 2. Public inputs must match the call's actual parameters ─────────
@@ -914,6 +942,19 @@ impl ShieldedToken {
             return Err(Error::RecipientMismatch);
         }
 
+        // ── 2.5. Validate encrypted change-note length ────────────────────────
+        // Same ENCRYPTED_NOTE_LEN format shield()/shield_batch() enforce on
+        // their own note ciphertexts. The change note always exists (see
+        // this function's doc comment) and `encrypted_change_note` is the
+        // only copy of its hidden (value, rho, rcm, owner) fields — proof
+        // verification never looks at it, so a malformed ciphertext here
+        // would otherwise silently insert a real, value-bearing change
+        // commitment whose owner can never decrypt it and therefore can
+        // never spend it.
+        if encrypted_change_note.len() != ENCRYPTED_NOTE_LEN {
+            return Err(Error::InvalidNote);
+        }
+
         // ── 3. Anchor must be a recent Merkle root ────────────────────────────
         // See `transfer_internal`'s identical check and `merkle::is_known_root`
         // for why this accepts a small window of recent roots rather than
@@ -1090,8 +1131,9 @@ impl ShieldedToken {
     /// `max(0, shielded_supply - custodied balance)`. Zero while fully backed.
     /// A positive value means the issuer clawed back custodied funds; governance
     /// should then revoke the asset (`set_asset_approved(asset, false)`) so no
-    /// new deposits are taken, and withdrawals are paid pro rata (see
-    /// `unshield`).
+    /// new deposits are taken, withdrawals are paid pro rata (see `unshield`),
+    /// and `transfer`/`transfer4` refuse any positive relayer fee on this
+    /// asset until the shortfall is resolved (see `transfer_internal`).
     pub fn custody_shortfall(env: Env, asset: Address) -> i128 {
         let supply: i128 = env
             .storage()
@@ -2457,6 +2499,81 @@ mod tests {
         assert_eq!(client.shielded_supply(&token_addr), 500_000i128);
         // Backing ratio is preserved for the remaining holders: 300k held vs 500k owed.
         assert_eq!(client.custody_shortfall(&token_addr), 200_000);
+    }
+
+    /// Non-blocking Tranche 2 finding: `unshield`'s principal payout was
+    /// already pro rata during a clawback shortfall, but `transfer`/
+    /// `transfer4`'s relayer fee was paid in full regardless — a relayer
+    /// could collect its whole declared fee out of a pool that can no
+    /// longer back its shielded supply, at the other holders' expense.
+    /// `transfer_internal` now refuses any positive-fee call for an asset
+    /// with a nonzero `custody_shortfall`, checked before relayer auth or
+    /// any other validation — this test exercises that guard directly,
+    /// with deliberately nonsensical nullifiers/commitments/proof, since
+    /// the guard fires (and the call fails) before any of those are ever
+    /// looked at.
+    #[test]
+    fn transfer_refuses_a_positive_fee_during_a_custody_shortfall_but_allows_a_zero_fee_call() {
+        let (env, admin, token, verifier) = setup();
+        let client = ShieldedTokenClient::new(&env, &token);
+        client.initialize(&admin, &verifier);
+
+        let token_admin = Address::generate(&env);
+        let token_id    = env.register_stellar_asset_contract_v2(token_admin);
+        use soroban_sdk::testutils::IssuerFlags;
+        token_id.issuer().set_flag(IssuerFlags::RevocableFlag);
+        token_id.issuer().set_flag(IssuerFlags::ClawbackEnabledFlag);
+        let token_addr = token_id.address();
+        client.set_asset_approved(&token_addr, &true);
+
+        let shielder = Address::generate(&env);
+        let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+        stellar_asset.mint(&shielder, &1_000_000);
+        // A real shield() (shielder -> contract) so custody_shortfall has
+        // something to compare the clawed-back balance against, exactly as
+        // the pro-rata unshield test above does.
+        let mut hasher = poseidon::Poseidon2Hasher::new(&env);
+        let shield_rho = BytesN::from_array(&env, &canon(90));
+        let shield_rcm = BytesN::from_array(&env, &canon(91));
+        let shield_amount: i128 = 1_000_000;
+        let commitment_bytes = compute_commitment(&env, shield_amount, &token_addr, &shield_rho, &shield_rcm, &test_pk(&env), &mut hasher);
+        let commitment = BytesN::from_array(&env, &commitment_bytes);
+        let value_commit = BytesN::from_array(&env, &[0u8; 32]);
+        let shield_pub_inputs = ShieldPublicInputs {
+            commitment: commitment.clone(), value_commit: value_commit.clone(),
+            pub_value: shield_amount, pub_asset_id: token_addr.clone(),
+        };
+        let shield_proof = prove_and_register_shield(&env, &verifier, &commitment, &value_commit, shield_amount, &token_addr);
+        client.shield(&shielder, &token_addr, &shield_amount, &shield_rho, &shield_rcm, &test_pk(&env), &commitment,
+            &Bytes::from_array(&env, &[0u8; 176]), &shield_proof, &shield_pub_inputs);
+
+        stellar_asset.clawback(&token, &400_000i128);
+        assert_eq!(client.custody_shortfall(&token_addr), 400_000, "shortfall must be in place before the guard is exercised");
+
+        let junk_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let junk_vec = soroban_sdk::Vec::from_array(&env, [junk_hash.clone(), junk_hash.clone()]);
+        let fee_pub_inputs = TransferPublicInputs {
+            anchor: junk_hash.clone(), nullifiers: junk_vec.clone(), out_commitments: junk_vec.clone(),
+            in_value_commits: junk_vec.clone(), out_value_commits: junk_vec.clone(),
+            fee: 1, asset_id: token_addr.clone(),
+        };
+        let relayer = Address::generate(&env);
+        let result = client.try_transfer(
+            &junk_vec, &junk_vec, &soroban_sdk::Vec::from_array(&env, [Bytes::new(&env), Bytes::new(&env)]),
+            &Bytes::new(&env), &fee_pub_inputs, &Some(relayer),
+        );
+        assert_eq!(result, Err(Ok(Error::FeeRefusedDuringShortfall)), "a positive fee must be refused outright during a shortfall");
+
+        // Same junk call, fee = 0 (no relayer needed): the shortfall guard
+        // does not fire, so it fails later for an unrelated reason (the
+        // junk inputs don't form a valid call) — proving this guard is
+        // scoped to positive fees only, not a blanket block on the asset.
+        let zero_fee_pub_inputs = TransferPublicInputs { fee: 0, ..fee_pub_inputs };
+        let zero_fee_result = client.try_transfer(
+            &junk_vec, &junk_vec, &soroban_sdk::Vec::from_array(&env, [Bytes::new(&env), Bytes::new(&env)]),
+            &Bytes::new(&env), &zero_fee_pub_inputs, &None,
+        );
+        assert_ne!(zero_fee_result, Err(Ok(Error::FeeRefusedDuringShortfall)), "a zero-fee call must not be blocked by this guard");
     }
 
     #[test]

@@ -9,12 +9,18 @@ export { encodeProof, encodeVerifyingKey } from './encoding'
  *
  * Circuit: swap_fairness.circom, `component main {public [intent_commitment,
  * asset_in, asset_out, amount_out, min_amount_out]}`
- *   Private: intent_nonce, amount_in, max_slippage_bps
+ *   Private: intent_nonce, amount_in
  *   Public:  intent_commitment, asset_in, asset_out, amount_out, min_amount_out
  *
+ * `minAmountOut` is supplied directly by the caller (from a real quoted rate
+ * between `assetIn`/`assetOut`), not derived from `amountIn` by a flat
+ * slippage percentage — that derivation used to mix asset_in-denominated
+ * `amountIn` with asset_out-denominated `amountOut`/`minAmountOut` with no
+ * exchange rate anywhere, which only happened to look sound for a 1:1 pair.
+ * See `swap_fairness.circom`'s own doc comment for the full history.
+ *
  * Invariants enforced in-circuit (see swap_fairness.circom):
- *   intent_commitment == Poseidon2(Poseidon2(asset_in, asset_out), Poseidon2(amount_in * 2^32 + max_slippage_bps, intent_nonce))
- *   min_amount_out    == floor(amount_in * (10000 - max_slippage_bps) / 10000)
+ *   intent_commitment == Poseidon2(Poseidon2(asset_in, asset_out), Poseidon2(amount_in * 2^64 + min_amount_out, intent_nonce))
  *   amount_out        >= min_amount_out
  *
  * `contracts/swap::reveal_and_claim` binds `asset_in`/`asset_out`/`amount_out`
@@ -26,7 +32,6 @@ export { encodeProof, encodeVerifyingKey } from './encoding'
 export interface SwapFairnessWitness {
   intentNonce:    bigint
   amountIn:       bigint
-  maxSlippageBps: bigint
   assetIn:        string  // SEP-41 contract address (field-encoded, same as token asset_id)
   assetOut:       string
   amountOut:      bigint
@@ -35,7 +40,7 @@ export interface SwapFairnessWitness {
 
 export interface SwapFairnessProofResult {
   proof: Uint8Array
-  /** Poseidon2(Poseidon2(asset_in,asset_out), Poseidon2(amount_in*2^32+slippage, nonce)) —
+  /** Poseidon2(Poseidon2(asset_in,asset_out), Poseidon2(amount_in*2^64+min_amount_out, nonce)) —
    *  pass this as `commit_swap`'s `intent_commitment` and
    *  `reveal_and_claim`'s `fairness_pub.intent_commitment`. */
   intentCommitment: Uint8Array
@@ -63,17 +68,11 @@ export async function generateSwapFairnessProof(
       `swap fairness proof: amount_out (${witness.amountOut}) < min_amount_out (${witness.minAmountOut})`
     )
   }
-  const expectedMin = (witness.amountIn * (10000n - witness.maxSlippageBps)) / 10000n
-  if (expectedMin !== witness.minAmountOut) {
-    throw new Error(
-      `swap fairness proof: min_amount_out (${witness.minAmountOut}) != floor(amount_in*(10000-bps)/10000) (${expectedMin})`
-    )
-  }
 
   const assetInField  = bufferToBigInt(addressToField(witness.assetIn))
   const assetOutField = bufferToBigInt(addressToField(witness.assetOut))
 
-  const packed = witness.amountIn * (2n ** 32n) + witness.maxSlippageBps
+  const packed = witness.amountIn * (2n ** 64n) + witness.minAmountOut
   const h1 = await poseidon2(bigIntToBuffer(assetInField), bigIntToBuffer(assetOutField))
   const h2 = await poseidon2(bigIntToBuffer(packed), bigIntToBuffer(witness.intentNonce))
   const intentCommitment = await poseidon2(h1, h2)
@@ -81,7 +80,6 @@ export async function generateSwapFairnessProof(
   const input = {
     intent_nonce:      witness.intentNonce.toString(),
     amount_in:         witness.amountIn.toString(),
-    max_slippage_bps:  witness.maxSlippageBps.toString(),
     intent_commitment: bufferToBigInt(intentCommitment).toString(),
     asset_in:          assetInField.toString(),
     asset_out:         assetOutField.toString(),

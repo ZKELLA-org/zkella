@@ -68,6 +68,21 @@ describe('RateLimiter', () => {
     expect(rl.hit('a', now)).toBe(false)
     expect(rl.hit('b', now)).toBe(false)
   })
+
+  test('evicts expired identities instead of retaining every one ever seen', () => {
+    // Regression test for an unbounded-memory finding: `counts` had no
+    // eviction at all, so one entry accumulated per distinct identity
+    // forever (most exploitable against /health and /metrics, which are
+    // rate-limited by client IP even with API keys configured elsewhere).
+    const rl = new RateLimiter(5, 1000)
+    const t0 = 1_000_000
+    for (let i = 0; i < 500; i++) rl.hit(`id-${i}`, t0)
+    expect(rl.size).toBe(500)
+    // All 500 windows are now well expired; a single later hit should sweep
+    // them out rather than leaving them held onto forever.
+    rl.hit('id-new', t0 + 5000)
+    expect(rl.size).toBe(1)
+  })
 })
 
 function fakeDb(): IndexerDb {

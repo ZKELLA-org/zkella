@@ -6,7 +6,7 @@ export { ZKELLACompliance } from './compliance/compliance'
 export { IndexerClient }    from './indexer/client'
 export {
   SwapQuoteClient,
-  quoteRespectsSlippage,
+  quoteRespectsMinimum,
   QuoteValidationError,
 } from './relayer/quote'
 export type {
@@ -15,3 +15,4 @@ export type {
   RelayerQuoteHandler,
 } from './relayer/quote'
 export * from './types'
+export { TESTNET_CONTRACTS, TESTNET_SOROBAN_RPC, TESTNET_INDEXER_URL } from './config/testnet'

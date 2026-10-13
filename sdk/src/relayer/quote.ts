@@ -13,19 +13,23 @@
  * `contracts/swap`'s on-chain soundness depends on a quote being honest,
  * authentic, or even delivered — `intent_commitment` (what actually gets
  * committed on-chain via `commit_swap`) is derived from `amount_in`,
- * `max_slippage_bps`, and a private nonce alone (see
+ * `min_amount_out`, and a private nonce alone (see
  * `sdk/src/prover/swapFairness.ts`'s doc comment); it does **not** depend on
  * any quoted `amount_out` at all. The circuit-enforced floor
- * (`min_amount_out = floor(amount_in * (10000 - max_slippage_bps) / 10000)`)
- * is what actually protects the user, regardless of what a relayer quotes
- * beforehand. A tampered, forged, or simply dishonest quote can mislead a
- * wallet's *expectations*, but cannot make the on-chain protocol accept a
- * worse deal than the user's own committed slippage tolerance — the
- * fairness proof at `reveal_and_claim` simply cannot be constructed if the
- * relayer under-delivers below that floor, and the relayer's fronted
- * capital sits unclaimable until `reclaim_expired_swap` if that happens, a
- * real economic cost that gives relayers a reason to honor quotes even
- * without cryptographic enforcement.
+ * (`amount_out >= min_amount_out`, with `min_amount_out` a direct,
+ * asset_out-denominated value the wallet itself chose from a real quoted
+ * rate — not derived on-chain from `amount_in` by a flat slippage
+ * percentage, which would be unsound for a non-1:1 pair; see
+ * `circuits/swap/swap_fairness.circom`'s doc comment) is what actually
+ * protects the user, regardless of what a relayer quotes beforehand. A
+ * tampered, forged, or simply dishonest quote can mislead a wallet's
+ * *expectations*, but cannot make the on-chain protocol accept a worse deal
+ * than the user's own committed minimum — the fairness proof at
+ * `reveal_and_claim` simply cannot be constructed if the relayer
+ * under-delivers below that floor, and the relayer's fronted capital sits
+ * unclaimable until `reclaim_expired_swap` if that happens, a real economic
+ * cost that gives relayers a reason to honor quotes even without
+ * cryptographic enforcement.
  *
  * What this protocol does NOT provide (know this before relying on it):
  *
@@ -44,11 +48,19 @@
  */
 
 export interface SwapQuoteRequest {
-  assetIn:        string
-  assetOut:       string
+  assetIn:      string
+  assetOut:     string
   /** Decimal string of a `bigint` (stroops or the asset's native unit) — not a `number`, to avoid precision loss over JSON. */
-  amountIn:       string
-  maxSlippageBps: number
+  amountIn:     string
+  /**
+   * The lowest amount of `assetOut` the wallet will accept, as a decimal
+   * `bigint` string — the same, asset_out-denominated value that will be
+   * bound into `intent_commitment` at `commitSwap` time (see
+   * `ZKELLASwap.commitSwap`'s `minAmountOut` doc comment). Chosen by the
+   * caller from a real quoted rate between `assetIn`/`assetOut`; this
+   * module has no way to derive it for an arbitrary pair.
+   */
+  minAmountOut: string
 }
 
 export interface SwapQuoteResponse {
@@ -67,23 +79,18 @@ export class QuoteValidationError extends Error {}
 /**
  * True iff `quotedAmountOut` satisfies the same floor
  * `circuits/swap/swap_fairness.circom` enforces on-chain:
- * `quotedAmountOut >= floor(amountIn * (10000 - maxSlippageBps) / 10000)`.
- * Integer (`bigint`) division here matches the circuit's field-arithmetic
- * quotient/remainder construction bit-for-bit for non-negative operands —
- * this is not an approximation of the on-chain check, it's the same formula.
+ * `quotedAmountOut >= minAmountOut`. `minAmountOut` is the caller's own
+ * chosen value (see `SwapQuoteRequest.minAmountOut`'s doc comment), not
+ * derived here — there is no formula relating it to `amountIn` any more,
+ * since that derivation was asset-blind (see this file's top doc comment).
  */
-export function quoteRespectsSlippage(
-  amountIn:        bigint,
-  maxSlippageBps:  number,
+export function quoteRespectsMinimum(
+  minAmountOut:    bigint,
   quotedAmountOut: bigint,
 ): boolean {
-  if (!Number.isInteger(maxSlippageBps) || maxSlippageBps < 0 || maxSlippageBps > 10000) {
-    throw new QuoteValidationError(`maxSlippageBps out of range [0, 10000]: ${maxSlippageBps}`)
+  if (minAmountOut < 0n) {
+    throw new QuoteValidationError(`minAmountOut must not be negative: ${minAmountOut}`)
   }
-  if (amountIn <= 0n) {
-    throw new QuoteValidationError(`amountIn must be positive: ${amountIn}`)
-  }
-  const minAmountOut = (amountIn * (10000n - BigInt(maxSlippageBps))) / 10000n
   return quotedAmountOut >= minAmountOut
 }
 
@@ -110,7 +117,7 @@ export class SwapQuoteClient {
    */
   async requestQuote(req: SwapQuoteRequest): Promise<SwapQuoteResponse> {
     // Fail fast on a malformed request before ever hitting the network —
-    // also validates `req.amountIn`/`req.maxSlippageBps` up front so a
+    // also validates `req.amountIn`/`req.minAmountOut` up front so a
     // parse failure below is attributable to the relayer's response, not
     // ambiguous between the caller's own input and the relayer's.
     let amountIn: bigint
@@ -121,6 +128,15 @@ export class SwapQuoteClient {
     }
     if (amountIn <= 0n) {
       throw new QuoteValidationError(`amountIn must be positive: ${req.amountIn}`)
+    }
+    let minAmountOut: bigint
+    try {
+      minAmountOut = BigInt(req.minAmountOut)
+    } catch {
+      throw new QuoteValidationError(`minAmountOut is not a valid integer string: ${req.minAmountOut}`)
+    }
+    if (minAmountOut < 0n) {
+      throw new QuoteValidationError(`minAmountOut must not be negative: ${req.minAmountOut}`)
     }
 
     const fetchFn = this.config.fetchImpl ?? fetch
@@ -143,10 +159,10 @@ export class SwapQuoteClient {
     if (amountOut <= 0n) {
       throw new QuoteValidationError(`relayer returned a non-positive amountOut: ${quote.amountOut}`)
     }
-    if (!quoteRespectsSlippage(amountIn, req.maxSlippageBps, amountOut)) {
+    if (!quoteRespectsMinimum(minAmountOut, amountOut)) {
       throw new QuoteValidationError(
-        `relayer quote (amountOut=${quote.amountOut}) does not respect the requested ` +
-        `${req.maxSlippageBps} bps slippage tolerance on amountIn=${req.amountIn}`
+        `relayer quote (amountOut=${quote.amountOut}) is below the requested ` +
+        `minAmountOut=${req.minAmountOut}`
       )
     }
     if (quote.expiresAt <= Date.now()) {

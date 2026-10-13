@@ -12,6 +12,11 @@ libfuzzer-sys = "0.4"
 soroban-sdk = { version = "27.0.0", features = ["hazmat-crypto", "testutils"] }
 zkella-token = { path = "..", features = ["testutils"] }
 zkella-verifier = { path = "../../verifier" }
+zkella-swap = { path = "../../swap" }
+zkella-governance = { path = "../../governance" }
+zkella-compliance = { path = "../../compliance" }
+zkella-viewing-keys = { path = "../../viewing_keys" }
+zkella-verifier-interface = { path = "../../verifier-interface" }
 
 [workspace]
 
@@ -30,5 +35,41 @@ doc = false
 [[bin]]
 name = "verifier_arbitrary"
 path = "fuzz_targets/verifier_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "swap_arbitrary"
+path = "fuzz_targets/swap_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "governance_arbitrary"
+path = "fuzz_targets/governance_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compliance_arbitrary"
+path = "fuzz_targets/compliance_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "viewing_keys_arbitrary"
+path = "fuzz_targets/viewing_keys_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "token_admin_arbitrary"
+path = "fuzz_targets/token_admin_arbitrary.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "verifier_admin_arbitrary"
+path = "fuzz_targets/verifier_admin_arbitrary.rs"
 test = false
 doc = false

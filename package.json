@@ -36,6 +36,10 @@
     "pg": "^8.23.0",
     "snarkjs": "^0.7.6"
   },
+  "overrides": {
+    "ws": "^8.22.0",
+    "underscore": "^1.13.8"
+  },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",

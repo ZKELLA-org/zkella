@@ -2078,6 +2078,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "out_note_binding"
+                    },
+                    "val": {
+                      "bytes": "f43f4d569d5ff527fbd7d4de6384b2ffc97876baf22891e088ced7bdc1c06928"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "out_owner_pk"
                     },
                     "val": {

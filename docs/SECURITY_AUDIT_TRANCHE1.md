@@ -27,7 +27,7 @@ A second re-audit of the same code found further issues. Fixed items are describ
 
 ### Fixed
 
-- **Compliance circuit (High).** The sanctions non-membership circuit used non-strict bounds, had no adjacency check between the two bracketing leaves, and compared 64 bits of a 254-bit value. A sanctioned address could therefore produce a proof of non-membership, and honest addresses could fail to. The circuit was rewritten: strict `lower < address < upper`, adjacency enforced as `upper_idx = lower_idx + 1`, values truncated to 248 bits with `Num2Bits_strict`, and sentinel leaves `0` and `2^248 - 1`. It was rebuilt (17,533 constraints, public inputs `sanctions_root`, `tk_commitment`) and has 8 new circuit tests in `tests/unit/circuit-compliance.test.ts`. Its verifying key has not been registered on a live stack.
+- **Compliance circuit (High).** The sanctions non-membership circuit used non-strict bounds, had no adjacency check between the two bracketing leaves, and compared 64 bits of a 254-bit value. A sanctioned address could therefore produce a proof of non-membership, and honest addresses could fail to. The circuit was rewritten: strict `lower < address < upper`, adjacency enforced as `upper_idx = lower_idx + 1`, values truncated to 248 bits with `Num2Bits_strict`, and sentinel leaves `0` and `2^248 - 1`. It was rebuilt (17,533 constraints, public inputs `sanctions_root`, `tk_commitment`) and has 8 new circuit tests in `tests/unit/circuit-compliance.test.ts`. Its verifying key has since been registered and exercised on live Testnet (see `docs/TRANCHE3_DELIVERABLES.md`).
 - **Swap claimant front-running.** A third party could front-run `reveal_and_claim` and direct the output note to themselves. The claimant's owner key (`out_owner_pk`) is now committed at `commit_swap`, `reveal_and_claim` must use it, and `asset_out` and the expiry are bound into the ownership proof's binding tag. Swap state moved from instance storage to persistent storage with TTL bumps.
 - **Governance.** Gains a `revoke_previous_vk` entrypoint and a timelock getter.
 - **Wallet and indexer.** The wallet dedupes notes by commitment and by nullifier and strictly validates hex and field encoding of recipient keys. Indexer paging no longer skips events at ledger and page boundaries.
@@ -39,7 +39,7 @@ A second re-audit of the same code found further issues. Fixed items are describ
 - **`unshield`'s `recipient_hash` has no R1CS constraint of its own.** Its binding relies on the Groth16 public-input (`IC`) term, which was checked to be non-zero in the built verifying key.
 - **`value_commit` is a Poseidon hash, not homomorphic.** Balance is enforced inside the circuit, not by a homomorphic check.
 - **Swap `min_amount_out` and `amount_out` are not range-bound in the circuit.** The contract passes `u128` values, so this is not exploitable through the contract.
-- **Transfer fee is proven but not collected.** The fee is constrained in the circuit; no contract code pays it to anyone.
+- **Transfer fee is proven but not collected** *(resolved in Tranche 2).* The fee was constrained in the circuit with no contract code paying it; since Tranche 2, `transfer`/`transfer4` pay `pub_inputs.fee` to an approved relayer when positive — see `docs/TRANCHE2_DELIVERABLES.md` Deliverable 1.4.
 
 ## Shield circuit negative-testing pass
 

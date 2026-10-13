@@ -1,50 +1,61 @@
+import { xdr, nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
 import { ZKELLAWallet } from '../wallet/wallet'
-
-export interface SanctionsList {
-  root:            string
-  version:         string
-  publishedLedger: number
-  fetchPath:       (address: string) => Promise<{ path: string[]; boundaryLeaves: string[] }>
-}
+import { generateNonMembershipProof, buildSanctionsTree } from '../prover/compliance'
+import { structScVal } from '../wallet/wallet'
+import { bigIntToBuffer } from '../crypto/poseidon'
 
 export interface ComplianceProof {
-  proof:          Uint8Array
-  sanctionsRoot:  string
-  version:        string
-  tkCommitment:   string
-  toJSON:         () => object
+  proof:         Uint8Array
+  sanctionsRoot: Uint8Array
+  tkCommitment:  Uint8Array
 }
 
+export interface ComplianceConfig {
+  wallet:              ZKELLAWallet
+  complianceAddress:   string
+  /** The sanctioned addresses (247-bit field values) the maintainer publishes. */
+  sanctionedAddresses: bigint[]
+  wasmPath:            string
+  zkeyPath:            string
+}
+
+/**
+ * Generates a non-membership proof against the maintainer's sanctions list and
+ * publishes it to the compliance contract. The contract accepts only proofs
+ * against the root the admin set, so `publishProof` fails unless the list here
+ * matches the one published on-chain.
+ */
 export class ZKELLACompliance {
-  constructor(private config: { wallet: ZKELLAWallet }) {}
+  constructor(private config: ComplianceConfig) {}
 
-  static async fetchSanctionsList(url: string): Promise<SanctionsList> {
-    const res  = await fetch(url)
-    const data = (await res.json()) as { root: string; version: string; published_ledger: number }
-    return {
-      root:            data.root,
-      version:         data.version,
-      publishedLedger: data.published_ledger,
-      fetchPath:       async (address: string) => {
-        const r = await fetch(`${url}/path/${address}`)
-        return (await r.json()) as { path: string[]; boundaryLeaves: string[] }
-      },
-    }
+  /** The sanctions-tree root this wrapper's list produces; the admin must publish it. */
+  async sanctionsRoot(): Promise<Uint8Array> {
+    const tree = await buildSanctionsTree(this.config.sanctionedAddresses)
+    return bigIntToBuffer(tree.root)
   }
 
-  async generateNonSanctionedProof(_sanctions: SanctionsList): Promise<ComplianceProof> {
-    // Generate Groth16 non-membership proof — M2
-    return {
-      proof:         new Uint8Array(192),
-      sanctionsRoot: '',
-      version:       '',
-      tkCommitment:  '',
-      toJSON:        () => ({}),
-    }
+  async generateNonSanctionedProof(): Promise<ComplianceProof> {
+    const result = await generateNonMembershipProof({
+      sk:         this.config.wallet.complianceSecret(),
+      sanctioned: this.config.sanctionedAddresses,
+      wasmPath:   this.config.wasmPath,
+      zkeyPath:   this.config.zkeyPath,
+    })
+    return { proof: result.proof, sanctionsRoot: result.sanctionsRoot, tkCommitment: result.tkCommitment }
   }
 
-  async publishProof(_proof: ComplianceProof): Promise<{ submit: () => Promise<void> }> {
-    // Submit to ViewingKeyRegistry contract — M2
-    return { submit: async () => {} }
+  /** Submits the proof as the wallet's own account; the contract checks the owner's auth. */
+  async publishProof(p: ComplianceProof): Promise<{ submit: () => Promise<void> }> {
+    const submit = async (): Promise<void> => {
+      await this.config.wallet.submitContractCall(this.config.complianceAddress, 'publish_compliance_proof', [
+        nativeToScVal(this.config.wallet.accountAddress(), { type: 'address' }),
+        nativeToScVal(p.proof, { type: 'bytes' }),
+        structScVal(
+          { sanctions_root: p.sanctionsRoot, tk_commitment: p.tkCommitment },
+          { sanctions_root: 'bytes', tk_commitment: 'bytes' },
+        ),
+      ])
+    }
+    return { submit }
   }
 }

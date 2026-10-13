@@ -157,4 +157,5 @@ pub enum Error {
     BatchTooLarge        = 21, // shield_batch() item count exceeds MAX_SHIELD_BATCH
     RelayerRequired      = 22, // transfer()/transfer4() declared a positive fee but no relayer was given
     RelayerNotApproved   = 23, // the given relayer address is not on the admin-controlled allowlist (see `set_relayer`)
+    FeeRefusedDuringShortfall = 24, // a positive relayer fee was declared for an asset with a nonzero custody_shortfall
 }

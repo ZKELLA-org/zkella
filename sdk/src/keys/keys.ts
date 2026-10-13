@@ -130,6 +130,47 @@ export class ZKELLAKeys {
     }
   }
 
+  /**
+   * The viewing scalar for `epoch`. Epoch 0 is the original key, so existing
+   * addresses and notes are unchanged. Each later epoch is an independent key:
+   * a holder of epoch e's key cannot decrypt notes sent to any other epoch.
+   */
+  viewingKeyForEpoch(epoch: number): Uint8Array {
+    if (epoch === 0) return this.spendingKey.viewingKey
+    return reduceModR(blake2b(concat(this.spendingKey.raw, DOMAIN_VIEW, u32le(epoch)), { dkLen: 32 }))
+  }
+
+  async transmissionKeyForEpoch(epoch: number): Promise<Uint8Array> {
+    if (epoch === 0) return this.spendingKey.transmissionKey
+    return scalarMultBase(this.viewingKeyForEpoch(epoch))
+  }
+
+  async deriveAddressForEpoch(epoch: number, diversifierIndex = 0): Promise<ShieldedAddress> {
+    if (epoch === 0) return this.deriveAddress(diversifierIndex)
+    const diversifier = blake2b(
+      concat(this.spendingKey.raw, u32le(diversifierIndex), u32le(epoch)),
+      { dkLen: 11 },
+    )
+    const gD  = await hashToCurveG1(diversifier)
+    const pkD = await scalarMultPoint(this.viewingKeyForEpoch(epoch), gD)
+    const addr = base58Check(concat(new Uint8Array([0x01]), diversifier, pkD))
+    return {
+      diversifier,
+      pkD,
+      toString: () => 'zkella1' + addr,
+    }
+  }
+
+  async exportViewingKeyForEpoch(birthdayLedger: number, network: string, epoch: number): Promise<ViewingKeyExport> {
+    return {
+      version:          1,
+      network,
+      viewing_key:      toHex(this.viewingKeyForEpoch(epoch)),
+      transmission_key: toHex(await this.transmissionKeyForEpoch(epoch)),
+      birthday_ledger:  birthdayLedger,
+    }
+  }
+
   toViewingKey(birthdayLedger: number): ViewingKey {
     return {
       raw:             this.spendingKey.viewingKey,
@@ -153,6 +194,12 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
   let offset   = 0
   for (const a of arrays) { result.set(a, offset); offset += a.length }
   return result
+}
+
+function u32le(n: number): Uint8Array {
+  const b = new Uint8Array(4)
+  new DataView(b.buffer).setUint32(0, n, true)
+  return b
 }
 
 function toHex(buf: Uint8Array): string {

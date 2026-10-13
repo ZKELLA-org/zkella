@@ -1,6 +1,9 @@
 // Live Testnet validation of the swap flow (commit_swap -> execute_swap -> reveal_and_claim),
 // exercising a real unshield ownership proof, a real swap-fairness proof and a real shield proof.
 // Env: STELLAR_SECRET, TOKEN_ID, SWAP_ID, ASSET_ID. Requires `npm run build --workspace=sdk`.
+// Optional, for a cross-asset run: ASSET_OUT_ID (a different asset than ASSET_ID), plus
+// AMOUNT_OUT and MIN_OUT (both required together with ASSET_OUT_ID — there's no rate this
+// script can safely invent across two different assets; see commitSwap's doc comment).
 const path = require('path')
 const { rpc, nativeToScVal, scValToNative, xdr } = require('@stellar/stellar-sdk')
 const sdk = path.join(__dirname, '../sdk/dist')
@@ -28,7 +31,7 @@ const struct = obj => xdr.ScVal.scvMap(
     .map(([k, v]) => new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(k), val: v })))
 
 ;(async () => {
-  const { STELLAR_SECRET, TOKEN_ID, SWAP_ID, ASSET_ID } = process.env
+  const { STELLAR_SECRET, TOKEN_ID, SWAP_ID, ASSET_ID, ASSET_OUT_ID, AMOUNT_OUT: AMOUNT_OUT_ENV, MIN_OUT: MIN_OUT_ENV } = process.env
   const keys = await ZKELLAKeys.generate()
   const wallet = new ZKELLAWallet({
     keys: keys.spendingKey, network: 'testnet',
@@ -37,9 +40,18 @@ const struct = obj => xdr.ScVal.scvMap(
     shieldCircuit: { wasmPath: b('shield/build/shield_js/shield.wasm'), zkeyPath: b('shield/build/shield.zkey') },
   })
   const me = wallet.sourceKeypair.publicKey()
-  const AMOUNT_IN = 5_000_000n, SLIPPAGE = 100n
-  const AMOUNT_OUT = 4_990_000n
-  const MIN_OUT = (AMOUNT_IN * (10000n - SLIPPAGE)) / 10000n
+  const ASSET_OUT = ASSET_OUT_ID || ASSET_ID
+  const crossAsset = ASSET_OUT !== ASSET_ID
+  const AMOUNT_IN = 5_000_000n
+  // For a genuine cross-asset run there's no rate this script can safely
+  // invent (see commitSwap's doc comment) — AMOUNT_OUT/MIN_OUT must be
+  // supplied explicitly from a real quoted rate. Same-asset default
+  // unchanged: a 1% tolerance on AMOUNT_IN.
+  const AMOUNT_OUT = AMOUNT_OUT_ENV ? BigInt(AMOUNT_OUT_ENV) : 4_990_000n
+  const MIN_OUT = MIN_OUT_ENV ? BigInt(MIN_OUT_ENV) : 4_950_000n
+  if (crossAsset && (!AMOUNT_OUT_ENV || !MIN_OUT_ENV)) {
+    throw new Error('cross-asset run (ASSET_OUT_ID set): also set AMOUNT_OUT and MIN_OUT to a real quoted rate for that asset')
+  }
 
   console.log('shield input note')
   const { note, submit } = await wallet.shield({ asset: ASSET_ID, amount: AMOUNT_IN })
@@ -48,14 +60,14 @@ const struct = obj => xdr.ScVal.scvMap(
   console.log('fairness proof (intent commitment)')
   const nonce = BigInt('0x' + Buffer.from(require('crypto').randomBytes(16)).toString('hex'))
   const fair = await generateSwapFairnessProof(
-    { intentNonce: nonce, amountIn: AMOUNT_IN, maxSlippageBps: SLIPPAGE, assetIn: ASSET_ID, assetOut: ASSET_ID,
+    { intentNonce: nonce, amountIn: AMOUNT_IN, assetIn: ASSET_ID, assetOut: ASSET_OUT,
       amountOut: AMOUNT_OUT, minAmountOut: MIN_OUT },
     b('swap/build/swap_fairness_js/swap_fairness.wasm'), b('swap/build/swap_fairness.zkey'))
 
   console.log('commit_swap (real unshield ownership proof, bound to this intent)')
   const latest = (await new rpc.Server('https://soroban-testnet.stellar.org').getLatestLedger()).sequence
   const expiry = latest + 300
-  const bindingTag = await computeSwapBindingTag(fair.intentCommitment, me, keys.spendingKey.ownerKey, ASSET_ID, expiry)
+  const bindingTag = await computeSwapBindingTag(fair.intentCommitment, me, keys.spendingKey.ownerKey, ASSET_OUT, expiry)
   const anchor = await wallet.getMerkleRoot()
   const merklePath = await wallet.getMerklePathBytes(note.leafIndex)
   const own = await generateUnshieldProof(
@@ -63,9 +75,15 @@ const struct = obj => xdr.ScVal.scvMap(
     { anchor, recipient: SWAP_ID, bindingTag },
     b('unshield/build/unshield_js/unshield.wasm'), b('unshield/build/unshield.zkey'),
     changeNote => encryptNote(changeNote, keys.spendingKey.transmissionKey))
+  // Built now, not at reveal time: out_note_binding commits to this exact note's
+  // randomness, so reveal_and_claim can't be resubmitted with substitute rho/rcm
+  // under the same owner key — see contracts/swap::SwapState::out_note_binding.
+  const outNote = await buildNote(AMOUNT_OUT, ASSET_OUT, keys.spendingKey.ownerKey)
+  const outNoteBinding = require('crypto').createHash('sha256')
+    .update(Buffer.concat([Buffer.from(outNote.rho), Buffer.from(outNote.rcm)])).digest()
   const swapId = scValToNative(await wallet.submitContractCall(SWAP_ID, 'commit_swap', [
-    bytes(own.nullifier), bytes(fair.intentCommitment), addr(ASSET_ID), addr(ASSET_ID),
-    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey),
+    bytes(own.nullifier), bytes(fair.intentCommitment), addr(ASSET_ID), addr(ASSET_OUT),
+    i128(AMOUNT_IN), bytes(anchor), addr(me), bytes(keys.spendingKey.ownerKey), bytes(outNoteBinding),
     i128(MIN_OUT), bytes(own.changeNote.commitment), bytes(own.changeValueCommit), bytes(own.encryptedChangeNote),
     bytes(own.proof), nativeToScVal(expiry, { type: 'u32' }),
   ]))
@@ -75,20 +93,19 @@ const struct = obj => xdr.ScVal.scvMap(
   await wallet.submitContractCall(SWAP_ID, 'execute_swap', [bytes(swapId), i128(AMOUNT_OUT), addr(me)])
 
   console.log('reveal_and_claim (real fairness proof + real shield proof for the output note)')
-  const outNote = await buildNote(AMOUNT_OUT, ASSET_ID, keys.spendingKey.ownerKey)
-  const sh = await generateShieldProof(outNote, { commitment: outNote.commitment, asset: ASSET_ID, amount: AMOUNT_OUT },
+  const sh = await generateShieldProof(outNote, { commitment: outNote.commitment, asset: ASSET_OUT, amount: AMOUNT_OUT },
     b('shield/build/shield_js/shield.wasm'), b('shield/build/shield.zkey'))
   const enc = await encryptNote(outNote, keys.spendingKey.transmissionKey)
   const leaf = scValToNative(await wallet.submitContractCall(SWAP_ID, 'reveal_and_claim', [
     bytes(swapId), bytes(outNote.rho), bytes(outNote.rcm), bytes(outNote.ownerPk),
     bytes(outNote.commitment), bytes(sh.valueCommit), bytes(enc), bytes(fair.proof),
     struct({
-      intent_commitment: bytes(fair.intentCommitment), asset_in: addr(ASSET_ID), asset_out: addr(ASSET_ID),
+      intent_commitment: bytes(fair.intentCommitment), asset_in: addr(ASSET_ID), asset_out: addr(ASSET_OUT),
       amount_out: i128(AMOUNT_OUT), min_amount_out: i128(MIN_OUT),
     }),
     bytes(sh.proof),
   ]))
   console.log('   claimed into leaf', leaf)
-  console.log('supply', await wallet.callView(TOKEN_ID, 'shielded_supply', [addr(ASSET_ID)]))
+  console.log('asset_out shielded_supply', await wallet.callView(TOKEN_ID, 'shielded_supply', [addr(ASSET_OUT)]))
   process.exit(0)
 })().catch(e => { console.error('FAILED:', e.message || e); process.exit(1) })

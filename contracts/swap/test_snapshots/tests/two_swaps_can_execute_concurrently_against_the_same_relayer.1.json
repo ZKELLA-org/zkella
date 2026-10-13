@@ -2557,6 +2557,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "out_note_binding"
+                    },
+                    "val": {
+                      "bytes": "0909090909090909090909090909090909090909090909090909090909090900"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "out_owner_pk"
                     },
                     "val": {
@@ -2681,6 +2689,14 @@
                     },
                     "val": {
                       "bytes": "cecececececececececececececececececececececececececececececece00"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "out_note_binding"
+                    },
+                    "val": {
+                      "bytes": "0909090909090909090909090909090909090909090909090909090909090900"
                     }
                   },
                   {

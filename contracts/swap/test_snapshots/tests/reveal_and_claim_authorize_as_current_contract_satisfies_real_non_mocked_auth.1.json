@@ -2208,6 +2208,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "out_note_binding"
+                    },
+                    "val": {
+                      "bytes": "6935f3128e6202d589d58b6d2b7e9b749417527a344ec6d69cb11e8066ff46fe"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "out_owner_pk"
                     },
                     "val": {

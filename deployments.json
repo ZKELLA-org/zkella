@@ -1,32 +1,64 @@
 {
-    "testnet": {
-        "verifier": "CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER",
-        "governance": "CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS",
-        "compliance": "CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS",
-        "token": "CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ",
-        "swap": "CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN",
-        "viewing_keys": null,
-        "_note": "LEGACY stack, not source-equivalent to current code (built before owner-key notes, the canonical public-input check, batch transcript challenges and revoke_previous_vk). Redeployed 2026-08-14 to close 7 findings from an external technical review (three Critical in contracts/swap, one High in contracts/governance, plus three lower-severity fixes) \u2014 see docs/POC_IMPLEMENTATION.md's 'Update: external audit' and 'Update: live redeployment with the fast-timelock testnet build'. The `governance` binary for this deployment was built with the testnet-fast-timelock feature (VK_TIMELOCK_LEDGERS=60, ~5 minutes, vs the real 7-day production value) \u2014 see contracts/governance/Cargo.toml's doc comment on that feature; never build a production artifact with it enabled. Prior addresses (verifier CCRLI4EAT62..., governance CDCSHTT3R75M..., compliance CA2EU46YYEBJ..., token CDE7U6HTLMDF..., swap CDPPRPAVKUJG...) predate all seven fixes and are superseded."
-    },
-    "testnet_tranche1": {
-        "verifier": "CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY",
-        "token": "CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q",
-        "swap": "CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY",
-        "_note": "Tranche 1 live validation stack, the only stack built from the owner-key, canonical-input and batch-transcript source. The verifier is administered directly by the deployer (no governance timelock). The swap address predates the later commit_swap binding change (out_owner_pk committed at commit_swap; asset_out and expiry bound into the ownership proof binding tag) and the move of swap state to persistent storage, so it does not match current swap source; redeploy swap before relying on it. The `testnet` block above is the older stack and does not include the owner-key, canonical-input, batch-transcript or revoke_previous_vk changes.",
-        "compliance": "CAUZB3RTW23QQ5CT6W7KLINZDYVO56DSUZQ5AHKL56KWBH64QD5LNA3Q"
-    },
-    "testnet_tranche2": {
-        "verifier": "CCU6TP7MQD7WN4UC3M4KDLSV3M3WSAOBWTO3MZ6QDMF23BUBAKENJP44",
-        "token": "CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM",
-        "swap": "CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D",
-        "_note": "Tranche 2 live validation stack: token::transfer/transfer4's relayer-fee routing, token::unshield's change-note output (new 7-input Unshield circuit), and swap::commit_swap's min_amount_out early bound check are all built from this source. The verifier is administered directly by the deployer (no governance timelock), same as the Tranche 1 stack. Verifying keys registered for Shield, Transfer(2x2), Unshield, Transfer4x4 and SwapFairness. The deployer is also an approved relayer on both token and swap (their own, separate ApprovedRelayer allowlists). Live-validated transactions (see docs/TESTNET_DEPLOYMENT.md's Tranche 2 section): a relayer-submitted, fee-paying transfer(); a re-measured transfer4(); a partial unshield() that produced a real change note; a full commit_swap -> execute_swap -> reveal_and_claim lifecycle exercising min_amount_out; and a live cancel_swap() recovery."
-    },
-    "mainnet": {
-        "verifier": null,
-        "governance": null,
-        "compliance": null,
-        "token": null,
-        "swap": null,
-        "viewing_keys": null
-    }
+  "testnet": {
+    "verifier": "CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER",
+    "governance": "CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS",
+    "compliance": "CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS",
+    "token": "CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ",
+    "swap": "CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN",
+    "viewing_keys": null,
+    "_note": "LEGACY stack, not source-equivalent to current code (built before owner-key notes, the canonical public-input check, batch transcript challenges and revoke_previous_vk). Redeployed 2026-08-14 to close 7 findings from an external technical review (three Critical in contracts/swap, one High in contracts/governance, plus three lower-severity fixes) \u2014 see docs/POC_IMPLEMENTATION.md's 'Update: external audit' and 'Update: live redeployment with the fast-timelock testnet build'. The `governance` binary for this deployment was built with the testnet-fast-timelock feature (VK_TIMELOCK_LEDGERS=60, ~5 minutes, vs the real 7-day production value) \u2014 see contracts/governance/Cargo.toml's doc comment on that feature; never build a production artifact with it enabled. Prior addresses (verifier CCRLI4EAT62..., governance CDCSHTT3R75M..., compliance CA2EU46YYEBJ..., token CDE7U6HTLMDF..., swap CDPPRPAVKUJG...) predate all seven fixes and are superseded."
+  },
+  "testnet_tranche1": {
+    "verifier": "CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY",
+    "token": "CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q",
+    "swap": "CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY",
+    "_note": "Tranche 1 live validation stack, the only stack built from the owner-key, canonical-input and batch-transcript source. The verifier is administered directly by the deployer (no governance timelock). The swap address predates the later commit_swap binding change (out_owner_pk committed at commit_swap; asset_out and expiry bound into the ownership proof binding tag) and the move of swap state to persistent storage, so it does not match current swap source; redeploy swap before relying on it. The `testnet` block above is the older stack and does not include the owner-key, canonical-input, batch-transcript or revoke_previous_vk changes.",
+    "compliance": "CAUZB3RTW23QQ5CT6W7KLINZDYVO56DSUZQ5AHKL56KWBH64QD5LNA3Q"
+  },
+  "testnet_tranche2": {
+    "verifier": "CCU6TP7MQD7WN4UC3M4KDLSV3M3WSAOBWTO3MZ6QDMF23BUBAKENJP44",
+    "token": "CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM",
+    "swap": "CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D",
+    "_note": "Tranche 2 live validation stack: token::transfer/transfer4's relayer-fee routing, token::unshield's change-note output (new 7-input Unshield circuit), and swap::commit_swap's min_amount_out early bound check are all built from this source. The verifier is administered directly by the deployer (no governance timelock), same as the Tranche 1 stack. Verifying keys registered for Shield, Transfer(2x2), Unshield, Transfer4x4 and SwapFairness. The deployer is also an approved relayer on both token and swap (their own, separate ApprovedRelayer allowlists). Live-validated transactions (see docs/TESTNET_DEPLOYMENT.md's Tranche 2 section): a relayer-submitted, fee-paying transfer(); a re-measured transfer4(); a partial unshield() that produced a real change note; a full commit_swap -> execute_swap -> reveal_and_claim lifecycle exercising min_amount_out; and a live cancel_swap() recovery."
+  },
+  "mainnet": {
+    "verifier": null,
+    "governance": null,
+    "compliance": null,
+    "token": null,
+    "swap": null,
+    "viewing_keys": null
+  },
+  "testnet_final_superseded_2026_10_08": {
+    "verifier": "CBVZCE42NSL34LGUJNRKBJTU2RSDIKGJSK4WV5NUPCNWAUCYKK56GWC2",
+    "governance": "CA3QHKWLHLVBXFYUGTBWA5GWOX6KWMITIQ6LIJU6LTEZQUW5777XEYST",
+    "token": "CAE63TOLHJDZ3AREF22RA26ASF46TIT4Y5JBTREUWJJQ7EJBOUBHPUIG",
+    "swap": "CDXUPIAJSGXITDYY3OMWSOP2CW4JEMZHHHXLRDVX6WPG5IBOJ3TEVZOV",
+    "compliance": "CCM4NTFPH3D7IYDHVP7HPXHOPSYZMBLB3GRVEXF4YOJ7NJLAHTSEIKW3",
+    "viewing_keys": "CD2TTLHD3EY3QRRALPPDSTPRQDR5G3IKNIIYIQGWQZVW2EKHY67YTUS2",
+    "_note": "Superseded 2026-10-08 by a six-agent audit's findings (see docs/TRANCHE3_DELIVERABLES.md and the 2026-10-08 commits): a Critical swap vulnerability, a High governance/verifier pause-reachability bug, and a Medium token note-corruption bug all required a code fix that only takes effect on redeploy. Kept here for historical reference; do not point new integrations at these addresses. The live checks this block's own history recorded (shield, transfer, unshield, swap commit/execute/reveal/cancel, compliance publish, a live MinShieldAmount governance change) are preserved below for the record, but all ran against the pre-fix code.",
+    "_live_checks": "Indexer synced the new token from ledger 5034000 and indexed a live shield (leaf 0, ledger 5038957, value 1000 native). An auditor holding the granted viewing key recovers that receipt; an unrelated key recovers none. Shield went through the SDK wallet, not raw CLI. Swap wrapper (ZKELLASwap) live run on the new stack: commit (swap 089678d3aba9f4b0837cd8504973d51e828f480db51ab4262e705de11a2810f3), relayer execute_swap, and reveal_and_claim all succeeded; the output note was claimed into leaf 4. The deployer is an approved swap relayer. Swap wrapper cancel path (live): intent b7a701fd\u2026deea committed, then cancelled through ZKELLASwap.cancelSwap after its expiry; the escrowed input was refunded. A second swap wrapper lifecycle: transfer tx 0b53568b5ade7885f915a23a65bdf053e5acc45b4bb9d3599ddc7e1a6fdaf444, unshield tx f81c0016e472d8d8a9d6a15caa2778983ae4ee941fa7f0ae9c1095910fdee795, swap commit tx 8502c742c674ac87677d90a367ca870f9ac11b372c0bb4d2209f3e521858bb0e (swap 206e180a...03e2), cancelled after expiry at tx d3d7565947e679959ff9731cfe62bf21dfa70d5abc0193ffd9ab4d63d2b64887. governance.queue_token_action(MinShieldAmount(500)) executed live through the timelock (queue tx e71e95957f3817db2a7f1c1754258af6428956e46c38bdad843e20c64b761840, execute tx ce8d642fc8b4db9bb86fe53dcb3b2e2771b26e58a413a73377506a8a4bcefa07); token.min_shield_amount() confirmed 500 afterward (was 1000)."
+  },
+  "testnet_final": {
+    "verifier": "CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V",
+    "governance": "CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP",
+    "token": "CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP",
+    "swap": "CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK",
+    "compliance": "CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD",
+    "viewing_keys": "CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE",
+    "indexer_url": "http://localhost:8787",
+    "_note": "Fresh stack deployed 2026-10-13 (scripts/testnet_deploy_stack.sh), carrying the reviewer-remarked fixes on top of everything the 2026-10-08 stack already had: circuits/swap/swap_fairness.circom's min_amount_out is now a direct, asset_out-denominated value the swap creator supplies (not derived from amount_in by a flat slippage percentage, which was asset-blind and unsound for a non-1:1 pair - see docs/TRANCHE2_DELIVERABLES.md section 3); contracts/token now refuses any positive relayer fee for an asset with a nonzero custody_shortfall (FeeRefusedDuringShortfall); the SDK now ships TESTNET_INDEXER_URL, covered by a drift test against this record. verifier, governance, token, swap and compliance are all freshly deployed and wired (governance's own admin-of-verifier relationship meant a fresh governance -- needed to point at the fresh token -- could not retain admin rights over the old verifier, which has no admin-transfer mechanism, so verifier had to be fresh too). viewing_keys is reused unchanged from the prior stack (no coupling to the others, no live state to lose, no initialize()/admin at all). Governance is the verifier's and token's admin; swap and compliance admin is the deployer zkella-testnet-deployer; guardian is zkella-testnet-guardian. Governance was built with the testnet-fast-timelock feature, so timelock_ledgers() is 60 (about 5 minutes), NOT the 7-day production timelock. Verifying keys for all six circuits (including the fixed SwapFairness) are live via the timelock from genesis this time, not rotated in after the fact. Native XLM is approved on the token through governance. Compliance sanctions root is the empty-list root (sentinels only), not a real sanctions list.",
+    "_live_checks": "governance.pause_token() live-confirmed to block shield with Error(Contract, #3) == Paused (tx a957b856e852ea0759f082613b8c7c6231d9b0a5841a00ce4d71fec75566c466), unpause_token restored it (tx 547ab779a83639403921f2cbfe4f54a618558f0fad6405f10b7c13254faccebc), and a real shield succeeded immediately afterward (leaf 0). Genuinely cross-asset swap lifecycle (the D3 fix this redeploy carries): asset ZKUSD (CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C) approved via governance.queue_token_action/execute_token_action (queue tx f065c211eaac70f676cd4aacf9d91d4699007b4dedc6073be1ff40c9e2d8664f, execute tx dac2db108ca85913ac73af44e0dbe7e647a61a99c3a4a4c0a4bb29c419960480); shield tx b09d260dd6972acf6c2dcc34f2fe5bc80c5cc7670026cc41d2ecf54027ff229d, commit_swap tx bcc752e2ed9f1e503c6130e630fd9a95528852d7d938407ca177a1b5dc0c074a (swap_id 894b38ae61692c01762bb0349f679d663b0bf8f7f93c6d20ab98b20f71efa90e), execute_swap tx 2ccb0de1ccf01aadd23f1e5645a6775d6a86b23e05ce38119dafc1e226e30821 (min_amount_out 3,900,000,000, larger than amount_in 5,000,000 - impossible under the old derivation), reveal_and_claim tx e7b4037c813b325424cecd0d142875b659b15990cd85fd1005bf8a8b531f59a4 (claimed into leaf 5); token.shielded_supply(ZKUSD) confirmed 4,000,000,000 afterward. See docs/POC_TESTNET_VALIDATION.md's Epoch 7 and docs/TRANCHE2_DELIVERABLES.md section 3 for the full record, including a benign first attempt stranded in Executed state by the fresh swap contract's empty relayer allowlist (no funds lost, recoverable via reclaim_expired_swap, swap_id 941eaba6d03e866cf04fb94b0b16d7e3aadef1d145b9df4301cc586bd2778b03)."
+  },
+  "testnet_final_superseded_2026_10_13": {
+    "verifier": "CC2LQPXH3L5YKRP7YJ6UIC57AOGJXBQN4DEKNRU4Y32ABXJZOENCDAX3",
+    "governance": "CDTJLTBEKBXRJJKHVI32A5UMBB4UC6VBMDOF7WR43H2SKCCRAVRJWY5Q",
+    "token": "CA5TFEVODC25SSEZII2XHB2XMCKFNXNLXRNFTKWPKMT5PCWYZUMLPRUZ",
+    "swap": "CBN7JJEPAEA5NCKOECPPGHETAK4CCCUFOBUJCDZ7K7HPIV7Y6ILOC524",
+    "compliance": "CDP5SRSUFDVEYHUCUX53SM4PZVTOIHDZR3Z5C7G4TFFKAQSLX64FOZVJ",
+    "viewing_keys": "CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE",
+    "indexer_url": "http://localhost:8787",
+    "_note": "Fresh stack deployed 2026-10-08 (scripts/testnet_deploy_stack.sh) carrying the fixes from a six-agent audit of all three tranches (see docs/TRANCHE3_DELIVERABLES.md): token now validates encrypted_note length on transfer/transfer4/unshield (Medium); governance can now actually call verifier.pause()/unpause() and token.pause()/unpause(), which were previously unreachable (High); swap's reveal_and_claim now binds the output note's randomness at commit time, closing a Critical front-running/value-destruction path. viewing_keys is reused unchanged from the prior stack (no coupling to the others, no live state to lose). Governance is the verifier's and token's admin; swap and compliance admin is the deployer zkella-testnet-deployer; guardian is zkella-testnet-guardian. Governance was built with the testnet-fast-timelock feature, so timelock_ledgers() is 60 (about 5 minutes), NOT the 7-day production timelock. Verifying keys for all six circuits are live via the timelock. Native XLM is approved on the token through governance. Compliance sanctions root is the empty-list root (sentinels only), not a real sanctions list. Deploy transaction hashes are not recorded here; see the deploy log's own transaction links for initialize/queue/execute steps. indexer_url is the indexer's own documented default (indexer/README.md, docker-compose.yml's INDEXER_HTTP_PORT) for a locally-run instance pointed at this stack's token contract \u2014 this indexer is self-hosted infrastructure (see docs/RUNBOOK.md \u00a71), not a permanently-running public service; see docs/TRANCHE2_DELIVERABLES.md \u00a74.1 for a live run against this port recorded with real sync log and /health output.",
+    "_live_checks": "Full swap lifecycle through the fixed SDK wrapper (ZKELLASwap, carrying the out_note_binding fix), live on this stack: shield tx d8b3c78e0614764f695a43dae0ca6da2801a68bded4b709122d134069cdfd973 (leaf 1), commit_swap tx d84ff18f304765f1fb9a1f93f8b41a24dbad95116705256b711e4f5a27676ec6 (swap 61837449cafe2c837a6fd7deb082d6458750c601fe76a81f58a160882f9e5545), execute_swap tx 9aa8b8cd7cb0f335f109d6387334fcaac17aad9cc033518c415f57eebe023120, reveal_and_claim tx 1320f2a101e0adaf9475d0d00b76082cbc59105b99885ad66e090b6f6cf1e1fc (claimed into leaf 3). governance.pause_verifier() live-confirmed to actually block register_verifying_key with Error(Contract, #10) == Paused, and governance.pause_token() live-confirmed to block shield with Error(Contract, #3) == Paused; both unpaused afterward. Full example suite re-run against this exact stack after the audit redeploy: shield (leaves 4-5), indexer query (03), viewing-key audit (04, 4 real receipts recovered, zero-value padding notes correctly excluded), transfer (05, new leaves 6-7), unshield (06, change note at leaf 8). Compliance publish re-run live on this stack: tx 533837bf63d88ce09578940d4bec9de94d60e54b4babc99b1cd09c5d419d0442, computed root 84ebbeac2d94aa74689cc3adc4d288f2ea0a985ec3d86b2c2b14570979c39e06 matching the empty-list root set at deploy time. governance.queue_token_action(MinShieldAmount(500)) re-run live on this stack through the timelock: queue tx 3f2159168107f2b02b203c3aaf1d9d602b5890e9aed99a381046b86c3a9889d3, execute tx f3ef72ee1e4ad65fafb5f5eb4c99d8094f61b696e7517081964cc172f84297b5; token.min_shield_amount() confirmed 500 (was 1000). Reviewer follow-up (Tranche 2 D3 cross-asset fix): swap_fairness.circom's SwapFairness verifying key rotated to the fixed (non-asset-blind min_amount_out) circuit via governance's timelock (queue tx b53878d93b3859bbb83ca416e6e56c8151483fdc4586010493b1143b88e3ab87, execute tx 70c9595bbded1a500cec7b0c083bcdd92c6ab2cb84588220c60bfe19d6e25917); a second Testnet asset (ZKUSD, CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C) approved via governance.queue_token_action(AssetApproval) (queue tx 22502d0a157595da56c1e91800ba0715debad931c2ff33aedd4458695241522f, execute tx 3e6a39a5c7189cac4316724521086f9078b549f59bc4c89efff6421c02a09d10); a live cross-asset swap lifecycle (native -> ZKUSD, min_amount_out larger than amount_in, impossible under the old derivation) completed shield/commit_swap/execute_swap/reveal_and_claim, claimed into leaf 20 \u2014 see docs/TRANCHE2_DELIVERABLES.md section 3 for the full transaction list."
+  }
 }

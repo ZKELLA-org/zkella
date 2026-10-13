@@ -1,25 +1,34 @@
 # ZKELLA — Operational Runbook and Incident Response
 
-This is the operational runbook referenced as an open item throughout `docs/POC_IMPLEMENTATION.md`, `docs/ARCHITECTURE.md`, `README.md`, and the roadmap. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
+This is the operational runbook referenced throughout `docs/ARCHITECTURE.md`, `README.md`, and the roadmap. It exists to make deployment, monitoring, key handling, and incident response concrete rather than aspirational.
 
-**Status of this document itself:** first version, written against the current soft-PoC deployment (single team, single indexer operator, Stellar Testnet only). It has not yet been exercised in a real incident or run through a drill. Treat it as a starting operational baseline, not a mature, battle-tested process — see "Known limitations" at the end.
+**Status of this document itself:** written against the current Testnet deployment (single team, single indexer operator, Stellar Testnet only), and exercised in two drills — one with injected faults, one a real indexer outage with a real alert delivered and confirmed by a person (see "Drill record" below). Treat it as a working operational baseline, proven once at small scale, not yet a mature process proven at production scale — see "Known limitations" at the end.
 
 ---
 
 ## 1. System components at a glance
 
-Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. Testnet addresses below are the legacy August stack, which is not source-equivalent to current code (it predates owner-key notes, the canonical public-input check, batch transcript challenges and `revoke_previous_vk`). The Tranche 1 stack, `testnet_tranche1` in `deployments.json` (verifier `CBHQUNPD42ZODQWCEK2SKLAARHHY75SGCVWHW6QLWLGLXWJ5JS2QORUY`, token `CDDM46ZV3KLULXUGUOWSCR5BGZ6BC5XJDDMVTV4JXOLZBJXD6EQCJ75Q`, swap `CB7TRLNTX6G3QNVDTHQHL46VNDQMMUUE4ZM5O6AIFFU6PWKGPKIQ7PYY`) predates Tranche 2's relayer fee, change-note unshield and `min_amount_out` changes. The current-source stack is `testnet_tranche2` in `deployments.json`: verifier `CCU6TP7MQD7WN4UC3M4KDLSV3M3WSAOBWTO3MZ6QDMF23BUBAKENJP44`, token `CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`, swap `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D`. That verifier is administered directly by the deployer (no governance timelock). Legacy stack (see `deployments.json` `testnet` for the machine-readable version):
+Every admin-gated action below refers to the real contract entrypoints in this repository, not a hypothetical interface. The current stack is `testnet_final` in `deployments.json`, built from the current source and deployed by `scripts/testnet_deploy_stack.sh`:
 
 | Component | Address | Admin model | Has `pause()` |
 |---|---|---|---|
-| `token` (`ShieldedToken`) | `CACD4IA6OJQPG3AVGPQPJT3SJKP7YQQM4BIHUD7F7NG74KDJQLGIZQOQ` | single admin key, two-step transfer | **yes** |
-| `verifier` | `CAD7I5VEXC6QXO6A4K3PP5GLCLY6EJZ6LXLAPDR4WILBRJFINXDGQOER` | admin = `governance` contract address (cross-call auth) | no |
-| `governance` | `CCO72PR2RHEUWXWKB5D5UTHMSJOWNLNA3FELUSAFVXXGTCDGVEUQL4MS` | single admin key, two-step transfer; VK updates additionally timelocked — production value is 7 days (`VK_TIMELOCK_LEDGERS = 120_960`), **but this specific Testnet instance was built with the `testnet-fast-timelock` feature (~5 minutes) so the full timelock path could be demonstrated live — never assume a 5-minute timelock for a production deployment** | no |
-| `compliance` | `CAA6GVANAT7GBWBA3CRXIL7WX4O62NEGBC6XHMPTFMEZPBHMM5PKRNOS` | single admin key | no |
-| `swap` | `CBGG3UND7P6GMHCUSSYVGIOB6FUO5KK7OZVBA7LI7K4K7CJEV5T3ZRXN` | single admin key; per-relayer allowlist via `set_relayer` | no |
+| `token` | `CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP` | admin = `governance` contract address | **yes**, via `governance.pause_token()` |
+| `verifier` | `CBICEUJRZ54VBBT7DHFVDUBWNZ64VTD43YLME7W2I5BE5VFEP2D43U7V` | admin = `governance` contract address (cross-call auth) | **yes**, via `governance.pause_verifier()` |
+| `governance` | `CCQ2JTVUS2OKHZFFTTX7C7NQ65XFDDNFE66ZJX5PX5K4PLXVDB23NRYP` | single admin key (`zkella-testnet-deployer`), two-step transfer, plus a separate guardian key (`zkella-testnet-guardian`) that can only cancel a queued update; VK updates and token-admin actions are additionally timelocked — production value is 7 days (`VK_TIMELOCK_LEDGERS = 120_960`), **but this instance was built with the `testnet-fast-timelock` feature, so `timelock_ledgers()` returns 60 (about 5 minutes) — never assume a 5-minute timelock for a production deployment** | **yes** |
+| `compliance` | `CBNJVPZQA4BLT2MUBWTK3I4ISWJ5JTWTXY456LYG2OR4HKJCGT2D2LJD` | single admin key (`zkella-testnet-deployer`) | **yes** |
+| `swap` | `CDLETDJQX7P5PAQDSIW62PMUTQ7JKECZLLT4E76PEPZ4EVDEA24OIPRK` | single admin key (`zkella-testnet-deployer`); per-relayer allowlist via `set_relayer` | **yes** |
+| `viewing_keys` | `CDT776JLXU5GWRIY6WXLZGVKZ5V4TG32HAITNPFZVX5UCJSMMFHNMEEE` | no admin — `register`/`revoke` each require the calling owner's own authorization | no (nothing to halt: a holder can only touch their own entry) |
 | `indexer/` | self-hosted, `http://localhost:8787` by default | single process, single SQLite file | n/a (`/health` endpoint) |
 
-**Only `token` has a pause switch today.** Calling `token.pause()` stops `shield()`/`transfer()`/`transfer4()`/`unshield()` directly, and *indirectly* blocks `swap.commit_swap()` and `swap.reveal_and_claim()` (both cross-call into `token`'s `unshield`/`shield`, which check `assert_not_paused()` on entry). It does **not** stop `swap.execute_swap()` (a plain SEP-41 transfer, no call into `token`) or `swap.cancel_swap()`/`reclaim_expired_swap()` (refund paths, also plain transfers). `verifier`, `governance`, and `compliance` have no pause mechanism at all — see "Known limitations."
+Earlier Testnet stacks (`testnet_tranche1`, `testnet_tranche2`, and the legacy `testnet` entry in `deployments.json`) predate pause entirely — none of their contracts can be halted. They are not source-equivalent to current code and should not be used as a reference for what the current contracts can do.
+
+**All five contracts with state can be paused today**, admin-gated in every case (`pause()`/`unpause()` each call `require_auth()` on that contract's own admin — see the table above for who that is per contract). Each pause is scoped to the calls that change state or decide something:
+
+- **`token.pause()`** stops `shield()`, `shield_batch()`, `transfer()`, `transfer4()` and `unshield()` directly, and *indirectly* blocks `swap.commit_swap()` and `swap.reveal_and_claim()` (both cross-call into `token`'s `unshield`/`shield`, which check `assert_not_paused()` on entry). `token`'s admin is `governance`'s own contract address, so this is only reachable by calling `governance.pause_token()` — not `token.pause()` directly, which would fail its `admin.require_auth()`.
+- **`verifier.pause()`** stops `register_verifying_key()`, `update_verifying_key()`, `verify()` and `verify_batch()` (the last two fail closed: a paused verifier rejects every proof rather than skip checking it). It does **not** block `revoke_previous_vk()` or any read — a pause caused by a bad key must not also block the one call that lets you kill that key's retention window. Same reachability note as `token`: call `governance.pause_verifier()`, not `verifier.pause()` directly.
+- **`governance.pause()`** stops `queue_vk_update()`, `execute_vk_update()`, `queue_token_action()`, `execute_token_action()`, `transfer_admin()` and `accept_admin()`. It does **not** block `cancel_vk_update()`, `guardian_cancel_vk_update()`, `guardian_cancel_token_action()` or `revoke_previous_vk()` — cancelling a bad queued update, or the guardian's cancel-only path, must keep working precisely when a pause is in force.
+- **`compliance.pause()`** stops `publish_compliance_proof()`. It does not block reads (`get_compliance_proof`, `sanctions_root`) or `set_sanctions_root()`.
+- **`swap.pause()`** stops `commit_swap()`, `execute_swap()`, `reveal_and_claim()` and `set_relayer()`. It does **not** stop `cancel_swap()` or `reclaim_expired_swap()` (the refund paths) — those must stay callable under a pause so escrowed funds are never stuck.
 
 ---
 
@@ -71,7 +80,7 @@ Procedure:
 `verifier.update_verifying_key()` requires `verifier`'s admin, which is `governance`'s own contract address — so a VK rotation is always initiated through `governance`, never by calling `verifier` directly:
 
 1. `governance.queue_vk_update(circuit, new_vk)` — starts the timelock: 7 days (`VK_TIMELOCK_LEDGERS = 120_960` ledgers at ~5s/ledger) for a real production build. **The `governance` instance currently live on Testnet (§1's table) uses the `testnet-fast-timelock` build instead — ~5 minutes — so check which binary is actually deployed before relying on either number operationally.**
-2. Wait for `eta` (the queued ledger sequence) to pass. This window exists specifically so users can exit before an untrusted or malicious VK takes effect — do not shorten it operationally even under incident pressure; if a VK is actively being exploited, `token.pause()` is the correct immediate lever, not rushing a VK swap.
+2. Wait for `eta` (the queued ledger sequence) to pass. This window exists specifically so users can exit before an untrusted or malicious VK takes effect — do not shorten it operationally even under incident pressure; if a VK is actively being exploited, `verifier.pause()` (which fails every `verify()`/`verify_batch()` closed) or `token.pause()` is the correct immediate lever, not rushing a VK swap.
 3. `governance.execute_vk_update(circuit)` — cross-calls `verifier.update_verifying_key()`.
 4. If the update should be aborted before `eta`, `governance.cancel_vk_update(circuit)`.
 
@@ -109,7 +118,7 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 **Symptoms:** budget-exceeded errors on previously-working calls, `shielded_supply` not reconciling, unexpected proof-verification failures at a rate inconsistent with normal user error.
 
 1. Determine whether the failure is circuit-side (VK mismatch — check `verifier.get_verifying_key(circuit)` against the expected artifact hash) or budget-side (compare instruction cost against the measured baselines in `docs/CIRCUIT_SPEC.md` §8 and `docs/POC_IMPLEMENTATION.md`).
-2. If the issue is exploitable (a proof that shouldn't verify is being accepted, or vice versa for legitimate proofs): `token.pause()` immediately. This is the only real circuit breaker available today (see §1's pause-scope caveat — it does not stop `execute_swap`/`cancel_swap`/`reclaim_expired_swap`).
+2. If the issue is exploitable (a proof that shouldn't verify is being accepted, or vice versa for legitimate proofs): `verifier.pause()` stops `verify()`/`verify_batch()` directly and fails closed, which is the most targeted lever for a verification bug specifically. `token.pause()` additionally stops new proofs from being submitted at all (`shield`/`transfer`/`transfer4`/`unshield`). Neither stops `swap.execute_swap()`, `cancel_swap()` or `reclaim_expired_swap()` (plain transfers, no verifier/token call) — pause `swap` itself too if the exploit reaches those paths.
 3. Preserve the failing transaction hash(es), the exact `pub_inputs` and proof bytes submitted, and simulation output before anything is retried or the contract state changes further.
 4. If a VK fix is needed, follow §3's verifying-key rotation procedure — there is no fast path around the 7-day timelock by design.
 5. Root-cause before `unpause()`. Do not unpause on a timer; unpause when the specific failure mode is understood and, if code changed, redeployed and tested.
@@ -127,7 +136,7 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 
 **Symptoms:** suspected leak of an admin key, relayer key, or indexer operational key.
 
-1. **Admin key (any contract):** follow §3's admin rotation procedure immediately. Until rotation completes, treat every admin-gated function on that contract as potentially attacker-controlled — this includes `token.pause()`/`unpause()` and `swap.set_relayer()`. A compromised `token` admin *cannot* forge proofs or steal shielded funds directly (that requires breaking Groth16/BN254, not the admin key), but *can* pause the contract, register a malicious VK via a queued `governance` update (blocked by the 7-day timelock — this is exactly the scenario the timelock exists for), or mismanage `ShieldedSupply` bookkeeping only insofar as the contract's own logic allows.
+1. **Admin key (any contract):** follow §3's admin rotation procedure immediately. Until rotation completes, treat every admin-gated function on that contract as potentially attacker-controlled — on every contract this now includes that contract's own `pause()`/`unpause()` (see §1), plus `swap.set_relayer()` and, on `governance`, `queue_vk_update()`/`queue_token_action()`. A compromised admin *cannot* forge proofs or steal shielded funds directly (that requires breaking Groth16/BN254, not the admin key), but *can* pause a contract or queue a malicious `governance` update — the latter is blocked by the 7-day timelock, and the separate guardian key (not the compromised admin key) can cancel the queued update during that window via `guardian_cancel_vk_update`/`guardian_cancel_token_action`, which is exactly the scenario that guardian role exists for.
 2. **Relayer key:** `set_relayer(compromised_relayer, false)` immediately. Audit any `swap`s that relayer executed but weren't yet claimed — they may need to go through `reclaim_expired_swap` once their claim window passes rather than a legitimate `reveal_and_claim`.
 3. **Indexer key:** no funds or privilege at risk (see §3) — rotate by restart, no urgency beyond routine hygiene.
 4. In every case: preserve evidence of the exposure (how it was discovered, what if anything was accessed) before rotating, if it's safe to take the time to do so — rotation is more urgent than forensics, but don't discard the latter unnecessarily.
@@ -136,7 +145,7 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 
 **Symptoms:** a deployment or configuration step left a contract pointed at the wrong dependency (e.g. `token` initialized with the wrong `verifier` address, `swap` initialized with the wrong `token` address) — most likely right after a redeployment.
 
-1. Halt new operations: `token.pause()` if the misconfiguration is on `token` or anything that depends on it (i.e. most of the stack). There is no equivalent for `swap`/`verifier`/`governance`/`compliance` — communicate the exposure window honestly rather than implying a pause exists where it doesn't.
+1. Halt new operations: pause the misconfigured contract directly (`token.pause()`, `verifier.pause()`, `compliance.pause()` or `swap.pause()` — see §1 for exactly what each one stops), plus `token.pause()` for anything that cross-calls into it. `governance.pause()` additionally stops VK and token-admin actions from being queued or executed while the misconfiguration is being diagnosed.
 2. Read back every cross-contract address each contract actually stores (`token`'s configured verifier, `swap`'s configured token/verifier, `compliance`'s configured verifier) and diff against the intended `deployments.json` set.
 3. Soroban contracts can't have their constructor-set addresses changed in place — a genuine misconfiguration at `initialize()` time means redeploying the affected contract(s), not patching state. Follow the same redeployment + re-wiring process documented in `docs/POC_IMPLEMENTATION.md`'s "senior audit, contract-stack redeployment" update, and update `deployments.json`/`docs/TESTNET_DEPLOYMENT.md` immediately afterward so they don't go stale.
 4. Any swap or note state stranded in a superseded contract instance follows the same recovery path already documented for the superseded `swap` instance in `docs/TESTNET_DEPLOYMENT.md` ("Swap redeployment") — `reclaim_expired_swap` once the window passes; there is no equivalent unwind for `token`, which is why getting `token`'s configuration right the first time matters more than any other single deployment step.
@@ -170,7 +179,106 @@ The indexer uses one Stellar keypair internally for read-only simulation calls a
 This runbook describes a real but early operational posture, not a mature one. Specifically:
 
 - **Single admin key per contract**, not multi-sig, except for `governance`'s VK-update timelock. A single admin key compromise is a real, unmitigated risk for every contract except the specific VK-rotation path — see Category 3 above for exactly what is and isn't exposed by that.
-- **No automated alerting or paging.** Every check in §2 and §5 is manual today. Wiring these into an actual alerting pipeline (e.g. a monitoring service watching the endpoints and thresholds described above) is planned, not done.
+- **Alerting exists but is minimal.** The scheduled health check (below) posts a plain-text failure message to a single `ntfy.sh` channel — real and running, not a placeholder — but there is no paging, escalation, or on-call rotation behind it; a dropped notification has no backstop beyond `LOG_FILE`.
 - **No indexer failover.** One process, one SQLite file, no secondary instance, and a single RPC provider for event ingestion. `docs/ARCHITECTURE.md` and `docs/POC_IMPLEMENTATION.md` describe multi-operator indexing as target architecture; `docs/TECHNICAL_SPEC.md` §13.3 sets out the planned production design (dual-provider RPC failover, managed Postgres with Multi-AZ, a second operator in a different region or cloud provider) — none of it is built yet.
-- **No pause mechanism on `verifier`, `governance`, `compliance`, or `swap`.** Only `token` can be halted directly; see §1 and Category 4 for the practical consequences.
-- **This document is untested.** It has not been exercised in a real incident or a scheduled drill. Treat every procedure above as a first draft to be corrected by the first real use, not a proven playbook.
+- **A compromised admin key is still a real, largely unmitigated risk**, except for `governance`'s own VK/token-admin timelock (where a separate guardian key can cancel a malicious queued update without needing the admin key at all). None of the five contracts use a multisig admin — see Category 3 for what each contract's pause does and does not protect against.
+- **Exercised twice, not battle-tested.** This document has been run through two drills (see "Drill record" below), one of them a real incident, not simulated. That is still a small sample — treat the procedures above as validated once at small scale, not a playbook proven across many incidents or at production scale.
+
+## Testnet stack health check
+
+`scripts/testnet_health_check.sh` checks the Soroban RPC, the indexer (when `INDEXER_URL` is set), and the deployed contract state recorded under `testnet_final` in `deployments.json`: governance's timelock value and the token's approval of the native asset. Any failure is appended to `LOG_FILE` and posted to `NOTIFY_WEBHOOK` if that is set; the script exits non-zero.
+
+Scheduled with cron, every 15 minutes, on the operating host for the current stack:
+
+```
+*/15 * * * * cd /path/to/zkella && NOTIFY_WEBHOOK=... INDEXER_URL=... scripts/testnet_health_check.sh
+```
+
+This is live today, not a suggested setup — it posts to a real `ntfy.sh` channel on failure (see the second drill below for a real alert delivered through it) and appends every failure to `LOG_FILE`. No notification destination is committed to this repository, since `NOTIFY_WEBHOOK` is operator-specific; set your own before relying on alerts for a different deployment.
+
+## Drill record
+
+Run on 2026-10-05 against the Testnet stack in `deployments.json` (`testnet_final`). Three faults were injected into `scripts/testnet_health_check.sh`, one at a time:
+
+| Fault | Expected | Observed |
+| --- | --- | --- |
+| Soroban RPC unreachable | RPC check fails, exit 1 | `FAIL rpc status='unreachable'`, exit 1 |
+| Indexer unreachable (`INDEXER_URL`) | Indexer lag check fails, exit 1 | `FAIL indexer lag='unreachable'`, exit 1 |
+| Deployment record points governance at a non-contract address | Governance check fails and names the address, exit 1 | `FAIL governance <address> timelock_ledgers unreadable`, exit 1 |
+
+Findings:
+
+- The third fault exposed a diagnostic gap: the governance failure did not name the address it tried. The messages now include the contract address for governance and token.
+- All three faults reached the failure path and the script exited non-zero. Delivery to a webhook was verified separately against a local receiver.
+
+### Second drill: a real fault, with a person, after the 2026-10-08 redeploy
+
+Run on 2026-10-08 against the current `testnet_final` stack, after the audit-fix redeploy. Unlike
+the first drill (which injected faults into the health check's own inputs), this one caused a
+genuine Category 2 incident — the indexer process was actually stopped, not simulated — and a
+person watched the real alert arrive and confirmed the response, not just a script's exit code.
+
+1. The indexer was stopped (`SIGTERM`). The scheduled check (the same command the cron job
+   runs) was run against the live, genuinely-down indexer, which failed:
+   `FAIL indexer lag='unreachable' (limit 100)`, exit 1. The failure POSTed a real notification to
+   the team's `ntfy.sh` channel, which a person subscribed to and confirmed receiving before any
+   further step was taken — the drill's success condition from the roadmap ("including a case
+   surfaced by that automated check, rather than only a manual read of the checklist") is met by
+   this run specifically, not by the first drill's manual fault injection.
+2. `RUNBOOK.md` Category 2's own first two steps were followed for real: process status checked
+   (confirmed down), then restarted against the existing `INDEXER_DB_PATH`. The restart resumed
+   from ledger 5090457 (the persisted cursor), not from `INDEXER_START_LEDGER` — confirmed
+   directly against the database's `sync_state` table, not inferred from how fast it caught up.
+3. Category 2's claim that `merkle_root`/`merkle_path` stay available during an indexer outage
+   was checked directly while the indexer was still down: `token.merkle_root()` read correctly
+   straight from the contract.
+4. A second health-check run after the restart passed clean.
+
+Findings:
+
+- **Real diagnostic gap, fixed:** the indexer's own startup log always printed
+  `syncing ... from ledger <INDEXER_START_LEDGER>`, even when a persisted cursor meant it was
+  about to resume from a much later ledger — during a real incident this reads as "about to
+  re-sync from scratch," which it isn't. `indexer/src/main.ts` now reads the actual resume
+  point before logging and says so explicitly when it differs from the configured start.
+  The first drill's fix (naming the contract address) was a diagnostic gap in the health check
+  itself; this one was a diagnostic gap in the indexer being checked.
+- **The webhook payload format was wrong for the configured destination:** `testnet_health_check.sh`
+  POSTed `{"text": ...}` as a raw body, which matches Slack's incoming-webhook format but is not
+  parsed by `ntfy.sh` — a subscriber would have seen the literal JSON string, braces included,
+  instead of a readable message. Found and fixed before the drill's real alert was sent, by
+  testing the exact webhook call against the exact configured destination rather than assuming
+  the existing format was provider-agnostic.
+- The scheduled check itself (`*/15 * * * *` via cron, `scripts/testnet_health_check.sh`) is
+  now actually installed and running on the operating host, not just documented as possible.
+
+## Decisions
+
+- **Failure notifications.** The scheduled health check (cron, every 15 minutes) posts to a
+  `ntfy.sh` channel on failure, and every failure is also written to `LOG_FILE`. This is a
+  real, currently-running destination, not a placeholder — see the second drill above for a
+  real alert delivered through it. A JSON-expecting provider (e.g. Slack) needs the `curl` call
+  in `testnet_health_check.sh`'s `fail()` changed back to wrap the message as `{"text": ...}`.
+- **Expected governance timelock.** The health check fails when the timelock differs from `EXPECTED_TIMELOCK` (default 60, the Testnet demo build). A production deployment sets it to 120960 (7 days at 5 seconds per ledger), so a demo build reaching production is caught.
+- **Drill cadence.** The health check runs every 15 minutes. A full drill, with people following the four incident categories, runs quarterly and after any contract redeployment — the second drill above is the first instance of that commitment being kept, run the same day as the 2026-10-08 redeploy.
+- **Indexer on mainnet.** The indexer refuses to start on `ZKELLA_NETWORK=mainnet` without `INDEXER_API_KEYS`, so query endpoints cannot run unauthenticated in production.
+
+## SDK artifacts
+
+Applies to `@zkella/sdk` (see `docs/SDK_RELEASE.md`).
+
+**Version pinning.** Pin the exact version in client projects (`"@zkella/sdk": "0.1.0"`, not a range). The SDK's proofs depend on the circuit artifacts and verifying keys deployed on the Testnet stack in `deployments.json`, so an unplanned upgrade can change which proofs verify.
+
+**Upgrade guidance.** Upgrade only when the release notes name the deployed stack the new version targets. Before upgrading, compare `TESTNET_CONTRACTS` in the new version with the addresses your application uses, and run the `testnet-config` test in this repository against them.
+
+**Troubleshooting client-side integrations:**
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `Error(Contract, #5)` on transfer or unshield | Anchor aged out of the root-history window | The wallet rebuilds the call against the current root. If it repeats, check the RPC is not lagging behind the indexer. |
+| `Error(Contract, #4)` on any proof call | Proof does not verify under the deployed key | The circuit artifacts in the client do not match the deployed verifying key. Check the client's artifact versions against `deployments.json`. |
+| `UnknownSanctionsRoot` on compliance publish | The client's sanctions list differs from the root the admin published | Obtain the current list from the maintainer; do not change the root locally. |
+| `paused` panic in a swap call | The swap contract is paused | Check the pause status with the contract admin. Cancel and reclaim stay callable. |
+| `fetch failed`, `ECONNRESET`, `503` on a contract call | Transient RPC or network failure | The wallet retries three times with backoff. If it still fails, check `scripts/testnet_health_check.sh` output for the RPC. |
+| Balance or notes look wrong after a restart | Viewing-key epoch or sync cursor not persisted | Persist `wallet.currentEpoch` and the last synced ledger, and pass the epoch back as `viewingEpoch`. |
+| `npm audit` reports findings in a fresh install | Transitive dependencies (see `docs/SDK_RELEASE.md`) | Not reachable from the SDK's library use. Track the planned replacement of `circomlibjs` and `snarkjs`. |

@@ -1,27 +1,28 @@
 pragma circom 2.0.0;
 
-include "../../node_modules/circomlib/circuits/bitify.circom";
-include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../common/poseidon2.circom";
 include "../common/range.circom";
 
-// Basis-points denominator (10000 bps == 100%).
 // SwapFairness proves the *executed* amount_out actually respects the
 // price protection the user committed to *before* the relayer executed the
-// swap. `min_amount_out` is a public input, but it used to be completely
-// unconstrained relative to `amount_in`/`max_slippage_bps` — the two values
-// that are actually bound into `intent_commitment` below — so a prover
-// could supply any `min_amount_out` (as low as 0) at reveal time regardless
-// of what slippage tolerance was originally committed to, defeating the
-// entire front-running/slippage-protection guarantee this circuit exists
-// to provide. Fixed by deriving `min_amount_out` in-circuit as
-// `floor(amount_in * (10000 - max_slippage_bps) / 10000)` and constraining
-// the public input to equal that derivation, so it can no longer be chosen
-// independently of the committed values.
+// swap. `min_amount_out` used to be derived in-circuit from `amount_in` and
+// a flat slippage percentage (`floor(amount_in * (10000 - bps) / 10000)`) —
+// but that derivation is asset-blind: `amount_in` is denominated in
+// asset_in units and `min_amount_out` is compared against `amount_out`,
+// denominated in asset_out units, with no exchange rate anywhere in the
+// computation. For a 1:1 pair that coincidence made the bound look sound;
+// for any real pair (e.g. XLM/USDC) it either rejects every honest
+// execution or lets a relayer keep nearly all the value. Fixed by making
+// `min_amount_out` itself a direct witness the swap creator supplies (from
+// a real quoted rate between asset_in/asset_out), bound into
+// `intent_commitment` in place of the old amount_in/slippage pair, with no
+// in-circuit derivation at all — the creator alone chooses it, exactly as
+// they already alone chose max_slippage_bps before, so the same "a wrong
+// value only ever harms its own author" property from
+// `contracts/swap::commit_swap`'s doc comment still holds.
 template SwapFairness() {
     signal input intent_nonce;
     signal input amount_in;
-    signal input max_slippage_bps;
 
     signal input intent_commitment;
     signal input asset_in;
@@ -33,38 +34,20 @@ template SwapFairness() {
     h1.in[0] <== asset_in;
     h1.in[1] <== asset_out;
 
-    // `packed` bit-packs (amount_in, max_slippage_bps) into one field element
-    // for hashing, via `amount_in * 2^32 + max_slippage_bps`. That's only an
-    // injective encoding if max_slippage_bps is actually bounded below 2^32
-    // — unconstrained, it's an arbitrary field element, and for any target
-    // `packed` value a prover can pick max_slippage_bps' freely and solve
-    // amount_in' = (packed - max_slippage_bps') / 2^32 mod r (2^32 is
-    // invertible mod the field prime), producing a *different* (amount_in,
-    // max_slippage_bps) pair that packs to the identical value and therefore
-    // the identical intent_commitment. Range64 already bounds amount_in
-    // elsewhere in the protocol for exactly this reason; max_slippage_bps
-    // needs the same treatment, sized to the packing's own shift amount
-    // (32 bits) rather than reusing Range64, since it only needs to be
-    // narrower than the shift to prevent overlap into amount_in's bits — a
-    // real basis-points value (0-10000) fits in 32 bits with enormous room
-    // to spare.
+    // `packed` bit-packs (amount_in, min_amount_out) into one field element
+    // for hashing, via `amount_in * 2^64 + min_amount_out`. That's only an
+    // injective encoding if both halves are actually bounded below 2^64 —
+    // unconstrained, a prover could pick a different (amount_in,
+    // min_amount_out) pair that packs to the identical value and therefore
+    // the identical intent_commitment. Range64 bounds both to 64 bits,
+    // comfortably narrower than the field (~254 bits), so the two halves
+    // can never overlap.
     component amount_in_range = Range64();
     amount_in_range.value <== amount_in;
-    component slippage_range = Num2Bits(32);
-    slippage_range.in <== max_slippage_bps;
+    component min_out_range = Range64();
+    min_out_range.value <== min_amount_out;
 
-    // max_slippage_bps must additionally be <= 10000 (100%): the derivation
-    // below computes `10000 - max_slippage_bps`, which would wrap around
-    // the field to a huge value (not a small negative number — field
-    // subtraction has no sign) for any max_slippage_bps > 10000, corrupting
-    // the min_amount_out derivation rather than merely rejecting an
-    // out-of-range basis-points value.
-    component slippage_bound = LessThan(32);
-    slippage_bound.in[0] <== max_slippage_bps;
-    slippage_bound.in[1] <== 10001;
-    slippage_bound.out === 1;
-
-    signal packed <== amount_in * (2**32) + max_slippage_bps;
+    signal packed <== amount_in * (2**64) + min_amount_out;
 
     component h2 = Poseidon2();
     h2.in[0] <== packed;
@@ -74,24 +57,6 @@ template SwapFairness() {
     h3.in[0] <== h1.out;
     h3.in[1] <== h2.out;
     h3.out === intent_commitment;
-
-    // min_amount_out := floor(amount_in * (10000 - max_slippage_bps) / 10000),
-    // enforced via the standard circom quotient/remainder pattern: the
-    // prover supplies both as witness, and the circuit checks
-    // quotient*divisor + remainder == dividend with 0 <= remainder < divisor
-    // (a false quotient/remainder pair can't satisfy both constraints
-    // simultaneously for a given dividend/divisor).
-    signal scaled <== amount_in * (10000 - max_slippage_bps);
-    signal remainder <-- scaled % 10000;
-    min_amount_out * 10000 + remainder === scaled;
-    // LessThan(14) alone is only meaningful for inputs already known to fit in
-    // 14 bits; bit-decompose first so a negative (wrapped) remainder can't pass.
-    component remainder_bits = Num2Bits(14);
-    remainder_bits.in <== remainder;
-    component remainder_range = LessThan(14); // 10000 < 2^14
-    remainder_range.in[0] <== remainder;
-    remainder_range.in[1] <== 10000;
-    remainder_range.out === 1;
 
     signal diff <== amount_out - min_amount_out;
     component range = Range64();

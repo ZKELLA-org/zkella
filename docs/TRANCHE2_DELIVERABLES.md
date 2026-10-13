@@ -178,6 +178,43 @@ all three independently
 confirmed against `CCJE3JPKU7AAM3LQWD33OZKGFKN7XCNHNP4KLQSG65RXJLGJIHHMPL2D` (`testnet_tranche2`'s
 swap address).
 
+**Reviewer follow-up: a genuinely cross-asset lifecycle, with a `min_amount_out` that bears no
+fixed ratio to `amount_in`.** Every lifecycle above swaps native XLM for native XLM — the only
+pair where the old, now-removed `min_amount_out = floor(amount_in * (10000-bps)/10000)`
+derivation happened to look sound (see §3.5 below for why it wasn't, for any other pair). To
+prove the fix, a second Testnet asset was issued (`ZKUSD`, issuer
+`GBHGM2Q43VSKV5SF7GQTKCTMGSYNO42B653OFN7LOQEVYC3LEBJE57SO`, wrapped as the Stellar Asset
+Contract `CB6BW2G4LCRRZLPU6CC2W6GXI3DV4HIECROCOJGJLTWE6FLCZ2IW326C`) and approved on the live
+`testnet_final` token (`CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP`) through
+governance's existing timelocked `queue_token_action`/`execute_token_action` path (queue
+https://stellar.expert/explorer/testnet/tx/f065c211eaac70f676cd4aacf9d91d4699007b4dedc6073be1ff40c9e2d8664f,
+execute
+https://stellar.expert/explorer/testnet/tx/dac2db108ca85913ac73af44e0dbe7e647a61a99c3a4a4c0a4bb29c419960480).
+This stack's `SwapFairness` verifying key was registered for the fixed circuit from genesis
+(the stack was freshly redeployed on 2026-10-13 to also carry the token relayer-fee-during-
+shortfall fix below — see "What is not done, and what is thin" — rather than only rotating the
+key on the prior stack in place; an earlier run of this same proof, against a VK rotated onto
+the then-live verifier without a full redeploy, is preserved for the record under
+`testnet_final_superseded_2026_10_13` in `deployments.json`).
+
+With both in place, a real `amount_in` (5,000,000 native stroops) was swapped for `ZKUSD` at a
+`min_amount_out` (3,900,000,000 ZKUSD base units) *larger than `amount_in` itself* — a value
+the old derivation could never have produced, since that formula is always a fraction of
+`amount_in`. All four transactions independently confirmed `successful: true` against Horizon
+(not just trusted from the submission response):
+- `shield` (input note): https://stellar.expert/explorer/testnet/tx/b09d260dd6972acf6c2dcc34f2fe5bc80c5cc7670026cc41d2ecf54027ff229d
+- `commit_swap` (asset_in = native, asset_out = ZKUSD, min_amount_out = 3,900,000,000): https://stellar.expert/explorer/testnet/tx/bcc752e2ed9f1e503c6130e630fd9a95528852d7d938407ca177a1b5dc0c074a
+- `execute_swap` (relayer fronts 4,000,000,000 ZKUSD, above the non-1:1 floor): https://stellar.expert/explorer/testnet/tx/2ccb0de1ccf01aadd23f1e5645a6775d6a86b23e05ce38119dafc1e226e30821
+- `reveal_and_claim` (claimed into leaf 5): https://stellar.expert/explorer/testnet/tx/e7b4037c813b325424cecd0d142875b659b15990cd85fd1005bf8a8b531f59a4
+
+`token.shielded_supply(ZKUSD)` read back `4,000,000,000` immediately afterward — the real,
+non-1:1 output amount, genuinely shielded for the claimant, not a bookkeeping artifact. See
+`docs/POC_TESTNET_VALIDATION.md`'s Epoch 7 for the full redeploy record, including a benign
+first attempt stranded in `Executed` state by a fresh, empty relayer allowlist on the new swap
+contract (no funds lost, recoverable via `reclaim_expired_swap`).
+Produced by `scripts/testnet_swap_validation.cjs` (now parameterized for `ASSET_OUT_ID`/
+`AMOUNT_OUT`/`MIN_OUT` — see that script's own top comment).
+
 **3.3 Associated unit and integration tests pass. Met.** 17 swap tests (up from 13 before this
 deliverable's additions): `cost_parity_swap_commit_and_reveal`,
 `full_swap_lifecycle_moves_real_value`,
@@ -193,7 +230,12 @@ deliverable's additions): `cost_parity_swap_commit_and_reveal`,
 `execute_swap_rejects_an_amount_out_below_the_committed_minimum`,
 `execute_swap_accepts_an_amount_out_at_exactly_the_committed_minimum`,
 `two_swaps_can_execute_concurrently_against_the_same_relayer`,
-`a_relayer_without_enough_combined_liquidity_fails_only_the_second_execute`.
+`a_relayer_without_enough_combined_liquidity_fails_only_the_second_execute`. One more added for
+the cross-asset fix above: `full_swap_lifecycle_enforces_a_non_1_to_1_min_amount_out_across_different_assets`
+(`contracts/swap/src/lib.rs`), plus the real-circuit regression pair in
+`contracts/verifier/src/lib.rs`: `verify_accepts_real_swap_fairness_circuit_proof` and
+`verify_rejects_real_swap_fairness_circuit_proof_with_forged_min_amount_out`, both regenerated
+against the fixed circuit with a genuinely non-1:1 `min_amount_out`.
 
 **3.4 Developer integration documentation is provided, including a clear description of the
 swap's relayer-fronted-liquidity mechanism, explicitly that it never calls the Stellar DEX.
@@ -206,23 +248,31 @@ commit-reveal design itself.
 **3.5 execute_swap enforces a minimum-bound check on the relayer-supplied amount_out,
 confirmed by a test showing an economically poor amount is rejected before it can be executed.
 Met.**
-`min_amount_out` is now declared, in plaintext, by the swap creator at `commit_swap` time and
-stored in `SwapState`. This is sound because `min_amount_out` was already a deterministic
-function of values (`amount_in`, `max_slippage_bps`) already bound into `intent_commitment`
-at that same call (`circuits/swap/swap_fairness.circom` derives it in-circuit as
-`floor(amount_in * (10000 - max_slippage_bps) / 10000)`) — surfacing it a call earlier reveals
-nothing that wasn't already cryptographically fixed, and only the swap creator (not a relayer,
-who has no say in `commit_swap`'s own parameters) can supply it, so a wrong value here only
-ever harms the creator themselves (see `commit_swap`'s doc comment for the full reasoning).
-`execute_swap` now checks `amount_out >= state.min_amount_out` immediately, before any state
-is written, and `reveal_and_claim` separately checks the fairness proof's own revealed
-`min_amount_out` against the same stored value, as defense in depth alongside the circuit's
-existing derivation check.
+**Reviewer-identified gap, now fixed:** this section originally claimed `min_amount_out`'s
+derivation (`floor(amount_in * (10000 - max_slippage_bps) / 10000)`) was sound because it was
+a deterministic function of values already bound into `intent_commitment`. That reasoning
+missed that the derivation mixed asset_in-denominated `amount_in` with asset_out-denominated
+`amount_out`/`min_amount_out`, with no exchange rate between them anywhere — sound-looking
+only because every lifecycle tested so far happened to swap an asset for itself. For a real
+pair like XLM/USDC it would either reject every honest execution or let a relayer keep nearly
+all the value.
+
+`min_amount_out` is now a direct, asset_out-denominated value the swap creator supplies from a
+real quoted rate (not derived from `amount_in` at all), bound directly into
+`intent_commitment` — see `circuits/swap/swap_fairness.circom`'s doc comment for the fix
+itself, and the cross-asset lifecycle added to 3.2 above for live proof it holds for a
+genuinely non-1:1 pair. `execute_swap` still checks `amount_out >= state.min_amount_out`
+immediately, before any state is written, and `reveal_and_claim` still separately checks the
+fairness proof's own revealed `min_amount_out` against the same stored value — only where that
+value comes from changed, not the contract-level enforcement itself (`contracts/swap`'s own
+code needed no change here: it always just compared two plain `i128`s with no unit coercion).
 
 The rejection path itself is unit-tested, not separately run live; the underlying mechanism
-(the declared `min_amount_out`) is genuinely exercised end-to-end in 3.2's Tranche 2 lifecycle —
+(the declared `min_amount_out`) is genuinely exercised end-to-end both in 3.2's same-asset
+Tranche 2 lifecycle —
 commit https://stellar.expert/explorer/testnet/tx/fec93f512d5670ef0bb87b2e5940f1492fc02cc3ec8d5733c2b2b840bb6d623c,
-execute https://stellar.expert/explorer/testnet/tx/4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7.
+execute https://stellar.expert/explorer/testnet/tx/4f12f3a4055328dd0140a075551467e6aa0c451845134eea6ff0cf63adacfff7
+— and, now, in the genuinely cross-asset lifecycle in 3.2 above.
 
 Test: `execute_swap_rejects_an_amount_out_below_the_committed_minimum` commits a swap with
 `min_amount_out = 900,000` and shows `execute_swap` panics with "amount_out below the
@@ -282,6 +332,55 @@ proving the two backends are genuinely interchangeable, not just structurally si
 this suite against a real `postgres:16-alpine` service container
 (`.github/workflows/ci.yml`).
 
+**Reviewer follow-up: the indexer process itself, running against live Testnet with Postgres
+as its backend, not just the interchangeability tests above.** The real `indexer/src/main.ts`
+process was run with `DATABASE_URL` set, against this stack's own `testnet_tranche2` token
+contract (`CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`), reading real events from
+the public Soroban RPC endpoint and writing to a real local PostgreSQL 14 server (not a
+container, not mocked — `psql`-verified: `PostgreSQL 14.24 (Ubuntu 14.24-0ubuntu0.22.04.1)`).
+
+Honest framing of what this does and doesn't show: `testnet_tranche2` is a dormant stack —
+its own live validation ran once, in late September, and nothing has shielded, transferred, or
+unshielded through it since. Soroban RPC's `getEvents` only retains roughly the most recent
+120,000 ledgers, which is now well short of reaching back to that original activity, so this
+run cannot replay it (that history is independently preserved via the Horizon-verified
+transaction hashes earlier in this section, not through indexer replay). What this run does
+show is the mechanism itself working end to end against live Testnet: real RPC polling, a real
+Postgres connection, and a real, persisted sync cursor advancing to the live tip with zero lag.
+
+Startup log (`backend: postgres` confirms the Postgres path was actually taken, not a silent
+SQLite fallback):
+```
+[indexer] backend: postgres
+[indexer] HTTP API listening on :8792
+[indexer] syncing CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM on testnet from ledger 5075040
+```
+
+`/health` and `/metrics`, captured live at 2026-10-13T13:41:34Z after 96 seconds of continuous
+uptime (several independent polls shown, not a single lucky snapshot):
+```
+{"syncedLedger":5175061,"tipLedger":5175061,"lag":0}
+{"uptimeSeconds":96,"syncedLedger":5175061,"indexedNotes":0,"indexedNullifiers":0,"requestsTotal":8,"rejectedAuthTotal":0,"rejectedRateLimitTotal":0}
+```
+`indexedNotes`/`indexedNullifiers` are correctly 0 — the expected result for a dormant
+contract with no activity inside the retrievable window, not an ingestion failure (the sync
+cursor advancing in lockstep with the live tip across every poll is the actual proof the
+mechanism works).
+
+This machine has no public address, so this is a reproducible local run rather than a
+standing, reviewer-reachable endpoint — the second option this remark's T3 holding item
+explicitly accepted. The exact commands:
+```
+sudo -u postgres psql -c "CREATE ROLE zkella LOGIN PASSWORD 'zkella'; CREATE DATABASE zkella_indexer OWNER zkella;"
+DATABASE_URL=postgres://zkella:zkella@localhost:5432/zkella_indexer \
+TOKEN_CONTRACT_ID=CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM \
+SOROBAN_RPC_URL=https://soroban-testnet.stellar.org \
+ZKELLA_NETWORK=testnet \
+INDEXER_START_LEDGER=5075040 \
+INDEXER_HTTP_PORT=8792 \
+node --experimental-strip-types indexer/src/main.ts
+```
+
 **4.2 Indexer correctly resumes from its last synced ledger cursor after a simulated restart,
 with no missed or duplicated events. Met.**
 `tests/unit/indexer-db-postgres.test.ts`'s restart test opens a genuinely new `PostgresIndexerDb`
@@ -331,6 +430,32 @@ handful of events every few seconds) is nowhere near either backend's throughput
 13.7ms of real latency per event, sustained, is not a practical concern for that load. The
 "backfill" figure is closer to what a real bulk catch-up would look like in practice (batched,
 not fully serial), and it narrows the gap to 11x.
+
+**Non-blocking follow-up: a file-backed SQLite baseline, not just `:memory:`.** The comparison
+above measures SQLite's zero-I/O in-memory mode against Postgres's always-real-I/O network
+round trips — not a fair single-writer comparison, since a real deployment's SQLite instance
+writes to a real file, not RAM. `scripts/indexer_load_test.mjs` now takes `--sqlite-path` (or
+`SQLITE_PATH`) to point the SQLite side at a real file instead.
+
+Measured the same way, 5,000 events per run, file-backed SQLite (`/tmp/zkella_loadtest.sqlite`,
+default synchronous journaling — one real fsync per write) vs. the same local PostgreSQL 14
+server. Unlike the table above, this run was **not** on an otherwise-idle machine — it ran
+concurrently with this tranche's own full Rust and Jest test suites, the same confound this
+section's own text already flags as making absolute numbers machine-dependent; read the ratios
+as directionally real, not as a clean re-measurement of the table above:
+
+| | SQLite (file-backed) | PostgreSQL | Ratio |
+| --- | --- | --- | --- |
+| Sustained (one at a time) | 370,912ms (13.5 events/s) | 172,755ms (28.9 events/s) | Postgres 2.1x faster |
+| Backfill (parallel batch) | 439,035ms (11.4 events/s) | 23,552ms (212.3 events/s) | Postgres 18.6x faster |
+| Query pass (11 pages) | 130ms | 767ms | Postgres 5.9x slower |
+
+Once SQLite pays the real per-write fsync a single-writer file-backed deployment actually
+incurs, the picture reverses for writes: PostgreSQL is faster on both sustained and backfill
+ingestion, sometimes by a wide margin, and only the read path still favors SQLite (the same
+network-round-trip cost the in-memory comparison already explained). This is the fairer
+baseline the original in-memory comparison was missing — SQLite's real advantage was never raw
+write throughput, it was having no server process to talk to at all.
 
 ---
 
@@ -409,3 +534,14 @@ creator, never a relayer or third party, so a wrong value only ever harms its ow
 - **PostgreSQL's raw single-writer throughput is worse than SQLite's `:memory:` baseline** for
   one-at-a-time writes over a real network connection (Deliverable 4.3's own measurement); its
   real advantage for this deliverable is concurrency and operational tooling, not throughput.
+- **The non-blocking relayer-fee-during-shortfall fix (`contracts/token`'s
+  `FeeRefusedDuringShortfall`) is implemented, tested (real Soroban test environment,
+  `transfer_refuses_a_positive_fee_during_a_custody_shortfall_but_allows_a_zero_fee_call`),
+  and now on the live `testnet_final` WASM** — the 2026-10-13 redeploy (see Deliverable 3's
+  cross-asset evidence above and `docs/POC_TESTNET_VALIDATION.md`'s Epoch 7) carried both this
+  and the blocking D3 fix together, since fixing `token` at all meant redeploying `governance`
+  pointed at the new `token`, which in turn meant redeploying `verifier` too (no admin-transfer
+  mechanism to hand verifier administration to a new governance contract). Not separately
+  re-demonstrated live with a real clawback here, since staging one would serve no purpose
+  beyond the demonstration itself — the fix is part of the deployed WASM, verified by its own
+  test against that exact compiled code.

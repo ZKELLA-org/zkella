@@ -42,7 +42,7 @@ pub enum CircuitType {
     Transfer4x4 = 4,
     /// `circuits/swap/swap_fairness.circom` — binds a revealed (amount_out,
     /// min_amount_out) pair to the swap's original `intent_commitment`
-    /// without revealing amount_in/max_slippage_bps/intent_nonce. Covers only
+    /// without revealing amount_in/intent_nonce. Covers only
     /// `contracts/swap::reveal_and_claim`'s fairness check; `commit_swap`'s
     /// nullifier-ownership proof has no circuit yet (see that contract's doc
     /// comment).
@@ -72,4 +72,6 @@ pub trait Verifier {
     fn revoke_previous_vk(e: Env, circuit: CircuitType) -> Result<(), Error>;
     fn get_verifying_key(e: Env, circuit: CircuitType) -> Result<Bytes, Error>;
     fn verify(e: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> Result<bool, Error>;
+    fn pause(e: Env) -> Result<(), Error>;
+    fn unpause(e: Env) -> Result<(), Error>;
 }

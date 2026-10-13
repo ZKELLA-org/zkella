@@ -243,6 +243,22 @@ fn transfer_rejects_output_commitment_already_in_tree() {
     fx.assert_transfer_err(false, &pi.nullifiers, &pi.out_commitments, &notes(&fx.env, 2), &proof, &pi, Error::DuplicateCommitment);
 }
 
+/// Same `ENCRYPTED_NOTE_LEN` format shield()/shield_batch() enforce on their
+/// own note ciphertexts must also apply to transfer()'s output notes:
+/// `encrypted_notes[i]` is the only copy of an output note's hidden fields,
+/// so a malformed one would otherwise be accepted and silently strand that
+/// output's value (the owner could never decrypt it to learn rho/rcm and so
+/// could never spend it) — this must be rejected before any state changes.
+#[test]
+fn transfer_rejects_wrong_encrypted_note_length() {
+    let fx = fixture();
+    let pi = transfer_pi(&fx.env, &fx.client(), &fx.asset, 2, 65);
+    let proof = transfer_proof(&fx.env, &fx.verifier, CircuitType::Transfer, &pi);
+    let mut bad_notes = notes(&fx.env, 2);
+    bad_notes.set(1, Bytes::from_array(&fx.env, &[0u8; 136])); // wrong length (176 expected)
+    fx.assert_transfer_err(false, &pi.nullifiers, &pi.out_commitments, &bad_notes, &proof, &pi, Error::InvalidNote);
+}
+
 #[test]
 fn transfer_rejects_invalid_proof() {
     let fx = fixture();
@@ -306,6 +322,18 @@ fn transfer4_rejects_wrong_arity() {
     // 2-slot inputs into transfer4.
     let p2 = transfer_pi(&fx.env, &fx.client(), &fx.asset, 2, 160);
     fx.assert_transfer_err(true, &p2.nullifiers, &p2.out_commitments, &notes(&fx.env, 2), &proof, &p2, Error::InvalidInputCount);
+}
+
+/// Same check as `transfer_rejects_wrong_encrypted_note_length`, for the
+/// 4-in-4-out circuit.
+#[test]
+fn transfer4_rejects_wrong_encrypted_note_length() {
+    let fx = fixture();
+    let pi = transfer_pi(&fx.env, &fx.client(), &fx.asset, 4, 155);
+    let proof = transfer_proof(&fx.env, &fx.verifier, CircuitType::Transfer4x4, &pi);
+    let mut bad_notes = notes(&fx.env, 4);
+    bad_notes.set(2, Bytes::from_array(&fx.env, &[0u8; 10])); // wrong length (176 expected)
+    fx.assert_transfer_err(true, &pi.nullifiers, &pi.out_commitments, &bad_notes, &proof, &pi, Error::InvalidNote);
 }
 
 // ───────────────────────────── unshield ─────────────────────────────
@@ -382,6 +410,28 @@ fn unshield_rejects_non_positive_value() {
         let proof = fx.unshield_proof(&pi);
         fx.assert_unshield_err(&nf, &to, &tag, &proof, &pi, Error::AmountMismatch);
     }
+}
+
+/// Same `ENCRYPTED_NOTE_LEN` format shield()/shield_batch() enforce on their
+/// own note ciphertexts must also apply to unshield()'s mandatory change
+/// note: `encrypted_change_note` is the only copy of the change note's
+/// hidden fields, so a malformed one would otherwise be accepted and
+/// silently strand the change value forever (its owner could never decrypt
+/// it to learn rho/rcm and so could never spend it) — rejected before any
+/// state changes, including the nullifier being marked spent.
+#[test]
+fn unshield_rejects_wrong_encrypted_change_note_length() {
+    let fx = fixture();
+    fx.shield(170, 1_000_000);
+    let to = Address::generate(&fx.env);
+    let tag = zero(&fx.env);
+    let nf = BytesN::from_array(&fx.env, &canon(187));
+    let pi = fx.unshield_pi(&to, &tag, &nf, 1_000, &zero(&fx.env));
+    let proof = fx.unshield_proof(&pi);
+    let bad_enc = Bytes::from_array(&fx.env, &[0u8; 100]); // wrong length (176 expected)
+    let res = fx.client().try_unshield(&nf, &to, &tag, &pi.change_commitment, &bad_enc, &proof, &pi);
+    assert_eq!(res, Err(Ok(Error::InvalidNote)));
+    assert!(!fx.client().is_spent(&nf), "a rejected call must not mark the nullifier spent");
 }
 
 #[test]

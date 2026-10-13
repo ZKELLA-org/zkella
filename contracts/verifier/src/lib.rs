@@ -107,6 +107,7 @@ pub enum Error {
     PublicInputCountMismatch = 7,
     EmptyBatch               = 8,
     NonCanonicalInput        = 9,
+    Paused                   = 10,
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -115,6 +116,7 @@ pub enum Error {
 #[soroban_sdk::contracttype]
 pub enum StorageKey {
     Admin,
+    Paused,
     VerifyingKey(CircuitType),
     /// The key `VerifyingKey(circuit)` held immediately before the most
     /// recent `update_verifying_key` rotation, retained until
@@ -204,6 +206,7 @@ impl VerifierContract {
     /// — use `update_verifying_key` to rotate.
     pub fn register_verifying_key(env: Env, circuit: CircuitType, vk: Bytes) -> Result<(), Error> {
         Self::require_admin(&env)?;
+        Self::assert_not_paused(&env)?;
         let key = StorageKey::VerifyingKey(circuit);
         if env.storage().instance().has(&key) {
             return Err(Error::VkAlreadyRegistered);
@@ -227,6 +230,7 @@ impl VerifierContract {
     /// to the retained old key if the new key rejects the proof.
     pub fn update_verifying_key(env: Env, circuit: CircuitType, new_vk: Bytes) -> Result<(), Error> {
         Self::require_admin(&env)?;
+        Self::assert_not_paused(&env)?;
         let key = StorageKey::VerifyingKey(circuit);
         let old_vk: Bytes = env
             .storage()
@@ -247,11 +251,30 @@ impl VerifierContract {
     /// Immediately drops the retained previous key for `circuit`. Use this
     /// when a rotation was made because the outgoing key (or its circuit) was
     /// compromised, so it must not stay acceptable for the retention window.
+    /// Deliberately not gated by `pause`: revoking only narrows what `verify`
+    /// accepts, and it is the response a pause exists to enable.
     pub fn revoke_previous_vk(env: Env, circuit: CircuitType) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage().instance().remove(&StorageKey::PreviousVerifyingKey(circuit));
         env.storage().instance().remove(&StorageKey::PreviousVkExpiry(circuit));
         Ok(())
+    }
+
+    pub fn pause(env: Env) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&StorageKey::Paused, &true);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&StorageKey::Paused, &false);
+        Ok(())
+    }
+
+    fn assert_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env.storage().instance().get(&StorageKey::Paused).unwrap_or(false);
+        if paused { Err(Error::Paused) } else { Ok(()) }
     }
 
     pub fn get_verifying_key(env: Env, circuit: CircuitType) -> Result<Bytes, Error> {
@@ -279,6 +302,7 @@ impl VerifierContract {
         public_inputs: Vec<BytesN<32>>,
         proof: Bytes,
     ) -> Result<bool, Error> {
+        Self::assert_not_paused(&env)?;
         if proof.len() != PROOF_LEN {
             return Err(Error::InvalidProofLength);
         }
@@ -390,6 +414,7 @@ impl VerifierContract {
         circuit: CircuitType,
         items: Vec<BatchProofItem>,
     ) -> Result<bool, Error> {
+        Self::assert_not_paused(&env)?;
         if items.is_empty() {
             return Err(Error::EmptyBatch);
         }
@@ -1077,17 +1102,21 @@ mod tests {
 
     // ── Real swap/swap_fairness.circom Groth16 proof ─────────────────────────
     //
-    // Regression test for the audit finding that `min_amount_out` was never
-    // bound to `intent_commitment` (only `amount_in`/`max_slippage_bps` were),
-    // letting a prover supply an arbitrarily low `min_amount_out` at reveal
-    // time regardless of what slippage tolerance was actually committed to —
-    // defeating the swap's front-running protection the moment
-    // `contracts/swap::reveal_and_claim` started verifying this proof for
-    // real. Fixed in `swap_fairness.circom` by deriving `min_amount_out` as
-    // `floor(amount_in * (10000 - max_slippage_bps) / 10000)` in-circuit.
-    // This proof uses a legitimately-derived `min_amount_out`; the
-    // "forged" test below uses the exact attack value (0) the finding
-    // described and confirms it's rejected.
+    // Regression test for two audit findings on this circuit. The first
+    // (original) finding was that `min_amount_out` was never bound to
+    // `intent_commitment` at all, letting a prover supply an arbitrarily low
+    // `min_amount_out` at reveal time. That was fixed by deriving
+    // `min_amount_out` in-circuit from `amount_in` and a flat slippage
+    // percentage — but that derivation mixed asset_in-denominated
+    // `amount_in` with asset_out-denominated `amount_out`/`min_amount_out`
+    // with no exchange rate anywhere, which is only sound for a 1:1 pair. A
+    // second fix replaced that derivation with `min_amount_out` as a direct,
+    // asset_out-denominated witness the swap creator supplies from a real
+    // quoted rate, bound directly into `intent_commitment` — see
+    // `swap_fairness.circom`'s doc comment. This test's fixtures (asset_in =
+    // 111, asset_out = 222, a non-1:1 `min_amount_out`) are generated against
+    // that current circuit; the "forged" test below confirms an unrelated
+    // `min_amount_out` (0) still fails verification.
     #[test]
     fn verify_accepts_real_swap_fairness_circuit_proof() {
         let (env, admin, verifier) = setup();
@@ -1128,14 +1157,15 @@ mod tests {
         hex_push(SWAP_FAIRNESS_PROOF_HEX, &mut proof);
 
         // Same real proof, but claim min_amount_out = 0 instead of the real
-        // 975000 (index 4) — exactly the attack the finding described. The
-        // proof was generated against a witness with the real value, so a
-        // tampered public input here must fail the pairing check (this is a
-        // different, complementary check from the witness-generation-time
-        // rejection already confirmed when building this test's fixtures:
-        // circom's own witness calculator refuses to build a witness at all
-        // for a forged min_amount_out, since the in-circuit constraint now
-        // catches it before a proof can even be produced for one).
+        // 4800000 (index 4) — exactly the attack the original finding
+        // described. The proof was generated against a witness with the
+        // real value, so a tampered public input here must fail the pairing
+        // check (this is a different, complementary check from the
+        // witness-generation-time rejection already confirmed when building
+        // this test's fixtures: circom's own witness calculator refuses to
+        // build a witness at all for a forged min_amount_out, since the
+        // in-circuit constraint now catches it before a proof can even be
+        // produced for one — see `circuits/swap/build/gen_witness.js`).
         let mut inputs = Vec::new(&env);
         for (i, input_hex) in SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX.iter().enumerate() {
             let mut b = Bytes::new(&env);
@@ -1151,18 +1181,18 @@ mod tests {
         assert!(!ok, "real proof must not verify against a forged min_amount_out");
     }
 
-    const SWAP_FAIRNESS_VK_HEX: &str = "004a10ae973df76d18cc7282cb3fd87d293ac1521d0f8c3fe1b7a8bf2cc1cd3d1c1a9a34341a0bbae006c778fbfdf7e5d0ae8cac871ecf71f17f4673e5b1f56b062d17924ef71132b66fc4695c553433e7cede3848a8bda9332958709c984a0b13bc9e495aa7512ed247262baefd60f73226f7017843977bc797462aa88034970cdc3f64b84088c7343b736148da94beb5b9ed7c19d2397c25ecb783132af1292bcac674e74ffd994b4152e1347afe87ea763ffde54a274b6e0f5653ab94de91198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa0019c0c90910f83e18e7d744ad362f81d5c882f9ec94556e92729f9c85cf1ea2156027c50b35e7747feeed12b31a9ec244949729a6f7c10fa9d801f774ad35e80ad43904da733b498cdfbd3fdf0a4ddafe471973885241a8656ee6e340d2d4b21799ad345557a6e73e3291a5205e46066c61511b0fdc5b12bee33a9fb0c1e7370c1daaee301f30c80ccfb72d3ccfa6c103f9b90efb048bc9f8813f44e06351d40b272bbc3ece2cf32874d377dd3c7a150dbab40adf6c2004ec431d36d84fb7f604b22c4c322753459d75c903c9178dd3c7204f0ec09cb0f81c40d2cdb8ef6c1e0af5246493de566608beb1ea1f41d186d298e0384cbe7bef5d94ba46db1a95561c1ac38c8ecfad040707f99e57d3fb1940edf5b44e732d2dc740bf1e328b14d3099a44a21db61d0a73c0d065fa72924932673b910b85b9fac2779bda8acb7ba51be2368fbe7dcedfb8e0fb0e2318df05795b3cf77eda524790aebf236c3a3aad0924e28b0cd7eec9c1467afbd1186ddd7b43d3fa5ce85b5b0d957a399a48118d174070bbb8c7f80beb451b8d47865d456656db2f9fc377e5cfde2af4a879720716393ebe785dbccbe1f20c367f19c904c505fec6200639c59c03d32e5ae0f8a41637934178424131de727a304334c2db4f6fc68cda6d04528d7620a48d376e651120126e0c274a79ecdc92860d55c657368ec276c2b0fa1c43d3efc22b52733b";
+    const SWAP_FAIRNESS_VK_HEX: &str = "004a10ae973df76d18cc7282cb3fd87d293ac1521d0f8c3fe1b7a8bf2cc1cd3d1c1a9a34341a0bbae006c778fbfdf7e5d0ae8cac871ecf71f17f4673e5b1f56b062d17924ef71132b66fc4695c553433e7cede3848a8bda9332958709c984a0b13bc9e495aa7512ed247262baefd60f73226f7017843977bc797462aa88034970cdc3f64b84088c7343b736148da94beb5b9ed7c19d2397c25ecb783132af1292bcac674e74ffd994b4152e1347afe87ea763ffde54a274b6e0f5653ab94de91198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c21800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa29109cea83989a458fc216f88605395ee79095557d0cdf8b1ac054229e1dd11e22972e25ac689afbac3a579cf97a23a97e7f86e72cc7480ef55c19335c60c0a8257511648f5e85c29e3bf67fb2eadcf2c255433da1d4b0021d5dae4494a47f3308989af1178840dec3cf9ab3c216ef9ef13d8895b7c4ae93a900868f721116702e044040dc16e033055e4f99a1078a37aef924a8f8c4e87f6f5997e2ed0ca05d015331329a09570cfd06310e7a664eedcda53805257807f8d994852101a8414e085724a2a8c6a5937d2b1e5c16eeb871e34ea6ecd59c61bcaefb966c8fe297201c604fadd4176a86e297e8f2f66013fff6090b67062e41d0b22923813b79bc2107f78630749d9f53d8993b38c41d1cbc82b3e8aaca2f27660bb88afd07db517e24b83aa15ee8b2769808b25aab1fd2d721513c178fa6cea6a996c09e597cf88b2ded7d183fad5e3109b12c36eaede777232074eb5e3d453562500be3a4c6126617dc22aa3192c20631d2483cdf01d10e3961655066833efe8dc510edbcb5ca3727fcdc23cdcd4725aea60f640ce2f5f95040fc998e364520d8a1d6e5a7c608c300aae06cd9481556a897885925819cc799db995c5944210f88632e49f0c7b4a00aac6fdf6e9a3ceaf1b36b601ddebdbec4648c8e1f5503f2ddc362541d10693528f6f1182e283b236010727ec9fc3699858658ff1ee0a7788b2c609d02f313e8";
 
-    const SWAP_FAIRNESS_PROOF_HEX: &str = "17d585e740cdf41cf8f822ed140dbecd074791783f7ce454ea5eb595eec61095141851a80195169e0dc8f044eff01b9b9b8338c5615057866ce92f3df46c64b707346e839a6ec0f4427a6463a44f1aeecad944c677c682ba5eeb16673b2871570f3a9739d85eff1a6872cba47b63f4f67578d4c0960a124ac32fd3213a099dda1a8400c4b70e505ceef65757a6fa433b5d1858240e7940be68abc590a100c54f1041d8154b03fb5b74e51c51ebd6afc687d69f58f56575cdb07472e9bfdf8b3d0bc643c67a3bd548ab2017f9e62715f0488c5ef1e0912c1b3120760c0691de720d76f6cb8246b67c7338d0c13e08dcae0eed639da5ba9fbdd1fe28bcddcff76b";
+    const SWAP_FAIRNESS_PROOF_HEX: &str = "12fa9791182ecf592a7e9b3c87713d43168045f00a938a143389aca443adafbc261db952e9b408727c6b419e93c3f0ad2bb7033910837426e209725be42fea02241dabd3a350a7ec08f7b1247bb82522a4885416bc6301f29fa3d03a41781a1f11b1d50478cfa70d14ac9362e9c339e40aae8441afe4b30f399f8c09dfb6bbc90ede74275c930659039e34a7bd9137c1dcfb83363e8c65fa23e5f54dd3c8cf3b10c95e81eb375643ef0d3c4b2b39c9f7e551a9847b900bbd51a01e1d81d59b43059a4452d351e45ce1a50b057e213c074be3d79220535a342ad82af233ff9ea507705e1031adacd99f55a83eed1c97958c1e52a1547ea41aa30a1e88022b868c";
 
     // Order: intent_commitment, asset_in, asset_out, amount_out, min_amount_out
     // (matches swap_fairness.circom's public signal list), little-endian 32 bytes each.
     const SWAP_FAIRNESS_PUBLIC_INPUTS_LE_HEX: [&str; 5] = [
-        "2144195246ec906201992a0f891b606068775a5138dc7e9ac820eb6b5ffaa100", // INTENT_COMMITMENT
+        "a8134e6b453818e81adac44da97a7179cfe40ab5780bd82166e3757ce4ece706", // INTENT_COMMITMENT
         "6f00000000000000000000000000000000000000000000000000000000000000", // ASSET_IN (111)
         "de00000000000000000000000000000000000000000000000000000000000000", // ASSET_OUT (222)
-        "20f40e0000000000000000000000000000000000000000000000000000000000", // AMOUNT_OUT (980000)
-        "98e00e0000000000000000000000000000000000000000000000000000000000", // MIN_AMOUNT_OUT (975000)
+        "f0874b0000000000000000000000000000000000000000000000000000000000", // AMOUNT_OUT (4950000)
+        "003e490000000000000000000000000000000000000000000000000000000000", // MIN_AMOUNT_OUT (4800000)
     ];
 
     // ── Real unshield.circom Groth16 proof ───────────────────────────────────
@@ -1755,5 +1785,82 @@ mod tests {
         let empty: Vec<BatchProofItem> = Vec::new(&env);
         let result = client.try_verify_batch(&CircuitType::Shield, &empty);
         assert_eq!(result, Err(Ok(Error::EmptyBatch)));
+    }
+
+    fn paused_verifier() -> (Env, Address) {
+        let (env, admin, verifier) = setup();
+        env.mock_all_auths();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        client.register_verifying_key(&CircuitType::Shield, &Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]));
+        client.pause();
+        (env, verifier)
+    }
+
+    #[test]
+    fn pause_and_unpause_require_admin_authorization() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let verifier = env.register(VerifierContract, ());
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.initialize(&admin);
+        assert!(client.try_pause().is_err(), "pause must require admin authorization");
+        assert!(client.try_unpause().is_err(), "unpause must require admin authorization");
+    }
+
+    #[test]
+    fn pause_blocks_register_verifying_key() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        let vk = Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_register_verifying_key(&CircuitType::Transfer, &vk), Err(Ok(Error::Paused)));
+    }
+
+    #[test]
+    fn pause_blocks_update_verifying_key() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        let vk = Bytes::from_array(&env, &[1u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_update_verifying_key(&CircuitType::Shield, &vk), Err(Ok(Error::Paused)));
+    }
+
+    #[test]
+    fn pause_does_not_block_revoke_previous_vk() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        assert_eq!(client.try_revoke_previous_vk(&CircuitType::Shield), Ok(Ok(())));
+    }
+
+    #[test]
+    fn unpause_restores_register_update_and_revoke() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        client.unpause();
+        let vk = Bytes::from_array(&env, &[0u8; 64 + 384 + 64 * 2]);
+        assert_eq!(client.try_register_verifying_key(&CircuitType::Transfer, &vk), Ok(Ok(())));
+        assert_eq!(client.try_update_verifying_key(&CircuitType::Shield, &vk), Ok(Ok(())));
+        let proof = Bytes::from_array(&env, &[0u8; 256]);
+        let inputs = Vec::from_array(&env, [BytesN::from_array(&env, &[0u8; 32])]);
+        assert_ne!(client.try_verify(&CircuitType::Shield, &inputs, &proof), Err(Ok(Error::Paused)));
+        let items = Vec::from_array(&env, [BatchProofItem { public_inputs: inputs, proof }]);
+        assert_ne!(client.try_verify_batch(&CircuitType::Shield, &items), Err(Ok(Error::Paused)));
+    }
+
+    #[test]
+    fn pause_does_not_block_reads() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        assert!(client.try_get_verifying_key(&CircuitType::Shield).is_ok(), "reads must stay available while paused");
+    }
+
+    #[test]
+    fn pause_blocks_proof_verification_fail_closed() {
+        let (env, verifier) = paused_verifier();
+        let client = VerifierContractClient::new(&env, &verifier);
+        let proof = Bytes::from_array(&env, &[0u8; 256]);
+        let inputs = Vec::from_array(&env, [BytesN::from_array(&env, &[0u8; 32])]);
+        assert_eq!(client.try_verify(&CircuitType::Shield, &inputs, &proof), Err(Ok(Error::Paused)));
+        let items = Vec::from_array(&env, [BatchProofItem { public_inputs: inputs, proof }]);
+        assert_eq!(client.try_verify_batch(&CircuitType::Shield, &items), Err(Ok(Error::Paused)));
     }
 }

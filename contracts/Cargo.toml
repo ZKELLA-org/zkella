@@ -9,6 +9,7 @@ members = [
     "verifier",
     "verifier-interface",
 ]
+exclude = ["budget"]
 resolver = "2"
 
 [workspace.dependencies]

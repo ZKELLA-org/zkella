@@ -76,9 +76,13 @@ export class Syncer {
       // emits at most a handful of these events per transaction), but a
       // real, permanent, silent data-loss bug under sustained high load,
       // since a skipped ledger's remaining events are never fetched again.
-      const response = pagingToken !== undefined
-        ? await this.server.getEvents({ cursor: pagingToken, filters, limit: 1000 })
-        : await this.server.getEvents({ startLedger: ledgerCursor, filters, limit: 1000 })
+      const response = await withTimeout(
+        pagingToken !== undefined
+          ? this.server.getEvents({ cursor: pagingToken, filters, limit: 1000 })
+          : this.server.getEvents({ startLedger: ledgerCursor, filters, limit: 1000 }),
+        RPC_TIMEOUT_MS,
+        'getEvents',
+      )
 
       for (const event of response.events) {
         const topic1 = event.topic[1] ? scValToNative(event.topic[1]) : undefined
@@ -110,9 +114,15 @@ export class Syncer {
       // an error or restart would drop that ledger's remaining events.
       // Re-fetching the ledger is safe — `upsertNote`/`markNullifierSpent`
       // are idempotent.
+      // A short page means every event up to response.latestLedger has been
+      // returned, so the cursor can move past the last closed ledger. Stopping at
+      // the last event's ledger instead stalls the indexer whenever the token has
+      // no activity, because the next tick would return the same events again.
+      if (response.events.length < 1000) {
+        await this.config.db.setLastSyncedLedger(response.latestLedger + 1)
+        break
+      }
       await this.config.db.setLastSyncedLedger(lastEvent.ledger)
-
-      if (response.events.length < 1000) break
     }
   }
 }
@@ -120,3 +130,15 @@ export class Syncer {
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+/** Rejects if `promise` has not settled within `ms`, so a hung RPC call becomes a retried error, not a stalled indexer. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+const RPC_TIMEOUT_MS = 30_000
+

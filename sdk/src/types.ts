@@ -56,7 +56,8 @@ export interface SwapOptions {
   assetIn:        string
   assetOut:       string
   amountIn:       bigint
-  maxSlippageBps: number
+  /** See `ZKELLASwap.commitSwap`'s `minAmountOut` doc comment: a direct, asset_out-denominated minimum, not a slippage percentage on `amountIn`. */
+  minAmountOut:   bigint
   expiryLedgers?: number
 }
 
@@ -75,6 +76,8 @@ export interface WalletConfig {
    * protocol and isn't assumed here.
    */
   stellarSecret: string
+  /** Current viewing-key epoch. Persist `wallet.currentEpoch` and pass it back here on restart; defaults to 0. */
+  viewingEpoch?: number
   /** Compiled circuit artifacts — see `sdk/src/prover/*`. Each is required
    *  only for the corresponding `ZKELLAWallet` method. */
   shieldCircuit?:    { wasmPath: string; zkeyPath: string }

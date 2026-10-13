@@ -9,7 +9,7 @@ import { encryptNote, tryDecryptNote }                    from '../notes/encrypt
 import { generateShieldProof, ShieldPublicInputs }        from '../prover/shield'
 import { generateTransferProof, TransferInputNote }       from '../prover/transfer'
 import { generateUnshieldProof }                          from '../prover/unshield'
-import { Note, WalletConfig, TransferOptions, ViewingKeyExport } from '../types'
+import { Note, WalletConfig, TransferOptions, ViewingKeyExport, ShieldedAddress, SpendingKey } from '../types'
 
 // transfer4() (4-in-4-out) isn't wired into the wallet yet — 2-in-2-out
 // transfer() covers the common case, and transfer4's only real use (note
@@ -54,27 +54,33 @@ export class ZKELLAWallet {
   private indexer:   IndexerClient
   private notes:     Note[] = []
   private lastSyncLedger = 0
+  private epoch: number
   private config:    WalletConfig
   private sourceKeypair: Keypair
 
   constructor(config: WalletConfig) {
     this.config        = config
+    this.epoch         = config.viewingEpoch ?? 0
     this.keys          = ZKELLAKeys.fromSpendingKey(config.keys)
     this.indexer       = new IndexerClient(config.indexerUrl)
     this.sourceKeypair = Keypair.fromSecret(config.stellarSecret)
   }
 
   async sync(): Promise<void> {
-    const vk = this.keys.toViewingKey(this.lastSyncLedger)
+    const epochKeys: Uint8Array[] = []
+    for (let e = 0; e <= this.epoch; e++) epochKeys.push(this.keys.viewingKeyForEpoch(e))
     let cursor = this.lastSyncLedger
 
     while (true) {
       const { notes, nextLedger } = await this.indexer.getNotes(cursor)
-      if (notes.length === 0) break
 
       for (const raw of notes) {
         const bundle = Buffer.from(raw.encryptedNote, 'hex')
-        const plaintext = await tryDecryptNote(bundle, vk.raw)
+        let plaintext: Awaited<ReturnType<typeof tryDecryptNote>> = null
+        for (const key of epochKeys) {
+          plaintext = await tryDecryptNote(bundle, key)
+          if (plaintext) break
+        }
         if (!plaintext) continue
 
         // The plaintext carries no owner key: a note this wallet can decrypt
@@ -99,6 +105,7 @@ export class ZKELLAWallet {
           ownerPk,
         })
       }
+      if (notes.length === 0 || nextLedger <= cursor) break
       cursor = nextLedger
     }
 
@@ -170,7 +177,7 @@ export class ZKELLAWallet {
     // here) would silently deposit "for a recipient" but leave the note
     // decryptable/spendable only by the sender's own wallet, not the
     // intended recipient.
-    const transmissionKey = to !== undefined ? hexToBytes(to) : this.config.keys.transmissionKey
+    const transmissionKey = to !== undefined ? hexToBytes(to) : await this.keys.transmissionKeyForEpoch(this.epoch)
     const encryptedBundle = await encryptNote(note, transmissionKey)
 
     const publicInputs: ShieldPublicInputs = { commitment: note.commitment, asset, amount }
@@ -261,7 +268,7 @@ export class ZKELLAWallet {
     ])
 
     const recipientTk = hexToBytes(to)
-    const changeTk    = this.config.keys.transmissionKey
+    const changeTk    = await this.keys.transmissionKeyForEpoch(this.epoch)
 
     const inputs: [TransferInputNote, TransferInputNote] = [
       { note: inA, merklePath: pathA },
@@ -316,7 +323,7 @@ export class ZKELLAWallet {
       return { leafIndices }
     }
 
-    return { submit }
+    return { submit: this.withAnchorRetry(submit, () => this.transfer(opts)) }
   }
 
   /**
@@ -339,7 +346,7 @@ export class ZKELLAWallet {
 
     const anchor = await this.getMerkleRoot()
     const merklePath = await this.getMerklePathBytes(note.leafIndex)
-    const changeTk = this.config.keys.transmissionKey
+    const changeTk = await this.keys.transmissionKeyForEpoch(this.epoch)
 
     const result = await generateUnshieldProof(
       { note, nk: this.config.keys.nullifierKey, merklePath },
@@ -384,11 +391,81 @@ export class ZKELLAWallet {
       return { changeLeafIndex }
     }
 
-    return { submit }
+    return { submit: this.withAnchorRetry(submit, () => this.unshield(opts)) }
   }
 
   exportViewingKey(): ViewingKeyExport {
     return this.keys.exportViewingKey(this.lastSyncLedger, this.config.network)
+  }
+
+  /** Drops a note this wallet has consumed on-chain, so balance and coin selection stop counting it. */
+  markNoteSpent(note: Note): void {
+    this.notes = this.notes.filter(n => n !== note)
+  }
+
+  /** Unspent notes of `asset` this wallet currently holds, in the order it tracks them. */
+  spendableNotes(asset: string): Note[] {
+    return this.notes.filter(n => n.assetId === asset)
+  }
+
+  /** The shielded-pool spending keys (nullifier and owner keys are needed for swaps). */
+  spendingKey(): SpendingKey {
+    return this.config.keys
+  }
+
+  /**
+   * Wraps a submit closure so that a rejected anchor (aged out of the token's
+   * root-history window) rebuilds the whole call against the current root. The
+   * rebuild re-selects notes, so it does not reuse the stale proof.
+   */
+  private withAnchorRetry<T>(submit: () => Promise<T>, rebuild: () => Promise<{ submit: () => Promise<T> }>): () => Promise<T> {
+    return async () => {
+      try {
+        return await submit()
+      } catch (err) {
+        if (!isInvalidAnchor(err)) throw err
+        const fresh = await rebuild()
+        return fresh.submit()
+      }
+    }
+  }
+
+  /** The Stellar account that submits and owns this wallet's on-chain actions. */
+  accountAddress(): string {
+    return this.sourceKeypair.publicKey()
+  }
+
+  /** Spending scalar the compliance non-membership proof binds to (never leaves the wallet except as a proof input). */
+  complianceSecret(): bigint {
+    let n = 0n
+    const raw = this.keys.spendingKey.raw
+    for (let i = raw.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(raw[i])
+    return n
+  }
+
+  /** The viewing key for the current epoch, to grant an auditor. */
+  exportCurrentViewingKey(): Promise<ViewingKeyExport> {
+    return this.keys.exportViewingKeyForEpoch(this.lastSyncLedger, this.config.network, this.epoch)
+  }
+
+  /**
+   * Starts a new viewing-key epoch. Notes encrypted from now on use the new key,
+   * so a holder of an earlier epoch's key cannot decrypt them. Notes already
+   * encrypted to earlier epochs stay decryptable by whoever holds those keys;
+   * rotation cannot change history.
+   */
+  rotateViewingKey(): number {
+    this.epoch += 1
+    return this.epoch
+  }
+
+  /** Current epoch. Persist it alongside `lastSyncLedger`, or a restarted wallet loses it. */
+  get currentEpoch(): number {
+    return this.epoch
+  }
+
+  receiveAddress(diversifierIndex = 0): Promise<ShieldedAddress> {
+    return this.keys.deriveAddressForEpoch(this.epoch, diversifierIndex)
   }
 
   // ── Soroban RPC ──────────────────────────────────────────────────────────────
@@ -428,23 +505,35 @@ export class ZKELLAWallet {
    * `merkle_root()`/`leaf_count()` poll is racy (another shield/transfer
    * could land between our tx and the read), the return value isn't.
    */
-  private async submitContractCall(
+  async submitContractCall(
     contractId: string,
     method:     string,
     args:       xdr.ScVal[],
   ): Promise<xdr.ScVal> {
-    const server  = this.getServer()
-    const account = await server.getAccount(this.sourceKeypair.publicKey())
-
-    const tx = new TransactionBuilder(account, { fee: '10000000', networkPassphrase: this.getNetworkPassphrase() })
-      .addOperation(new Contract(contractId).call(method, ...args))
-      .setTimeout(30)
-      .build()
-
-    const prepared = await server.prepareTransaction(tx)
-    prepared.sign(this.sourceKeypair)
-
-    const response = await server.sendTransaction(prepared)
+    const server = this.getServer()
+    const response = await withTransientRetry(async () => {
+      const account = await server.getAccount(this.sourceKeypair.publicKey())
+      const tx = new TransactionBuilder(account, { fee: '10000000', networkPassphrase: this.getNetworkPassphrase() })
+        .addOperation(new Contract(contractId).call(method, ...args))
+        .setTimeout(30)
+        .build()
+      const prepared = await server.prepareTransaction(tx)
+      prepared.sign(this.sourceKeypair)
+      const hash = Buffer.from(prepared.hash()).toString('hex')
+      try {
+        const sent = await server.sendTransaction(prepared)
+        if (sent.status === 'TRY_AGAIN_LATER') throw new TransientError(`${method}: RPC asked to retry`)
+        return sent
+      } catch (err) {
+        // An ambiguous failure may still have reached the network. Resubmitting a new
+        // transaction would run the operation twice, so check the hash first.
+        if (isTransient(err)) {
+          const seen = await server.getTransaction(hash).catch(() => null)
+          if (seen && seen.status !== 'NOT_FOUND') return { status: 'PENDING', hash } as unknown as rpc.Api.SendTransactionResponse
+        }
+        throw err
+      }
+    })
     if (response.status === 'ERROR') {
       throw new Error(`${method} submission error: ${JSON.stringify(response.errorResult)}`)
     }
@@ -463,12 +552,12 @@ export class ZKELLAWallet {
     return result.returnValue!
   }
 
-  private async getMerkleRoot(): Promise<Uint8Array> {
+  async getMerkleRoot(): Promise<Uint8Array> {
     const root = await this.callView(this.config.tokenAddress, 'merkle_root', [])
     return root as Uint8Array
   }
 
-  private async getMerklePathBytes(leafIndex: number): Promise<Uint8Array[]> {
+  async getMerklePathBytes(leafIndex: number): Promise<Uint8Array[]> {
     const path = await this.callView(this.config.tokenAddress, 'merkle_path', [
       nativeToScVal(leafIndex, { type: 'u32' }),
     ]) as Uint8Array[]
@@ -492,7 +581,7 @@ type FieldKind = 'bytes' | 'address' | 'i128' | 'vec-bytes'
  * contract struct's field types, e.g. an `Address` string vs. a `Bytes`
  * hex string are both plain strings in JS).
  */
-function structScVal(obj: Record<string, unknown>, fields: Record<string, FieldKind>): xdr.ScVal {
+export function structScVal(obj: Record<string, unknown>, fields: Record<string, FieldKind>): xdr.ScVal {
   // Soroban structs are encoded as ScVal maps sorted by field-name symbol.
   // Built by hand (rather than nativeToScVal's own struct type-hint shape)
   // because `vec-bytes` fields (Vec<BytesN<32>>) aren't expressible in that
@@ -524,3 +613,32 @@ function requireCircuit(
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+class TransientError extends Error {}
+
+const TRANSIENT_PATTERN = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|\b(502|503|504)\b|timed out|TRY_AGAIN_LATER/i
+
+function isTransient(err: unknown): boolean {
+  if (err instanceof TransientError) return true
+  return TRANSIENT_PATTERN.test(String((err as Error)?.message ?? err))
+}
+
+/** Token's `InvalidAnchor` (error code 5): the anchor is not in the root-history window. */
+function isInvalidAnchor(err: unknown): boolean {
+  return /Contract, #5\)|Error\(Contract, #5\)/.test(String((err as Error)?.message ?? err))
+}
+
+async function withTransientRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      last = err
+      if (!isTransient(err) || i === attempts - 1) throw err
+      await new Promise(r => setTimeout(r, 1000 * 2 ** i))
+    }
+  }
+  throw last
+}
+

@@ -1,47 +1,203 @@
-import { ZKELLAWallet }  from './wallet'
-import { SwapOptions }   from '../types'
+import { nativeToScVal, scValToNative } from '@stellar/stellar-sdk'
+import { ZKELLAWallet, structScVal } from './wallet'
+import { Note } from '../types'
+import { encryptNote } from '../notes/encrypt'
+import { buildNote } from '../notes/builder'
+import { generateUnshieldProof } from '../prover/unshield'
+import { generateShieldProof } from '../prover/shield'
+import { generateSwapFairnessProof, computeSwapBindingTag } from '../prover/swapFairness'
 
+export interface CircuitFiles { wasmPath: string; zkeyPath: string }
+
+export interface SwapCircuits {
+  swapFairness: CircuitFiles
+  unshield:     CircuitFiles
+  shield:       CircuitFiles
+}
+
+/** What the creator must keep to reveal and claim: the intent secrets and the proofs bound to it. */
+export interface SwapIntent {
+  swapId:           string
+  intentNonce:      bigint
+  intentCommitment: Uint8Array
+  assetIn:          string
+  assetOut:         string
+  amountIn:         bigint
+  amountOut:        bigint
+  minAmountOut:     bigint
+  fairnessProof:    Uint8Array
+  expiry:           number
+  /**
+   * The output note's own randomness is fixed at commit time and committed
+   * on-chain (`out_note_binding`), not generated fresh at reveal time —
+   * `revealAndClaim` must reveal this exact note, not a new one, or the
+   * contract rejects it. See `commitSwap`'s doc comment for why.
+   */
+  outNote:          Note
+}
+
+/**
+ * Creator side of a shielded swap: commit a note into an intent, reveal and
+ * claim the output once a relayer has executed it, or cancel an intent that was
+ * never executed. The relayer's `execute_swap` is outside this wrapper.
+ */
 export class ZKELLASwap {
   constructor(private config: {
     wallet:              ZKELLAWallet
     swapContractAddress: string
-    relayerUrl:          string
+    circuits:            SwapCircuits
   }) {}
 
-  async commitSwap(opts: SwapOptions): Promise<{
-    swapId: string
-    submit: () => Promise<{ swapId: string }>
-  }> {
-    // Generate intent commitment, submit commit_swap tx — M3
-    return { swapId: '', submit: async () => ({ swapId: '' }) }
-  }
+  /**
+   * Commits `note` into a swap. The output note is built *now*, not at
+   * reveal time: its randomness is committed on-chain (`out_note_binding`,
+   * `contracts/swap::out_note_binding_hash`) so that whoever later calls
+   * `reveal_and_claim` must reveal this exact note, not substitute their own
+   * randomness under the real claimant's owner key — see
+   * `contracts/swap/src/lib.rs`'s `SwapState::out_note_binding` doc comment
+   * for the front-running/value-destruction scenario this closes. The
+   * intent nonce, proofs, and `outNote` in the result must all be kept
+   * until reveal.
+   */
+  async commitSwap(opts: {
+    note:         Note
+    assetOut:     string
+    amountOut:    bigint
+    /**
+     * The minimum amount of `assetOut` the creator will accept, chosen by
+     * the caller from a real quoted rate between `note.assetId`/`assetOut`
+     * — not derived here from `amountIn` by a flat slippage percentage.
+     * `assetIn`/`assetOut` can be different assets with no fixed exchange
+     * rate, so the SDK can't safely invent this value; see
+     * `circuits/swap/swap_fairness.circom`'s doc comment for why the old
+     * amount_in-derived bound was asset-blind and unsound for non-1:1 pairs.
+     */
+    minAmountOut: bigint
+    expiry:       number
+  }): Promise<SwapIntent> {
+    const { wallet, circuits, swapContractAddress } = this.config
+    const keys = wallet.spendingKey()
+    const me = wallet.accountAddress()
+    const amountIn = opts.note.value
+    const minAmountOut = opts.minAmountOut
+    const intentNonce = BigInt('0x' + Buffer.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).toString('hex'))
 
-  async waitForExecution(swapId: string, opts: { timeoutMs: number }): Promise<boolean> {
-    const deadline = Date.now() + opts.timeoutMs
-    while (Date.now() < deadline) {
-      const status = await this.checkSwapStatus(swapId)
-      if (status === 'executed') return true
-      if (status === 'cancelled') return false
-      await new Promise(r => setTimeout(r, 5000))
+    const fair = await generateSwapFairnessProof(
+      { intentNonce, amountIn, assetIn: opts.note.assetId,
+        assetOut: opts.assetOut, amountOut: opts.amountOut, minAmountOut },
+      circuits.swapFairness.wasmPath, circuits.swapFairness.zkeyPath)
+
+    const bindingTag = await computeSwapBindingTag(fair.intentCommitment, me, keys.ownerKey, opts.assetOut, opts.expiry)
+    const anchor = await wallet.getMerkleRoot()
+    const merklePath = await wallet.getMerklePathBytes(opts.note.leafIndex)
+    const own = await generateUnshieldProof(
+      { note: opts.note, nk: keys.nullifierKey, merklePath },
+      { anchor, recipient: swapContractAddress, bindingTag },
+      circuits.unshield.wasmPath, circuits.unshield.zkeyPath,
+      changeNote => encryptNote(changeNote, keys.transmissionKey))
+
+    const outNote = await buildNote(opts.amountOut, opts.assetOut, keys.ownerKey)
+    const outNoteBinding = await sha256Concat(outNote.rho, outNote.rcm)
+
+    const swapId = scValToNative(await wallet.submitContractCall(swapContractAddress, 'commit_swap', [
+      nativeToScVal(own.nullifier,                   { type: 'bytes' }),
+      nativeToScVal(fair.intentCommitment,           { type: 'bytes' }),
+      nativeToScVal(opts.note.assetId,               { type: 'address' }),
+      nativeToScVal(opts.assetOut,                   { type: 'address' }),
+      nativeToScVal(amountIn,                        { type: 'i128' }),
+      nativeToScVal(anchor,                          { type: 'bytes' }),
+      nativeToScVal(me,                              { type: 'address' }),
+      nativeToScVal(keys.ownerKey,                   { type: 'bytes' }),
+      nativeToScVal(outNoteBinding,                  { type: 'bytes' }),
+      nativeToScVal(minAmountOut,                    { type: 'i128' }),
+      nativeToScVal(own.changeNote.commitment,       { type: 'bytes' }),
+      nativeToScVal(own.changeValueCommit,           { type: 'bytes' }),
+      nativeToScVal(own.encryptedChangeNote,         { type: 'bytes' }),
+      nativeToScVal(own.proof,                       { type: 'bytes' }),
+      nativeToScVal(opts.expiry,                     { type: 'u32' }),
+    ])) as Uint8Array
+    wallet.markNoteSpent(opts.note)
+
+    return {
+      swapId:           Buffer.from(swapId).toString('hex'),
+      intentNonce,
+      intentCommitment: fair.intentCommitment,
+      assetIn:          opts.note.assetId,
+      assetOut:         opts.assetOut,
+      amountIn,
+      amountOut:        opts.amountOut,
+      minAmountOut,
+      fairnessProof:    fair.proof,
+      expiry:           opts.expiry,
+      outNote,
     }
-    return false
   }
 
-  async revealAndClaim(swapId: string): Promise<{ submit: () => Promise<void> }> {
-    // Generate fairness proof, submit reveal_and_claim — M3
-    void swapId
-    return { submit: async () => {} }
+  /**
+   * Claims the output note after a relayer has executed the intent. The contract
+   * rejects the call unless the intent is executed, so calling this early fails
+   * with the contract's own error.
+   */
+  async revealAndClaim(intent: SwapIntent): Promise<{ leafIndex: number }> {
+    const { wallet, circuits, swapContractAddress } = this.config
+    const keys = wallet.spendingKey()
+    // Must reveal the exact note committed to at commitSwap time (`outNote`,
+    // bound on-chain via `out_note_binding`) — building a fresh one here
+    // would be rejected by the contract and, before that fix existed, was
+    // exactly the front-running hole it closes.
+    const outNote = intent.outNote
+    const shield = await generateShieldProof(
+      outNote,
+      { commitment: outNote.commitment, asset: intent.assetOut, amount: intent.amountOut },
+      circuits.shield.wasmPath, circuits.shield.zkeyPath)
+    const enc = await encryptNote(outNote, keys.transmissionKey)
+
+    const leaf = scValToNative(await wallet.submitContractCall(swapContractAddress, 'reveal_and_claim', [
+      nativeToScVal(hexToBytes(intent.swapId),        { type: 'bytes' }),
+      nativeToScVal(outNote.rho,                      { type: 'bytes' }),
+      nativeToScVal(outNote.rcm,                      { type: 'bytes' }),
+      nativeToScVal(outNote.ownerPk,                  { type: 'bytes' }),
+      nativeToScVal(outNote.commitment,               { type: 'bytes' }),
+      nativeToScVal(shield.valueCommit,               { type: 'bytes' }),
+      nativeToScVal(enc,                              { type: 'bytes' }),
+      nativeToScVal(intent.fairnessProof,             { type: 'bytes' }),
+      structScVal({
+        intent_commitment: intent.intentCommitment,
+        asset_in:          intent.assetIn,
+        asset_out:         intent.assetOut,
+        amount_out:        intent.amountOut,
+        min_amount_out:    intent.minAmountOut,
+      }, {
+        intent_commitment: 'bytes', asset_in: 'address', asset_out: 'address',
+        amount_out: 'i128', min_amount_out: 'i128',
+      }),
+      nativeToScVal(shield.proof,                     { type: 'bytes' }),
+    ])) as number
+    return { leafIndex: leaf }
   }
 
-  async cancelSwap(swapId: string): Promise<{ submit: () => Promise<void> }> {
-    void swapId
-    return { submit: async () => {} }
+  /** Cancels an intent that no relayer executed, after its expiry. Returns the escrowed input. */
+  async cancelSwap(swapId: string): Promise<void> {
+    const { wallet, swapContractAddress } = this.config
+    await wallet.submitContractCall(swapContractAddress, 'cancel_swap', [
+      nativeToScVal(hexToBytes(swapId), { type: 'bytes' }),
+    ])
   }
+}
 
-  private async checkSwapStatus(swapId: string): Promise<string> {
-    const res = await fetch(`${this.config.relayerUrl}/swap/${swapId}/status`)
-    if (!res.ok) return 'unknown'
-    const data = (await res.json()) as { status: string }
-    return data.status
-  }
+function hexToBytes(hex: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(hex, 'hex'))
+}
+
+/**
+ * `contracts/swap::out_note_binding_hash`: sha256 of the two 32-byte buffers
+ * concatenated, in this exact order. Not a circuit input, so no field
+ * reduction — must match the Soroban side's `sha256(rho || rcm)` byte-for-byte.
+ */
+async function sha256Concat(a: Uint8Array, b: Uint8Array): Promise<Uint8Array> {
+  const combined = new Uint8Array(a.length + b.length)
+  combined.set(a, 0)
+  combined.set(b, a.length)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', combined)
+  return new Uint8Array(digest)
 }
