@@ -332,13 +332,52 @@ proving the two backends are genuinely interchangeable, not just structurally si
 this suite against a real `postgres:16-alpine` service container
 (`.github/workflows/ci.yml`).
 
-**Reviewer follow-up: the indexer process itself, running against live Testnet with Postgres
-as its backend, not just the interchangeability tests above — covering both the token and
-swap contracts.** The real `indexer/src/main.ts` process was run with `DATABASE_URL` set,
-against this stack's own `testnet_tranche2` token contract
-(`CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`), reading real events from the
-public Soroban RPC endpoint and writing to a real local PostgreSQL 14 server (not a container,
-not mocked — `psql`-verified: `PostgreSQL 14.24 (Ubuntu 14.24-0ubuntu0.22.04.1)`).
+**Reviewer follow-up (second round): real, non-zero note/nullifier ingestion, not just the
+sync mechanism.** The first attempt below (kept for the record) pointed the indexer at the
+dormant `testnet_tranche2` token and could only prove the cursor/connection worked —
+`indexedNotes`/`indexedNullifiers` were both 0, which doesn't prove ingestion actually
+happens. Re-run against this stack's own **current** `testnet_final` token
+(`CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP`), starting from ledger 5175100 —
+before any of this stack's real activity, and well inside Soroban RPC's `getEvents` retention
+window — so every real event since this token's genesis was actually ingested, not skipped.
+
+Startup log:
+```
+[indexer] backend: postgres
+[indexer] HTTP API listening on :8793
+[indexer] syncing CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP on testnet from ledger 5175100
+```
+
+`/health` and `/metrics`, captured live at 2026-10-14T00:10:52Z after 356 seconds of
+continuous uptime, fully caught up to the live chain tip:
+```
+{"syncedLedger":5182613,"tipLedger":5182613,"lag":0}
+{"uptimeSeconds":356,"syncedLedger":5182613,"indexedNotes":6,"indexedNullifiers":2,"requestsTotal":8,"rejectedAuthTotal":0,"rejectedRateLimitTotal":0}
+```
+
+`GET /notes?fromLedger=0&limit=50` — all 6 real notes, each with a real commitment and the
+real ledger it landed in:
+```
+leafIndex 0, ledger 5175774, commitment 3a48fdbfd009100235b10d74633d53dbaae30638eb4d4f527d1cd2381cb02d07
+leafIndex 1, ledger 5175841, commitment 63df8ebb62b934ddf0a22298c102860590268ab2ed65634d121251e096d70301
+leafIndex 2, ledger 5175843, commitment bb836b4248f72cc8c715043b369432a988f8cf3b56aa98e82852cf2b81b22d0d
+leafIndex 3, ledger 5175857, commitment 42f8afec7993ba8549393ce32c8d6f2f257b9eaecb91ca21b75ae885d6ce7d20
+leafIndex 4, ledger 5175859, commitment 5d33e93b239fcee7b322dd234d9919ad368bda73e2d3e4c03ed56bad83f81c1b
+leafIndex 5, ledger 5175862, commitment b7b6feb78977c5972b6cda1798e64264c432466554006f81973bb52c34989c07
+```
+
+**Note count matches the on-chain leaf count:** `token.leaf_count()` reads `6` live on
+`CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP` — exactly the 6 notes above, not
+the ~21/leaf-20 figure from an earlier message, which was this *redeploy's predecessor*
+stack (`testnet_final_superseded_2026_10_13`, a different token contract) — current on-chain
+leaf count and indexer note count agree exactly.
+
+**Nullifiers match the real spends:** the indexer recorded exactly 2 spent nullifiers
+(`dcccc89c6ceb8ec419fbfc26752a0e304e52fdd2aa12e73446dab0058f164f2a` at ledger 5175843,
+`1673ea669713393c4e82e9204fb0fc45f04dcfc2346d992503cfd6e0cc7c2320` at ledger 5175859) — the
+two real `commit_swap` calls on this stack, each spending exactly one nullifier via
+`token::unshield()`. Both independently confirmed `true` against `token.is_spent()` read
+directly from the live contract, not just read back from the indexer's own database.
 
 The indexer only ever filters on `TOKEN_CONTRACT_ID` (`indexer/src/sync.ts`'s `("zkella",
 "note")`/`("zkella", "nf")` event filters) — there is no separate swap-contract address to
@@ -347,51 +386,35 @@ by cross-calling `token::unshield()`/`token::shield()` (`contracts/swap/src/lib.
 361 and 607), and `env.events().publish(...)` in Soroban is always attributed to whichever
 contract's own code is executing the call — which, for both of those cross-calls, is `token`,
 not `swap` (the `(zkella, note)`/`(zkella, nf)` publish sites live inside
-`contracts/token/src/lib.rs` itself, at lines 410, 555, 810, 835, 1060 and 1072). So every
-note/nullifier event a swap produces already carries `token`'s contract ID, and an indexer
-watching `token` alone genuinely captures 100% of swap-driven activity too — confirmed by
-reading both contracts' source directly, not assumed.
+`contracts/token/src/lib.rs` itself, at lines 410, 555, 810, 835, 1060 and 1072). The 2
+nullifiers above, both spent by `commit_swap`'s cross-call into `token::unshield()`, are
+exactly this in practice, not just theory.
 
-Honest framing of what this does and doesn't show: `testnet_tranche2` is a dormant stack —
-its own live validation ran once, in late September, and nothing has shielded, transferred, or
-unshielded through it since. Soroban RPC's `getEvents` only retains roughly the most recent
-120,000 ledgers, which is now well short of reaching back to that original activity, so this
-run cannot replay it (that history is independently preserved via the Horizon-verified
-transaction hashes earlier in this section, not through indexer replay). What this run does
-show is the mechanism itself working end to end against live Testnet: real RPC polling, a real
-Postgres connection, and a real, persisted sync cursor advancing to the live tip with zero lag.
+This machine has no public address, so this is a reproducible local run rather than a
+standing, reviewer-reachable endpoint. The exact commands:
+```
+PGPASSWORD=zkella psql -h localhost -U zkella -d zkella_indexer -c "TRUNCATE notes, nullifiers, sync_state;"
+DATABASE_URL=postgres://zkella:zkella@localhost:5432/zkella_indexer \
+TOKEN_CONTRACT_ID=CDOHQBBDCNY6VVFBOOYDIIVQMA2U2XOT7ZP5AZWHUQKKFN6D4Z63WODP \
+SOROBAN_RPC_URL=https://soroban-testnet.stellar.org \
+ZKELLA_NETWORK=testnet \
+INDEXER_START_LEDGER=5175100 \
+INDEXER_HTTP_PORT=8793 \
+node --experimental-strip-types indexer/src/main.ts
+```
 
-Startup log (`backend: postgres` confirms the Postgres path was actually taken, not a silent
-SQLite fallback):
+**First attempt (kept for the record — proved the mechanism, not ingestion):** the indexer
+was first run against the dormant `testnet_tranche2` token
+(`CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM`), which has had no real activity
+since late September and is now outside `getEvents`'s ~120,000-ledger retention window, so
+`indexedNotes`/`indexedNullifiers` were correctly 0 — a sync-cursor-and-connection proof, not
+an ingestion proof. Startup log and health output from that run:
 ```
 [indexer] backend: postgres
 [indexer] HTTP API listening on :8792
 [indexer] syncing CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM on testnet from ledger 5075040
-```
-
-`/health` and `/metrics`, captured live at 2026-10-13T13:41:34Z after 96 seconds of continuous
-uptime (several independent polls shown, not a single lucky snapshot):
-```
 {"syncedLedger":5175061,"tipLedger":5175061,"lag":0}
 {"uptimeSeconds":96,"syncedLedger":5175061,"indexedNotes":0,"indexedNullifiers":0,"requestsTotal":8,"rejectedAuthTotal":0,"rejectedRateLimitTotal":0}
-```
-`indexedNotes`/`indexedNullifiers` are correctly 0 — the expected result for a dormant
-contract with no activity inside the retrievable window, not an ingestion failure (the sync
-cursor advancing in lockstep with the live tip across every poll is the actual proof the
-mechanism works).
-
-This machine has no public address, so this is a reproducible local run rather than a
-standing, reviewer-reachable endpoint — the second option this remark's T3 holding item
-explicitly accepted. The exact commands:
-```
-sudo -u postgres psql -c "CREATE ROLE zkella LOGIN PASSWORD 'zkella'; CREATE DATABASE zkella_indexer OWNER zkella;"
-DATABASE_URL=postgres://zkella:zkella@localhost:5432/zkella_indexer \
-TOKEN_CONTRACT_ID=CDKZNATNSTL7WB4O6YFF3OUMPOPLLI47VGABBICKI6YRDJ35GKZH5ABM \
-SOROBAN_RPC_URL=https://soroban-testnet.stellar.org \
-ZKELLA_NETWORK=testnet \
-INDEXER_START_LEDGER=5075040 \
-INDEXER_HTTP_PORT=8792 \
-node --experimental-strip-types indexer/src/main.ts
 ```
 
 **4.2 Indexer correctly resumes from its last synced ledger cursor after a simulated restart,
