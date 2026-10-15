@@ -17,6 +17,6 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 zkella-verifier = { path = "../verifier" }
 zkella-token = { path = "../token", features = ["testutils"] }
 ark-bn254 = "0.5"
-ark-ec = "0.5"
+ark-ec = "0.6"
 ark-ff = "0.5"
 ark-std = "0.5"
