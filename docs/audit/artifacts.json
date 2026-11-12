@@ -16,9 +16,9 @@
         "status": "present, appears valid (correct magnitude for a real ptau file)"
       },
       ".ptau/pot12_final.ptau": {
-        "sha256": "<not applicable — see finding below>",
-        "size_bytes": 263,
-        "status": "CORRUPTED: this file is not a ptau file at all. Its content is an S3 'AccessDenied' XML error response, saved to disk as if it were the real download. A fresh attempt to build `shield` or `swap` from scratch via circuits/build.sh would select this file first (both circuits' constraint counts fall under the 2^12 = 4096 threshold build.sh checks first) and fail. This does NOT affect the already-built, already-committed shield.zkey/swap_fairness.zkey artifacts below — those were built successfully at the commits cited, before this file was corrupted. git history confirms swap_fairness.zkey was legitimately rebuilt at commit 0338543a9f80a635fc29033dda550476797ea22c (2026-10-13), meaning pot12_final.ptau was still a real, valid file as of that date; the exact point between 2026-10-13 and this review (2026-11-13) that it became this error page was not established. Action required before any future rebuild: re-download a real pot12 (or point --ptau at the already-valid pot13_final.ptau, which is large enough for both circuits)."
+        "sha256": "a76f12f708a712e6febc616758e0031c6099232e890aab9917b5786dd51aea76",
+        "size_bytes": 4720044,
+        "status": "FIXED (2026-11-13). Was a 263-byte S3 'AccessDenied' XML error response saved to disk instead of a real ptau file (confirmed: re-requesting the exact URL circuits/build.sh's header cites, https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_12.ptau, now returns a live HTTP 403 from the same bucket — the bucket itself no longer serves this file publicly, which is almost certainly how the corrupted copy was produced in the first place and why re-downloading it is not a durable fix). Regenerated locally instead, using the same single-contributor /dev/urandom dev-ceremony pattern already used for pot13/pot16 (`snarkjs powersoftau new bn128 12` -> `contribute` -> `prepare phase2`), then verified with `snarkjs powersoftau verify` (passes) and with two real from-scratch circuit builds through circuits/build.sh (shield, 1264 constraints, and compliance/non_membership, 17533 constraints -- the latter to confirm the loop still falls through correctly past pot12 when a circuit needs a larger file). Both succeeded end to end and their output was discarded (not committed) since they used fresh, different dev-ceremony randomness than the already-audited, already-committed zkeys below. .ptau/ is gitignored (*.ptau in .gitignore), so this file is local-only and was not re-downloaded from, or compared against, any public ceremony transcript -- same dev-only caveat as every other artifact in this file."
       }
     }
   },
@@ -43,7 +43,7 @@
       },
       "real_r1cs_constraints": 1264,
       "phase2_contribution": "ZKELLA dev contribution (circuits/build.sh's fixed --name= value), /dev/urandom entropy, one non-interactive contribution",
-      "ptau_used": "pot12_final.ptau at build time (912 and 1264-constraint circuits fall under build.sh's first 2^12 threshold check) — the file was valid then; it is corrupted now, see phase1_ptau_source above",
+      "ptau_used": "pot12_final.ptau at build time (912 and 1264-constraint circuits fall under build.sh's first 2^12 threshold check) — the originally-used file is gone (superseded by a different corrupted-then-regenerated copy, see phase1_ptau_source above); this committed zkey/VK were not rebuilt and are unaffected either way",
       "cross_checked_against_live_testnet": "yes — this exact verification_key.json's encoding matches the VK registered on-chain for CircuitType::Shield on the live testnet_final verifier contract, confirmed byte-for-byte during this engagement's earlier live-Testnet audit pass (see docs/OPENZEPPELIN_BENCHMARK_COMPARISON.md section 11)"
     },
     "unshield": {
@@ -132,7 +132,7 @@
       },
       "real_r1cs_constraints": 912,
       "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution, rebuilt 2026-10-13 for the min_amount_out binding fix",
-      "ptau_used": "pot12_final.ptau at build time — confirmed still valid as of this circuit's 2026-10-13 rebuild (the D3 min_amount_out fix), since the rebuild succeeded; corrupted by the time of this review, see phase1_ptau_source above",
+      "ptau_used": "pot12_final.ptau at build time — confirmed still valid as of this circuit's 2026-10-13 rebuild (the D3 min_amount_out fix), since the rebuild succeeded; the file was corrupted between then and this review but has since been regenerated (fixed 2026-11-13, see phase1_ptau_source above) — this committed zkey/VK were not rebuilt and are unaffected either way",
       "cross_checked_against_live_testnet": "yes — this circuit's VK is the one live on testnet_final's verifier contract for CircuitType::SwapFairness; a real cross-asset swap lifecycle using it is recorded in docs/TRANCHE2_DELIVERABLES.md section 3"
     },
     "compliance_non_membership": {

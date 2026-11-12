@@ -74,7 +74,13 @@ echo "==> Compiling $CIRCUIT_FILE ..."
 circom "$CIRCUIT_FILE" --r1cs --wasm --sym --O2 --output "$BUILD_DIR"
 
 if [[ -z "$PTAU" ]]; then
+  # snarkjs colorizes its logger output unconditionally (not gated on isatty),
+  # so the ANSI escape codes survive the pipe below and land on the same line
+  # as "# of Constraints" — strip them before extracting digits, or the
+  # digits embedded in the escape sequences themselves (e.g. "\x1b[32;22m")
+  # corrupt the count and break the ptau size selection below.
   CONSTRAINTS="$(npx --yes snarkjs r1cs info "$BUILD_DIR/$ENTRY.r1cs" 2>/dev/null \
+    | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' \
     | grep -i "# of Constraints" | grep -oE '[0-9]+' || echo 0)"
   echo "==> $CONSTRAINTS constraints — picking the smallest available .ptau that covers it ..."
   for size in 12 13 14 15 16 17 18 19 20; do

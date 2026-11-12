@@ -67,8 +67,16 @@
       "tool": "manual provenance check (sha256sum + git log)",
       "severity": "medium (build-reproducibility, not a live vulnerability)",
       "component": ".ptau/pot12_final.ptau",
-      "status": "open",
-      "note": "This local file is a 263-byte S3 AccessDenied XML error page, not a real Powers-of-Tau ceremony file. Confirmed still valid as of the swap circuit's last legitimate rebuild (2026-10-13, commit 0338543a); exact corruption date not established. Does not affect already-built, already-committed shield.zkey/swap_fairness.zkey. Would break a from-scratch rebuild of either circuit today. See docs/audit/artifacts.json."
+      "status": "fixed",
+      "note": "Was a 263-byte S3 AccessDenied XML error page, not a real Powers-of-Tau ceremony file. Confirmed still valid as of the swap circuit's last legitimate rebuild (2026-10-13, commit 0338543a); exact corruption date not established. Did not affect already-built, already-committed shield.zkey/swap_fairness.zkey, but would have broken a from-scratch rebuild. Fixed 2026-11-13: the file's claimed origin URL now returns a live HTTP 403 from the same bucket (confirmed by re-requesting it), so re-downloading was not a durable fix; regenerated locally with the same single-contributor dev-ceremony pattern as pot13/pot16, verified with snarkjs, and confirmed with two real from-scratch circuit rebuilds (shield, compliance). .ptau/ is gitignored, so this fix is local-only, not committed. See docs/audit/artifacts.json."
+    },
+    {
+      "id": "TOOL-002",
+      "tool": "manual (found while verifying the ARTIFACT-001 fix)",
+      "severity": "medium (silently corrupts an automated build step)",
+      "component": "circuits/build.sh",
+      "status": "fixed",
+      "note": "snarkjs's logger always emits ANSI color codes, even when its stdout is piped (not an isatty check) -- confirmed with `cat -A`. build.sh's automatic ptau-size-selection step parsed the constraint count with `grep -oE '[0-9]+'` directly against that colorized line, pulling stray digits out of the embedded escape sequences (e.g. \\x1b[32;22m contributes '32' and '22') and corrupting the real count, which broke the loop that picks the smallest sufficient .ptau file for every circuit, not just the ones that would pick pot12. Fixed by stripping ANSI escape sequences (sed -E 's/\\x1b\\[[0-9;]*[A-Za-z]//g') before the digit extraction. Confirmed fixed by rebuilding shield (1264 constraints, correctly selected pot12) and compliance/non_membership (17533 constraints, correctly fell through to pot16)."
     },
     {
       "id": "PERF-001",
