@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.test.json
       - name: Unit tests
@@ -71,10 +71,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo install cargo-fuzz --locked
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-22"
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Run fuzz targets
         working-directory: contracts/token
+        # RUSTUP_TOOLCHAIN is required here, not just the rust-toolchain@master
+        # step above: rustup's directory-based override (contracts/rust-toolchain.toml,
+        # pinning the main workspace to stable) wins over both the job's default
+        # toolchain *and* contracts/token/fuzz/rust-toolchain.toml, because this
+        # step's CWD (contracts/token) is a descendant of contracts/, not of
+        # contracts/token/fuzz/ — confirmed by reproducing the exact failure
+        # locally before adding this. The env var is the one override rustup
+        # checks before any directory-based file.
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-09-22
         run: |
           for t in shield_arbitrary transfer_arbitrary verifier_arbitrary swap_arbitrary governance_arbitrary compliance_arbitrary viewing_keys_arbitrary token_admin_arbitrary verifier_admin_arbitrary; do
             cargo fuzz run "$t" -- -max_total_time=60 -max_len=1024

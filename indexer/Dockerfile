@@ -11,7 +11,11 @@ WORKDIR /app
 # indexer/README.md), so the whole workspace's manifest is what npm ci needs.
 COPY package.json package-lock.json ./
 COPY sdk/package.json sdk/package.json
-RUN npm ci --omit=dev --omit=optional || npm install --omit=dev --omit=optional
+# No `|| npm install` fallback: that silently accepted a non-lockfile-exact
+# install (and a possibly-rewritten lockfile) on any npm ci failure, which
+# defeats the reason to use npm ci here at all. A failing npm ci should fail
+# the build, not fall back quietly.
+RUN npm ci --omit=dev --omit=optional
 
 COPY indexer ./indexer
 
