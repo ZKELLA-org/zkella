@@ -112,11 +112,11 @@
     },
     {
       "id": "TOOL-001",
-      "tool": "cargo-scout-audit",
-      "severity": "n/a",
+      "tool": "cargo-scout-audit 0.3.17",
+      "severity": "n/a (tooling blocked, not a code finding)",
       "component": "contracts/ workspace",
       "status": "open",
-      "note": "Attempted 2026-11-13, did not finish compiling its custom lint driver within this session's time budget. Open item for a follow-up pass with a warm toolchain cache."
+      "note": "Blocked on a confirmed upstream bug, root-caused 2026-11-13: cargo-scout-audit 0.3.17 pins dylint_driver 4.1.2, whose clippy_repository() helper hardcodes cloning https://github.com/rust-lang/rust-clippy and checking out a branch literally named 'master'. Confirmed via the GitHub API that the repo's default_branch is now 'main' -- the branch was renamed upstream after dylint 4.1.2 was cut, so this reproduces for anyone on this exact version pin, not just this environment. Two earlier, unrelated install/run failures (missing pkg-config for openssl-sys; OPENSSL_DIR not inherited by the tool's own sub-build subprocess) were each root-caused and worked around without a system package install. The one-line fix (\"master\" -> \"main\") lives in a vendored dependency under the global ~/.cargo registry cache, outside this repository; editing it was correctly refused by this session's own safety guardrail as a change to shared local state outside the repo. Needs either an upstream dylint/scout-audit release or someone with local permission to apply that one-line patch and re-run."
     }
   ]
 }
