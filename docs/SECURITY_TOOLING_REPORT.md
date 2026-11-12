@@ -41,8 +41,9 @@ Full JS test suite after the fix: 158/158 passing against PostgreSQL (current to
 ### Rust lints (`cargo clippy --workspace --all-targets --release`)
 
 - Rustc compiler warnings: **0**.
-- Clippy correctness-class lints: **0**.
-- Clippy style-class lints: 31 distinct occurrences across token, swap, and verifier. Categories: too many function arguments (10 occurrences, 8 to 11 arguments per function), index-based loops (9), `clone` that can be `from_ref` (3), `is_multiple_of` suggestion (3), redundant casts, a `RangeInclusive::contains` suggestion, and two other style suggestions. **Accepted for now**: none of these is a correctness finding. Fixing the argument-count lints would change the signatures of proof-verification helpers and their call sites, which is a larger refactor than this review pass covers, so it is deferred.
+- Clippy correctness-class lints / errors: **0**.
+- Clippy style-class lints: 31 distinct occurrences across token, swap, and verifier (original pass). Categories: too many function arguments (10 occurrences, 8 to 11 arguments per function), index-based loops (9), `clone` that can be `from_ref` (3), `is_multiple_of` suggestion (3), redundant casts, a `RangeInclusive::contains` suggestion, and two other style suggestions. **Accepted for now**: none of these is a correctness finding. Fixing the argument-count lints would change the signatures of proof-verification helpers and their call sites, which is a larger refactor than this review pass covers, so it is deferred.
+- **Re-run 2026-11-13, under the newly-pinned `contracts/rust-toolchain.toml` (1.93.0)**: 0 compiler warnings, 0 correctness-class lints — unchanged. 32 total style-warning emissions this time (`zkella-token`: 29, `zkella-swap`: 3; `verifier`/`governance`/`compliance`/`viewing_keys`: 0) — essentially the same population as the original pass (+1, consistent with ordinary code changes since, not a regression). Spot-checked the actual warnings rather than trusting the count alone: all are the same style categories already accepted above (too-many-arguments on test helpers, a `clone`-to-`from_ref` suggestion, a literal-bool `assert_eq!`, a needless-borrow). No new correctness-relevant lint appeared.
 
 ### Circuit static analysis (`circomspect`)
 

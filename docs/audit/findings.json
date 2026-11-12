@@ -1,0 +1,106 @@
+{
+  "_comment": "Machine-readable findings register for the security-tooling pass recorded in docs/SECURITY_TOOLING_REPORT.md. Every entry below reflects a real tool run against commit history ending 2026-11-13, not an estimate. 'disposition' follows docs/EXTERNAL_AUDIT_PREPARATION.md's own register shape (identifier, severity, affected component, status, owner note).",
+  "generated": "2026-11-13",
+  "findings": [
+    {
+      "id": "DEP-RUST-001",
+      "tool": "cargo audit",
+      "severity": "unmaintained, no known vulnerability",
+      "component": "paste 1.0.15 (transitive: ark-ff -> soroban-env-host -> soroban-sdk)",
+      "advisory": "RUSTSEC-2024-0436",
+      "status": "accepted_risk",
+      "note": "Cannot be removed without a Soroban SDK major upgrade. Revisit then."
+    },
+    {
+      "id": "DEP-RUST-002",
+      "tool": "cargo audit",
+      "severity": "advisory, timing side-channel",
+      "component": "crypto-bigint 0.5.5 (transitive: elliptic-curve -> ecdsa -> k256 -> soroban-env-host -> soroban-sdk)",
+      "advisory": "RUSTSEC-2026-0387",
+      "status": "accepted_risk",
+      "note": "New finding, 2026-11-13. Not reachable from ZKELLA's own BN254/Poseidon code paths (confirmed via cargo tree -i crypto-bigint) -- this is Soroban's own k256/ECDSA host dependency, used for something outside ZKELLA's own cryptographic code. Needs a Soroban SDK major upgrade (27.x/28.x pinned here, 30.0.0-rc.1 latest) to remove; too large a change to apply in this pass."
+    },
+    {
+      "id": "DEP-JS-001",
+      "tool": "npm audit --omit=dev",
+      "severity": "high",
+      "component": "follow-redirects 1.16.0-1.16.1",
+      "advisory": "GHSA-q3jh-wrc6-jgq8, GHSA-8r9p-f939-6h3c, GHSA-mrwp-f3q8-3g9p",
+      "status": "fixed",
+      "fix_commit": "pending (this session, package-lock.json only, non-breaking 1.16.0 -> 1.16.3)",
+      "note": "Reappeared since the previous npm-audit pass (commit d38087e). Fixed with `npm audit fix --omit=dev`. Re-verified clean; full JS suite re-run passing."
+    },
+    {
+      "id": "DEP-JS-002",
+      "tool": "npm audit --omit=dev",
+      "severity": "low (x15)",
+      "component": "ethers v5 chain (ethers, @ethersproject/*, elliptic) via circomlibjs@0.1.7",
+      "status": "accepted_risk",
+      "note": "Only fix npm offers is a breaking downgrade to circomlibjs@0.0.8. The ethers-importing modules (mimc7, mimcsponge, evmasm, *_gencontract) are not referenced anywhere in this repository -- ZKELLA uses circomlibjs only for Poseidon and babyjubjub. Revisit when circomlibjs is upgraded."
+    },
+    {
+      "id": "CIRCUIT-001",
+      "tool": "circomspect 0.9.0",
+      "severity": "informational (false positive)",
+      "component": "unshield.circom:96-97 (recipient_hash_check)",
+      "status": "no_change_needed",
+      "note": "Circuit itself never constrains recipient_hash (confirmed, and the circuit's own comment says so). Checked contract side: contracts/token/src/lib.rs:989-996 independently recomputes and checks it from plain (non-proof) call arguments, with dedicated regression tests. Binding is correctly enforced one layer up, not a gap."
+    },
+    {
+      "id": "CIRCUIT-002",
+      "tool": "circomspect 0.9.0",
+      "severity": "informational (false positive)",
+      "component": "compliance/non_membership.circom:93 (address into LessThan(248))",
+      "status": "no_change_needed",
+      "note": "address is not a raw input -- it is reconstructed from 248 individually Num2Bits_strict()-constrained bits (lines 43-53), so it is bounded to [0, 2^248) by construction. Circomspect's local analysis does not trace the bit-reconstruction loop far enough to see this."
+    },
+    {
+      "id": "CIRCUIT-003",
+      "tool": "circomspect 0.9.0",
+      "severity": "informational (false positive, bulk category)",
+      "component": "all six circuits, 47 of 49 total flagged lines (loop-counter and range-checked-difference patterns)",
+      "status": "no_change_needed",
+      "note": "See docs/SECURITY_TOOLING_REPORT.md's Circuit static analysis section for the full per-pattern verification. Each flagged operand was individually traced to either a compile-time loop variable (not a witness signal) or an independent Range64()/Num2Bits() check elsewhere in the same file."
+    },
+    {
+      "id": "ARTIFACT-001",
+      "tool": "manual provenance check (sha256sum + git log)",
+      "severity": "medium (build-reproducibility, not a live vulnerability)",
+      "component": ".ptau/pot12_final.ptau",
+      "status": "open",
+      "note": "This local file is a 263-byte S3 AccessDenied XML error page, not a real Powers-of-Tau ceremony file. Confirmed still valid as of the swap circuit's last legitimate rebuild (2026-10-13, commit 0338543a); exact corruption date not established. Does not affect already-built, already-committed shield.zkey/swap_fairness.zkey. Would break a from-scratch rebuild of either circuit today. See docs/audit/artifacts.json."
+    },
+    {
+      "id": "PERF-001",
+      "tool": "live-Testnet measurement + three independent review passes",
+      "severity": "medium, fixed",
+      "component": "contracts/token/src/lib.rs shield_batch",
+      "status": "fixed",
+      "note": "Real pre-fix cost 358,803,366 instructions (89.7% of the 400M per-tx cap, 61.9% of the 580M per-ledger cap). Fixed via a verify_batch-based refactor, independently reviewed before implementation. Real post-fix cost 199,682,653 (49.9%/34.4%), confirmed live. See docs/audit/THREAT_MODEL.md's DoS.1 and the commit implementing this fix."
+    },
+    {
+      "id": "GOV-001",
+      "tool": "manual source review (two independent passes)",
+      "severity": "medium",
+      "component": "contracts/compliance/src/lib.rs:76-80 set_sanctions_root",
+      "status": "open",
+      "note": "Gated only by an immediate admin.require_auth(), not routed through governance's timelock/guardian-cancel path the way every other security-critical parameter in this stack is. Independently found by two separate review passes without either being told about the other. See docs/audit/THREAT_MODEL.md's Elevation.1. Top open item for mainnet readiness."
+    },
+    {
+      "id": "LINT-001",
+      "tool": "cargo clippy --workspace --all-targets --release",
+      "severity": "style, no correctness findings",
+      "component": "token, swap, verifier",
+      "status": "accepted_risk",
+      "note": "31 distinct style-class occurrences from the previous pass (too-many-arguments, index-based loops, clone-vs-from_ref, etc.) -- none correctness-class. Re-run 2026-11-13 under the newly-pinned toolchain completed clean: 0 compiler warnings, 0 correctness-class lints, 32 total style-warning emissions (essentially unchanged population, see docs/SECURITY_TOOLING_REPORT.md)."
+    },
+    {
+      "id": "TOOL-001",
+      "tool": "cargo-scout-audit",
+      "severity": "n/a",
+      "component": "contracts/ workspace",
+      "status": "open",
+      "note": "Attempted 2026-11-13, did not finish compiling its custom lint driver within this session's time budget. Open item for a follow-up pass with a warm toolchain cache."
+    }
+  ]
+}
