@@ -1,0 +1,166 @@
+{
+  "_comment": "Source and artifact provenance for every committed circuit trusted-setup artifact. Hashes are real sha256sum output taken 2026-11-13, not generated figures. 'last_touched_commit' is git log -1 --format=%H -- <path> against that exact file, not the circuit source or this manifest's own commit.",
+  "trusted_setup_disclosure": "circuits/build.sh states directly: 'THIS IS A DEV CEREMONY: single local contributor, /dev/urandom entropy. Every artifact this produces is suitable for testnet/development use only.' Every zkey/verification_key.json below was produced by that script. A production ceremony with multiple independent contributors is required before any of these artifacts are trusted with real value — see docs/EXTERNAL_AUDIT_PREPARATION.md and the trusted-setup finding in docs/ZKELLA_VS_OPENZEPPELIN_TECHNICAL_COMPARISON.md Section C.5.",
+  "phase1_ptau_source": {
+    "claimed_origin": "Hermez/Polygon public Powers-of-Tau ceremony, per circuits/build.sh's own header comment: https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_<N>.ptau",
+    "verification_status": "NOT independently re-verified in this pass against Hermez's own published ptau hashes. The local files' sha256 is recorded below for future cross-checking; treat the 'claimed_origin' as what the build script asserts, not as independently confirmed provenance.",
+    "local_files": {
+      ".ptau/pot13_final.ptau": {
+        "sha256": "52040308f52884c5f28ffcc1de351c1963d111c2ab81ab162b2c6c7a7e011f80",
+        "size_bytes": 9438636,
+        "status": "present, appears valid (correct magnitude for a real ptau file)"
+      },
+      ".ptau/pot16_final.ptau": {
+        "sha256": "cde05a31b7653652fc72581182ea07e58685ab1f19617c57958547764ed19809",
+        "size_bytes": 75498924,
+        "status": "present, appears valid (correct magnitude for a real ptau file)"
+      },
+      ".ptau/pot12_final.ptau": {
+        "sha256": "<not applicable — see finding below>",
+        "size_bytes": 263,
+        "status": "CORRUPTED: this file is not a ptau file at all. Its content is an S3 'AccessDenied' XML error response, saved to disk as if it were the real download. A fresh attempt to build `shield` or `swap` from scratch via circuits/build.sh would select this file first (both circuits' constraint counts fall under the 2^12 = 4096 threshold build.sh checks first) and fail. This does NOT affect the already-built, already-committed shield.zkey/swap_fairness.zkey artifacts below — those were built successfully at the commits cited, before this file was corrupted. git history confirms swap_fairness.zkey was legitimately rebuilt at commit 0338543a9f80a635fc29033dda550476797ea22c (2026-10-13), meaning pot12_final.ptau was still a real, valid file as of that date; the exact point between 2026-10-13 and this review (2026-11-13) that it became this error page was not established. Action required before any future rebuild: re-download a real pot12 (or point --ptau at the already-valid pot13_final.ptau, which is large enough for both circuits)."
+      }
+    }
+  },
+  "circuits": {
+    "shield": {
+      "committed_artifacts": {
+        "circuits/shield/build/shield.zkey": {
+          "sha256": "ab62fcdc1002db9149dcc0377d7632def6028004258385867788e1259cdac3cd",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/shield/build/shield_js/shield.wasm": {
+          "sha256": "971a354c41c21c84021065df9eb951943601615fc727674894706a07d7cc23cf",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/shield/build/verification_key.json": {
+          "sha256": "cfae8c4525cf8c155ed5b06b01262716baf0ff7110d021a7b79e26343532b94f",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        }
+      },
+      "real_r1cs_constraints": 1264,
+      "phase2_contribution": "ZKELLA dev contribution (circuits/build.sh's fixed --name= value), /dev/urandom entropy, one non-interactive contribution",
+      "ptau_used": "pot12_final.ptau at build time (912 and 1264-constraint circuits fall under build.sh's first 2^12 threshold check) — the file was valid then; it is corrupted now, see phase1_ptau_source above",
+      "cross_checked_against_live_testnet": "yes — this exact verification_key.json's encoding matches the VK registered on-chain for CircuitType::Shield on the live testnet_final verifier contract, confirmed byte-for-byte during this engagement's earlier live-Testnet audit pass (see docs/OPENZEPPELIN_BENCHMARK_COMPARISON.md section 11)"
+    },
+    "unshield": {
+      "committed_artifacts": {
+        "circuits/unshield/build/unshield.zkey": {
+          "sha256": "263b930836a156c8b15bfe6d10e1eaf17d27f573c5ca8770623c55f262453a4f",
+          "last_touched_commit": "ceaff2177d7dd55f35fd57dc59d7298e0208dafe",
+          "last_touched_date": "2026-09-29"
+        },
+        "circuits/unshield/build/unshield_js/unshield.wasm": {
+          "sha256": "ed9402f53493b208ed70b89cede4f99a3831320e3aba7339528149de13362a17",
+          "last_touched_commit": "ceaff2177d7dd55f35fd57dc59d7298e0208dafe",
+          "last_touched_date": "2026-09-29"
+        },
+        "circuits/unshield/build/verification_key.json": {
+          "sha256": "217c26ad4704c908e9ea1fb84fc98f482d1414e442c9a4b2e6e17110c56fc6ee",
+          "last_touched_commit": "ceaff2177d7dd55f35fd57dc59d7298e0208dafe",
+          "last_touched_date": "2026-09-29"
+        }
+      },
+      "real_r1cs_constraints": 10605,
+      "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution",
+      "ptau_used": "pot16_final.ptau (10605 constraints needs 2^14 at minimum; no pot14/pot15 file present locally, so build.sh's loop falls through to the next available file, pot16) — confirmed still valid and present"
+    },
+    "transfer_2in2out": {
+      "committed_artifacts": {
+        "circuits/transfer_2in2out/build/transfer.zkey": {
+          "sha256": "a9443ce7f5bebc9797c2a82076da1653d7ba9cd8df8389219d176081c5a540b3",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/transfer_2in2out/build/transfer_js/transfer.wasm": {
+          "sha256": "a6f6944befc515090312edb9de2787ea6bdd95173802c16011ee0b9492ef3d7b",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/transfer_2in2out/build/verification_key.json": {
+          "sha256": "bdba49c0c1d8e47dcd988b91c414b94ede3b4f8e077270a92b191dbdd1c5ed92",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        }
+      },
+      "real_r1cs_constraints": 21391,
+      "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution",
+      "ptau_used": "pot16_final.ptau (21391 constraints needs 2^15 at minimum; no pot15 present, falls through to pot16) — confirmed still valid and present"
+    },
+    "transfer_4in4out": {
+      "committed_artifacts": {
+        "circuits/transfer_4in4out/build/transfer.zkey": {
+          "sha256": "23d97061754b49ac59aaae59bddf2d1327eb3d95ef10a37ae4b70ee08c11ce06",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/transfer_4in4out/build/transfer_js/transfer.wasm": {
+          "sha256": "ab25772ee7e5fd6e9c6f97f173f1f1b8b43ada4c7287b1947cde757787aa8613",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/transfer_4in4out/build/verification_key.json": {
+          "sha256": "e7389a87c12e4600b19ffe10cd02af1656e34460097fd55d47bcbe91c92b36d2",
+          "last_touched_commit": "bd731d46443620abb2c2bfba529c7262308558b7",
+          "last_touched_date": "2026-09-24"
+        }
+      },
+      "real_r1cs_constraints": 42489,
+      "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution",
+      "ptau_used": "pot16_final.ptau (42489 constraints needs exactly 2^16) — confirmed still valid and present"
+    },
+    "swap_fairness": {
+      "committed_artifacts": {
+        "circuits/swap/build/swap_fairness.zkey": {
+          "sha256": "c8dfa1f9baa689d2a3deab634cf24c45bc2a57373a6b89c5836cd4c14b2923db",
+          "last_touched_commit": "0338543a9f80a635fc29033dda550476797ea22c",
+          "last_touched_date": "2026-10-13"
+        },
+        "circuits/swap/build/swap_fairness_js/swap_fairness.wasm": {
+          "sha256": "b3c8fd27f63875de73359026bee2633b644fcc9982381a0eb8c7bf6dcac9b9f8",
+          "last_touched_commit": "0338543a9f80a635fc29033dda550476797ea22c",
+          "last_touched_date": "2026-10-13"
+        },
+        "circuits/swap/build/verification_key.json": {
+          "sha256": "58c2c624639e13806afcc8c41105dfca3c727d21bca35eae87ac839b7dabcbbc",
+          "last_touched_commit": "0338543a9f80a635fc29033dda550476797ea22c",
+          "last_touched_date": "2026-10-13"
+        }
+      },
+      "real_r1cs_constraints": 912,
+      "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution, rebuilt 2026-10-13 for the min_amount_out binding fix",
+      "ptau_used": "pot12_final.ptau at build time — confirmed still valid as of this circuit's 2026-10-13 rebuild (the D3 min_amount_out fix), since the rebuild succeeded; corrupted by the time of this review, see phase1_ptau_source above",
+      "cross_checked_against_live_testnet": "yes — this circuit's VK is the one live on testnet_final's verifier contract for CircuitType::SwapFairness; a real cross-asset swap lifecycle using it is recorded in docs/TRANCHE2_DELIVERABLES.md section 3"
+    },
+    "compliance_non_membership": {
+      "committed_artifacts": {
+        "circuits/compliance/build/non_membership.zkey": {
+          "sha256": "7624a0e7b7295739bea89846b9e9fc0ef88af1e4568046abac6ecb1bba14a76b",
+          "last_touched_commit": "1eb2df129ec13dbd9f86bd80d538b2bd4becdb8d",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/compliance/build/non_membership_js/non_membership.wasm": {
+          "sha256": "ea7a66f1a4635fd62d664fdea8ea9084fac47da24b3d09a70a96b49e4ddd6d15",
+          "last_touched_commit": "1eb2df129ec13dbd9f86bd80d538b2bd4becdb8d",
+          "last_touched_date": "2026-09-24"
+        },
+        "circuits/compliance/build/verification_key.json": {
+          "sha256": "3d691ab816764cb80a2a64396cbda1e352cd2360d1cff461de11acbbf11eb66b",
+          "last_touched_commit": "1eb2df129ec13dbd9f86bd80d538b2bd4becdb8d",
+          "last_touched_date": "2026-09-24"
+        }
+      },
+      "real_r1cs_constraints": 17533,
+      "phase2_contribution": "ZKELLA dev contribution, /dev/urandom entropy, one non-interactive contribution",
+      "ptau_used": "pot16_final.ptau (17533 constraints needs 2^15 at minimum; no pot15 present, falls through to pot16) — confirmed still valid and present"
+    }
+  },
+  "toolchain_versions_used_to_produce_this_manifest": {
+    "circom": "2.2.2",
+    "snarkjs": "0.7.6",
+    "note": "These are the versions installed in this review's environment, used only to re-derive constraint counts (snarkjs r1cs info) for cross-checking — not necessarily the exact versions used when each artifact was originally built. No tracked circom/snarkjs version pin exists in this repository today; see HYG01 (contracts/rust-toolchain.toml) for the equivalent fix already applied on the Rust side. A circom/snarkjs version pin for circuit rebuilds is a reasonable follow-up, not done in this pass."
+  }
+}
