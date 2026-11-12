@@ -260,6 +260,17 @@ fn msm_aggregation_is_cheaper_than_the_per_input_loop_on_transfer4() {
 /// How large a `shield_batch` the network can execute, on the compiled WASM:
 /// cost for 1 to 8 items, with panics from the network's per-transaction limits
 /// (instructions, ledger entries, write bytes) reported as "over limit".
+///
+/// This only checks against `BUDGET` (the per-transaction instruction cap).
+/// It does not check the separate, lower per-ledger aggregate cap
+/// (Soroban's `ConfigSettingContractComputeV0.ledger_max_instructions`, 580M
+/// on Testnet as of this writing, versus the 400M per-tx `tx_max_instructions`
+/// this test's `BUDGET` tracks) or the ledger's parallel-execution-lane count
+/// (`ConfigSettingContractParallelComputeV0.ledger_max_dependent_tx_clusters`).
+/// A single transaction consuming a large fraction of the per-ledger budget
+/// is a throughput/fairness concern distinct from "does it fit in one tx" —
+/// see `docs/OPENZEPPELIN_BENCHMARK_COMPARISON.md`/the senior-audit report's
+/// shield_batch section for the real-Testnet numbers against both caps.
 #[test]
 fn shield_batch_size_sweep_on_real_wasm() {
     let mut rows = StdVec::new();

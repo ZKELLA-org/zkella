@@ -17,7 +17,7 @@ use soroban_sdk::{
     token, Address, Bytes, BytesN, Env, Vec,
     xdr::ToXdr,
 };
-use zkella_verifier_interface::{CircuitType, VerifierClient};
+use zkella_verifier_interface::{BatchProofItem, CircuitType, VerifierClient};
 
 use types::{
     NoteCommitmentEvent, NullifierEvent, RelayerFeeEvent, ShieldEvent,
@@ -87,13 +87,25 @@ fn compute_commitment(
     hasher.hash(&h3, &owner_pk_bytes)
 }
 
-/// Largest `shield_batch` accepted. Each item costs about 35M instructions on the
-/// compiled WASM (its own Groth16 verification and commitment check; the tree
-/// hashing is shared across the batch), so 8 items use about 314M of the 400M
-/// limit (79%). Measured by `shield_batch_size_sweep_on_real_wasm`, which also
-/// fails the build if this constant is raised past what fits. Rejecting larger
-/// batches up front gives a clean error instead of a failed, fee-burning
-/// transaction.
+/// Largest `shield_batch` accepted. Each item's Groth16 proof is verified via
+/// one combined `verify_batch` pairing check across the whole batch (K+3
+/// pairings instead of 4K — see `VerifierContract::verify_batch`'s doc
+/// comment), falling back to independent per-item `verify()` calls only if
+/// that combined check fails (e.g. a batch straddling a VK rotation, within
+/// `verify`'s retention window but not covered by `verify_batch`'s
+/// single-current-VK check).
+///
+/// Real, live-Testnet-measured cost for a batch of 8 (the common, no-rotation
+/// case) is ~200M instructions — about 50% of the 400M per-transaction cap and
+/// ~34% of the 580M per-ledger aggregate cap, both confirmed directly against
+/// Soroban's own `ConfigSettingContractComputeV0`/`ConfigSettingContractParallelComputeV0`
+/// ledger entries, not assumed. (A pre-refactor version of `shield_batch`,
+/// verifying every item independently, measured 358.8M instructions at the
+/// same batch size — 89.7% of the per-tx cap and 61.9% of the per-ledger one;
+/// the batched check roughly halves both.) Measured by
+/// `shield_batch_size_sweep_on_real_wasm`, which also fails the build if this
+/// constant is raised past what fits. Rejecting larger batches up front gives
+/// a clean error instead of a failed, fee-burning transaction.
 const MAX_SHIELD_BATCH: u32 = 8;
 const _: () = assert!(MAX_SHIELD_BATCH as usize <= merkle::MAX_INSERT_BATCH);
 
@@ -477,9 +489,15 @@ impl ShieldedToken {
             .ok_or(Error::NotInitialized)?;
 
         let mut hasher = poseidon::Poseidon2Hasher::new(&env);
-        let mut leaf_indices = Vec::new(&env);
         let mut total_amount: i128 = 0;
 
+        // ── Pass 1: validate every item and collect its proof for one
+        //    combined verification call below. No persistent-storage write
+        //    happens in this pass — only the reads needed to reject a
+        //    cross-call replay. (Soroban reverts every storage mutation on
+        //    an `Err` return regardless, so this is defense in depth, not
+        //    the only thing preventing a partial write.)
+        let mut batch_proof_items = Vec::new(&env);
         for item in items.iter() {
             // ── 2. Validate amount ───────────────────────────────────────────
             if item.amount <= 0 || item.amount < min_amount {
@@ -506,13 +524,22 @@ impl ShieldedToken {
                 return Err(Error::CommitmentMismatch);
             }
 
-            // ── 6. Duplicate commitment check ────────────────────────────────
+            // ── 6. Duplicate commitment check: cross-call (persistent
+            //      storage, reflects every *earlier* transaction) and
+            //      within-this-batch (`batch_cms` so far, since persistent
+            //      storage won't see this call's own not-yet-written items) ──
             let seen_key = StorageKey::CommitmentSeen(item.commitment.clone());
             if env.storage().persistent().has(&seen_key) {
                 return Err(Error::DuplicateCommitment);
             }
+            for i in 0..batch_len {
+                if batch_cms[i as usize] == item.commitment {
+                    return Err(Error::DuplicateCommitment);
+                }
+            }
 
-            // ── 7. Groth16 proof verification ────────────────────────────────
+            // ── 7. Collect this item's public inputs + proof; verified in
+            //      one combined call after this loop, not per item ─────────
             let mut value_bytes = [0u8; 32];
             value_bytes[..16].copy_from_slice(&(item.amount as u128).to_le_bytes());
             let asset_bytes = address_to_field_bytes(&env, &asset);
@@ -525,22 +552,52 @@ impl ShieldedToken {
                     BytesN::from_array(&env, &asset_bytes),
                 ],
             );
-            let proof_ok = VerifierClient::new(&env, &verifier).verify(
-                &CircuitType::Shield,
-                &public_inputs,
-                &item.shield_proof,
-            );
-            if !proof_ok {
-                return Err(Error::InvalidProof);
-            }
+            batch_proof_items.push_back(BatchProofItem { public_inputs, proof: item.shield_proof.clone() });
 
-            // ── 8. Effects: record commitment; the tree insert happens once, below ──
+            batch_cms[batch_len as usize] = item.commitment.clone();
+            batch_len += 1;
+            total_amount = total_amount.checked_add(item.amount).ok_or(Error::AmountMismatch)?;
+        }
+
+        // ── 8. Groth16 proof verification — one combined pairing check for
+        //      the whole batch when every item is against the currently-
+        //      registered VK (the common case, and the entire reason for
+        //      this refactor: K independent `verify()` calls cost roughly
+        //      K times a standalone verification; one `verify_batch` call
+        //      costs roughly K+3 pairings instead of 4K — see
+        //      `zkella_verifier::VerifierContract::verify_batch`'s doc
+        //      comment). `verify_batch` does *not* extend `verify`'s
+        //      previous-VK retention-window fallback (by design — see
+        //      verifier-interface's doc comment on it), so a batch
+        //      straddling a VK rotation would otherwise fail outright even
+        //      though every proof in it is genuinely valid. Falling back to
+        //      independent per-item `verify()` calls only when the combined
+        //      check fails preserves that existing behavior without paying
+        //      the per-item cost in the common (no rotation in flight) case.
+        let verifier_client = VerifierClient::new(&env, &verifier);
+        let batch_ok = verifier_client.verify_batch(&CircuitType::Shield, &batch_proof_items);
+        if !batch_ok {
+            for (i, item) in items.iter().enumerate() {
+                let proof_ok = verifier_client.verify(
+                    &CircuitType::Shield,
+                    &batch_proof_items.get(i as u32).unwrap().public_inputs,
+                    &item.shield_proof,
+                );
+                if !proof_ok {
+                    return Err(Error::InvalidProof);
+                }
+            }
+        }
+
+        // ── 9. Effects: record every commitment, emit events, then insert
+        //      the whole batch into the tree at once ─────────────────────
+        let mut leaf_indices = Vec::new(&env);
+        for (i, item) in items.iter().enumerate() {
+            let seen_key = StorageKey::CommitmentSeen(item.commitment.clone());
             env.storage().persistent().set(&seen_key, &true);
             env.storage().persistent().extend_ttl(&seen_key, 17_280 * 30, 17_280 * 365);
 
-            let leaf_index = first_leaf + batch_len;
-            batch_cms[batch_len as usize] = item.commitment.clone();
-            batch_len += 1;
+            let leaf_index = first_leaf + i as u32;
             leaf_indices.push_back(leaf_index);
 
             env.events().publish(
@@ -559,12 +616,10 @@ impl ShieldedToken {
                     encrypted_note: item.encrypted_note.clone(),
                 },
             );
-
-            total_amount = total_amount.checked_add(item.amount).ok_or(Error::AmountMismatch)?;
         }
 
-        // All items validated: insert every commitment as one batch (same stored
-        // tree as inserting them one by one, at a fraction of the hashing).
+        // Insert every commitment as one batch (same stored tree as
+        // inserting them one by one, at a fraction of the hashing).
         merkle::insert_many(&env, &batch_cms[..batch_len as usize], &mut hasher);
 
         let prev_supply: i128 = env

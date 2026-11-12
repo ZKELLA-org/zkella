@@ -9,7 +9,7 @@ How the instruction cost of ZKELLA's transactions was reduced, why each change w
 | `transfer4` (4 in, 4 out) | 397.9M | 80.8M | -80% | 20% |
 | `transfer` (2 in, 2 out) | 233.8M | 74.9M | -68% | 19% |
 | `shield` | 118.6M | 76.4M | -36% | 19% |
-| `shield_batch` | 3 items: 347.2M (the maximum) | 3 items: 144.2M; **8 items: 314.4M (the new maximum)** | -58% for 3 items | 79% at 8 items |
+| `shield_batch` | 3 items: 347.2M (the maximum) | 3 items: 144.2M (local); **8 items: 199.7M real live-Testnet, post-`verify_batch`-refactor (2026-11-12) — was 314.4M local / 358.8M live before** | -58% for 3 items | 50% at 8 items (live, post-refactor; was 90% live pre-refactor) |
 | `unshield` | 34.1M | 32.8M | -4% | 8% |
 | verifier `verify` (4 inputs) | 29.2M | 28.0M | -4% | 7% |
 | verifier `verify_batch` (4 proofs) | 63.0M | 63.1M | unchanged | 16% |
@@ -110,7 +110,9 @@ Callers: `transfer` and `transfer4` insert all their output commitments in one c
 
 ## 4. Two changes that changed the limits, not just the costs
 
-- **`MAX_SHIELD_BATCH` rose from 3 to 8.** Before, three items already cost 347M. After, each extra item costs about 34M (its own proof and commitment check; the tree hashing is shared), so 8 items cost 314.4M (79%). The cap is not a guess: `shield_batch_size_sweep_on_real_wasm` runs every size from 1 to 8 on the compiled WASM (1 item 76.4M, 2: 109.7M, 3: 144.2M, 4: 177.5M, 5: 213.3M, 6: 246.6M, 7: 281.1M, 8: 314.4M) and **fails the build if the cap is raised past 85% of the limit**. The batch also has to fit the network's other per-transaction limits (ledger entries, written entries, write bytes): the live 8-item transaction used 64 entries, 58 written and 9,256 write bytes, well inside them.
+- **`MAX_SHIELD_BATCH` rose from 3 to 8.** Before, three items already cost 347M. After, each extra item cost about 34M on this local estimate (its own proof and commitment check; the tree hashing is shared), so 8 items cost 314.4M (79%) locally. The cap is not a guess: `shield_batch_size_sweep_on_real_wasm` runs every size from 1 to 8 on the compiled WASM (1 item 76.4M, 2: 109.7M, 3: 144.2M, 4: 177.5M, 5: 213.3M, 6: 246.6M, 7: 281.1M, 8: 314.4M) and **fails the build if the cap is raised past 85% of the limit**. The batch also has to fit the network's other per-transaction limits (ledger entries, written entries, write bytes): the live 8-item transaction used 64 entries, 58 written and 9,256 write bytes, well inside them.
+
+  **Update (2026-11-12).** The 314.4M local figure above turned out to understate real cost: a live-Testnet re-measurement found 8 items actually cost 358.8M instructions (89.7% of the 400M per-transaction limit) — and, found independently in the same pass, 61.9% of Soroban's separate, lower 580M per-ledger aggregate instruction budget, a dimension this section's analysis never considered. `shield_batch` was refactored to verify the whole batch with one combined `verify_batch` pairing check (K+3 pairings instead of 4K) instead of K independent `verify()` calls, falling back to per-item verification only if the combined check fails. Real, live-Testnet-confirmed cost after the refactor: k=1 83.9M, k=4 132.5M, k=8 **199.7M** — roughly half the pre-refactor live figure, now 49.9% of the per-tx limit and 34.4% of the per-ledger limit. `MAX_SHIELD_BATCH` stays at 8; the refactor made the existing cap safe rather than requiring it to shrink.
 - **The root history counts calls, not leaves** (see step 2).
 
 ## 5. What was measured and rejected

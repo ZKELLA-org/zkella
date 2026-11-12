@@ -44,9 +44,20 @@ pub enum CircuitType {
     /// min_amount_out) pair to the swap's original `intent_commitment`
     /// without revealing amount_in/intent_nonce. Covers only
     /// `contracts/swap::reveal_and_claim`'s fairness check; `commit_swap`'s
-    /// nullifier-ownership proof has no circuit yet (see that contract's doc
-    /// comment).
+    /// note-ownership proof reuses `contracts/token`'s own, already-audited
+    /// `unshield.circom` verification via a cross-contract call — see that
+    /// contract's doc comment for why no separate circuit is needed there.
     SwapFairness = 5,
+}
+
+/// One proof within a `verify_batch` call: the same `(public_inputs, proof)`
+/// pair `verify` takes, minus `circuit`, which `verify_batch` fixes once for
+/// the whole batch. Mirrors `zkella_verifier::BatchProofItem` field-for-field.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchProofItem {
+    pub public_inputs: Vec<BytesN<32>>,
+    pub proof:         Bytes,
 }
 
 #[contracterror]
@@ -72,6 +83,14 @@ pub trait Verifier {
     fn revoke_previous_vk(e: Env, circuit: CircuitType) -> Result<(), Error>;
     fn get_verifying_key(e: Env, circuit: CircuitType) -> Result<Bytes, Error>;
     fn verify(e: Env, circuit: CircuitType, public_inputs: Vec<BytesN<32>>, proof: Bytes) -> Result<bool, Error>;
+    /// Verifies every item against `circuit`'s **currently-registered** VK
+    /// only, with a single combined pairing check (see
+    /// `zkella_verifier::VerifierContract::verify_batch`'s doc comment for
+    /// the batching math). Unlike `verify`, this does **not** fall back to a
+    /// just-rotated previous VK within its retention window — a caller
+    /// batching proofs that might straddle a VK rotation needs to handle
+    /// that itself (e.g. retry failed items individually via `verify`).
+    fn verify_batch(e: Env, circuit: CircuitType, items: Vec<BatchProofItem>) -> Result<bool, Error>;
     fn pause(e: Env) -> Result<(), Error>;
     fn unpause(e: Env) -> Result<(), Error>;
 }

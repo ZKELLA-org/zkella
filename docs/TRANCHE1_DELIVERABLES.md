@@ -197,7 +197,7 @@ An independent review assessed `docs/COVERAGE.md` and found it not adequate as f
 | --- | --- | --- | --- | --- |
 | `shield` | 67.4M | 76.4M | +13% | 19% |
 | `shield_batch` (3) | 131.9M | 144.2M | +9% | 36% |
-| `shield_batch` (8, max) | 293.9M | 314.4M | +7% | 79% |
+| `shield_batch` (8, max) | 293.9M | 314.4M (local; real live-Testnet was later found to be 358.8M/89.7% — see the 2026-11-12 update at this document's end) | +7% | 79% local (50% live, after the 2026-11-12 `verify_batch` refactor — see update) |
 | `transfer` (2 in, 2 out) | 65.7M | 74.9M | +14% | 19% |
 | `transfer4` (4 in, 4 out) | 70.3M | 80.8M | +15% | 20% |
 | `unshield` | 29.7M | 32.8M | +10% | 8% |
@@ -261,3 +261,5 @@ One behavioural difference: a call that inserts several leaves records one root-
 ## Beyond the roadmap
 
 Two review rounds (`docs/SECURITY_AUDIT_TRANCHE1.md`) found and fixed: the unbound nullifier key, non-canonical public-input aliasing, weak batch challenges, an unsound compliance circuit, and a swap front-running path; accepted risks are listed there.
+
+**Update (2026-11-12) — `shield_batch`'s real cost and fix.** The `shield_batch`-of-8 figures cited above (293.9M/314.4M, 79%) were local `cost_estimate()` measurements. A live-Testnet re-measurement found the real cost was 358.8M instructions — 89.7% of the 400M per-transaction limit, and separately 61.9% of Soroban's lower 580M per-ledger aggregate instruction budget (`ConfigSettingContractComputeV0`/`ConfigSettingContractParallelComputeV0`, queried directly from the live network). `shield_batch` was refactored to verify the whole batch with one combined `verify_batch` pairing check (K+3 pairings instead of 4K) instead of K independent `verify()` calls, falling back to per-item verification only if the combined check fails (preserving `verify`'s VK-retention-window fallback for a batch straddling a rotation). Real, live-Testnet-confirmed cost after the refactor: k=1 83.9M, k=4 132.5M, k=8 **199.7M** — 49.9% of the per-tx limit, 34.4% of the per-ledger limit. `MAX_SHIELD_BATCH` stays at 8; all 128 of `contracts/token`'s existing tests pass unchanged against the refactored code.
