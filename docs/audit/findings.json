@@ -95,6 +95,14 @@
       "note": "31 distinct style-class occurrences from the previous pass (too-many-arguments, index-based loops, clone-vs-from_ref, etc.) -- none correctness-class. Re-run 2026-11-13 under the newly-pinned toolchain completed clean: 0 compiler warnings, 0 correctness-class lints, 32 total style-warning emissions (essentially unchanged population, see docs/SECURITY_TOOLING_REPORT.md)."
     },
     {
+      "id": "FUZZ-001",
+      "tool": "cargo fuzz run shield_arbitrary (RUSTUP_TOOLCHAIN=nightly-2026-09-22)",
+      "severity": "n/a, confirmation only",
+      "component": "contracts/token/fuzz",
+      "status": "no_change_needed",
+      "note": "Confirms the fuzz toolchain still resolves and runs correctly after pinning contracts/rust-toolchain.toml to stable. The from-scratch sanitizer-instrumented build took 66m49s (zero cache, nightly never used before in this environment) -- not stalled, just cold. The fuzz run itself: 1,129 executions, 8,902 coverage edges, zero crashes, in 31 real seconds against the existing seed corpus."
+    },
+    {
       "id": "TOOL-001",
       "tool": "cargo-scout-audit",
       "severity": "n/a",
