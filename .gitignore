@@ -2,6 +2,8 @@ target/
 node_modules/
 dist/
 .env
+.env.*
+!.env.example
 *.zkey
 *.ptau
 *.r1cs
@@ -15,6 +17,7 @@ dist/
 !tsconfig.test.json
 !deployments.json
 !circuits/**/*_test_vectors.json
+!docs/audit/**/*.json
 !contracts/**/test_snapshots/**/*.json
 sdk/build/
 !circuits/*/build/
@@ -54,6 +57,14 @@ Cargo.lock
 *.local
 *.docx
 health-check.log
+
+# Local databases and generated wallet material — never committed, and
+# previously relying only on never being `git add`-ed rather than being
+# actually ignored (a single `git add -A` would have picked them up).
+*.db
+*.sqlite
+*.sqlite3
+demo-keys/
 contracts/token/fuzz/target/
 contracts/token/fuzz/artifacts/
 # Corpus is committed, minimized (`cargo +nightly fuzz cmin`), so new fuzzing runs and CI's

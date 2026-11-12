@@ -1,0 +1,33 @@
+# Context for indexer/Dockerfile (the only Dockerfile in this repo). The
+# image only needs package.json/package-lock.json, sdk/package.json, and
+# indexer/ (see indexer/Dockerfile's own COPY lines) — everything below is
+# either irrelevant to that build or must never end up inside an image layer.
+
+.git/
+node_modules/
+**/node_modules/
+target/
+**/target/
+dist/
+**/dist/
+
+# Secrets and local databases — never bake these into an image.
+.env
+.env.*
+!.env.example
+demo-keys/
+*.db
+*.sqlite
+*.sqlite3
+
+# Large, build-time-only artifacts the indexer image doesn't need.
+circuits/
+contracts/
+sdk/src/
+sdk/test/
+tests/
+examples/
+scripts/
+docs/
+*.md
+.github/
